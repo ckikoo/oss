@@ -1,5 +1,7 @@
 # OSS 项目完整索引（2026-05-03）
 
+> 本文件为详细项目索引，包含模块结构、 repository、service、API 和配置说明。README.md 仅保留项目概览与快速启动。
+
 ## 📊 项目概览
 
 **项目名称**: OSS (Object Storage Service)  
@@ -357,6 +359,12 @@ users (用户账户)
   │  ├─ lifecycle_rules (生命周期规则) ✅ 新增
   │  └─ presigned_urls (预签名URL) ✅ 新增
   ├─ metering_daily (日统计)
+  │  ├─ storage_size
+  │  ├─ object_count
+  │  ├─ upload_flow / download_flow
+  │  ├─ get_request_count / put_request_count / del_request_count
+  │  ├─ download_flow 基于实际传输字节统计（io.MultiWriter 监听真实下行流量）
+  │  └─ bucket_id NULL 表示用户总计
   ├─ operation_logs (操作日志)
   └─ event_rules / event_deliveries (事件通知)
 ```
@@ -412,7 +420,7 @@ go build -o oss ./main.go
 |------|------|
 | 版本控制 | PutObject中的TODO: Handle versioning |
 | 分片清理 | 后台任务定期清理超时的分片上传 |
-| 指标收集 | 完善metering_daily统计 |
+| 指标收集 | 完善 `metering_daily` 日统计，支持 PUT/GET/DELETE 请求类型和真实下行字节计数 |
 
 ### 🟢 低优先级 - 优化
 | 问题 | 建议 |

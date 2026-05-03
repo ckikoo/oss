@@ -14,6 +14,7 @@ import (
 
 	"oss/adaptor"
 	"oss/adaptor/repo/bucket"
+	meteringRepo "oss/adaptor/repo/metering"
 	multipartRepo "oss/adaptor/repo/multipart"
 	objectRepo "oss/adaptor/repo/object"
 	"oss/common"
@@ -56,6 +57,7 @@ type Service struct {
 	objRepo       objectRepo.IObjectRepo
 	bucketRepo    bucket.IBucketRepo
 	multipartRepo multipartRepo.IMultipartRepo
+	meteringRepo  *meteringRepo.MeteringRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -63,6 +65,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		objRepo:       objectRepo.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
+		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor),
 	}
 }
 
@@ -218,13 +221,21 @@ func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versio
 	}
 
 	c.Header("Content-Type", contentType)
-	c.Header("Content-Length", fmt.Sprintf("%d", obj.Size))
 	c.Header("ETag", obj.Etag)
 	c.Header("Last-Modified", obj.UpdatedAt.Format(time.RFC1123))
 
+	counter := &countingWriter{}
+
 	// Handle multipart objects
 	if obj.IsMultipart == consts.ObjectIsMultipartMerged {
-		return srv.streamMultipartObject(ctx, obj, c)
+		if errno := srv.streamMultipartObject(ctx, obj, c, counter); errno.NotOk() {
+			return errno
+		}
+
+		if errno := srv.incrementGetObjectMetering(ctx, obj, counter.Count()); errno.NotOk() {
+			return errno
+		}
+		return common.OK
 	}
 
 	// Handle regular objects
@@ -237,9 +248,48 @@ func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versio
 		return common.ParamErr.WithMsg("file not found")
 	}
 
-	// Stream file content directly to response (avoid OOM for large files)
-	c.File(*obj.StoragePath)
+	file, err := os.Open(*obj.StoragePath)
+	if err != nil {
+		return common.ServerErr.WithErr(err)
+	}
+	defer file.Close()
+
+	c.Header("Content-Length", fmt.Sprintf("%d", obj.Size))
+	if _, err := io.Copy(io.MultiWriter(c.Response.BodyWriter(), counter), file); err != nil {
+		return common.ServerErr.WithErr(err)
+	}
+
+	if errno := srv.incrementGetObjectMetering(ctx, obj, counter.Count()); errno.NotOk() {
+		return errno
+	}
+
 	return common.OK
+}
+
+func (srv *Service) incrementGetObjectMetering(ctx context.Context, obj *do.ObjectDo, transmittedBytes int64) common.Errno {
+	bucket, err := srv.bucketRepo.GetByName(ctx, obj.BucketName)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, 0, transmittedBytes, 1, 0, 0); err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+	return common.OK
+}
+
+type countingWriter struct {
+	bytes int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	w.bytes += int64(n)
+	return n, nil
+}
+
+func (w *countingWriter) Count() int64 {
+	return w.bytes
 }
 
 func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) common.Errno {
@@ -253,8 +303,20 @@ func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, ver
 		return common.DatabaseErr.WithErr(err)
 	}
 
-	// 执行软删除
+	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
 	if err := srv.objRepo.DeleteObject(ctx, bucketName, objectKey, versionID); err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	if err := srv.bucketRepo.UpdateBucketStats(ctx, bucketName, -1, -obj.Size); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
 
@@ -267,7 +329,7 @@ func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, ver
 }
 
 // streamMultipartObject 流式返回multipart对象的合并内容
-func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo, c *app.RequestContext) common.Errno {
+func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo, c *app.RequestContext, counter io.Writer) common.Errno {
 	if obj.UploadID == nil {
 		return common.ServerErr.WithMsg("upload_id not found for multipart object")
 	}
@@ -304,11 +366,11 @@ func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo,
 			return common.ServerErr.WithErr(err)
 		}
 
-		_, err = io.Copy(c.Response.BodyWriter(), file)
-		file.Close()
-		if err != nil {
+		if _, err = io.Copy(io.MultiWriter(c.Response.BodyWriter(), counter), file); err != nil {
+			file.Close()
 			return common.ServerErr.WithErr(err)
 		}
+		file.Close()
 	}
 
 	return common.OK

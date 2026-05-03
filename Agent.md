@@ -175,10 +175,18 @@ type IFileLock interface {
 用途：对象生命周期管理。
 
 ### metering_daily
-- 存储、流量、请求次数等日统计数据
+- `user_id`, `bucket_id`, `stat_date`
+- `storage_size`: 存储量变更（上传增加、删除减少）
+- `object_count`: 对象数量变更
+- `upload_flow`: PUT/上传流量
+- `download_flow`: GET/下载流量，基于实际传输字节统计
+- `get_request_count`: GET 请求次数
+- `put_request_count`: PUT 请求次数
+- `del_request_count`: DELETE 请求次数
 
-用途：计费与统计。
+用途：计费与统计。当前实现支持 bucket 级明细统计和 `bucket_id=NULL` 的用户总计统计，查询接口为 `GET /api/v1/metrics/daily`，可按 `user_id`、`bucket_id`、`date_from`、`date_to` 过滤。
 
+实现说明：对象下载使用流式输出并通过 `io.MultiWriter` 统计真实下行字节，避免依赖对象元数据 `Size`。
 ### operation_logs
 - 记录请求、状态、耗时、IP 等审计信息
 

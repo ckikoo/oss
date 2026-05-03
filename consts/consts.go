@@ -1,7 +1,8 @@
 package consts
 
 const (
-	UserKeyContext = "user_id"
+	UserKeyContext   = "user_id"
+	AccessKeyContext = "access_key"
 )
 
 // 1=正常 2=禁用 3=注销
@@ -65,6 +66,15 @@ const (
 	MultipartUploadStatusMergedPhysical = 2
 	MultipartUploadStatusFailed         = 3
 	MultipartUploadStatusAborted        = 4
+)
+
+const (
+	OperationLogResultFailed  = 0
+	OperationLogResultSuccess = 1
+)
+
+const (
+	DateFormatYMD = "2006-01-02"
 )
 
 const (

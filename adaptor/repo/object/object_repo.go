@@ -72,8 +72,20 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 			qsBucket.ObjectCount.ColumnName().String(): qsBucket.ObjectCount.Add(1),
 			qsBucket.StorageSize.ColumnName().String(): qsBucket.StorageSize.Add(object.Size),
 		})
+		if result.Error != nil {
+			return result.Error
+		}
 
-		return result.Error
+		bucket, err := query.Use(tx).Bucket.WithContext(ctx).Where(query.Use(tx).Bucket.ID.Eq(object.BucketID)).First()
+		if err != nil {
+			return err
+		}
+
+		if err := r.updateDailyMetering(tx, ctx, bucket.UserID, &object.BucketID, time.Now(), object.Size, 1, object.Size, 0, 0, 1, 0); err != nil {
+			return err
+		}
+
+		return nil
 	})
 
 	if err != nil {
@@ -231,4 +243,51 @@ func (r *ObjectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, ve
 	}
 	_, err := qs.Update(q.Object.Status, consts.ObjectStatusDeleted)
 	return err
+}
+
+func (r *ObjectRepo) updateDailyMetering(tx *gorm.DB, ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {
+	sql := `INSERT INTO metering_daily
+        (user_id, bucket_id, stat_date, storage_size, object_count, upload_flow, download_flow, get_request_count, put_request_count, del_request_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            storage_size = storage_size + VALUES(storage_size),
+            object_count = object_count + VALUES(object_count),
+            upload_flow = upload_flow + VALUES(upload_flow),
+            download_flow = download_flow + VALUES(download_flow),
+            get_request_count = get_request_count + VALUES(get_request_count),
+            put_request_count = put_request_count + VALUES(put_request_count),
+            del_request_count = del_request_count + VALUES(del_request_count)`
+
+	result := tx.WithContext(ctx).Exec(sql,
+		userID,
+		bucketID,
+		statDate.Format("2006-01-02"),
+		deltaStorageSize,
+		deltaObjectCount,
+		deltaUploadFlow,
+		deltaDownloadFlow,
+		deltaGetRequestCount,
+		deltaPutRequestCount,
+		deltaDelRequestCount,
+	)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if bucketID != nil {
+		result = tx.WithContext(ctx).Exec(sql,
+			userID,
+			nil,
+			statDate.Format("2006-01-02"),
+			deltaStorageSize,
+			deltaObjectCount,
+			deltaUploadFlow,
+			deltaDownloadFlow,
+			deltaGetRequestCount,
+			deltaPutRequestCount,
+			deltaDelRequestCount,
+		)
+		return result.Error
+	}
+	return nil
 }

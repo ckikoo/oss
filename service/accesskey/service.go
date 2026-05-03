@@ -37,12 +37,16 @@ func (srv *Service) CreateAccessKey(ctx context.Context, req *dto.CreateAccessKe
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
+
 	secretKey, err := tools.GenerateRandomKey(48)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	encryptedSecretKey := tools.Sha256Hash(secretKey)
+	encryptedSecretKey, err := tools.AESEncrypt(secretKey, []byte(srv.config.Security.AESKey))
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
 
 	// 将毫秒时间戳转换为 time.Time
 	var expiresAt *time.Time

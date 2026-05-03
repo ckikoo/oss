@@ -11,6 +11,7 @@ type UserDo struct {
 	CreatedAt    time.Time `gorm:"column:created_at"`
 	UpdatedAt    time.Time `gorm:"column:updated_at"`
 }
+
 type CreateUser struct {
 	Email        string `json:"email"`
 	StorageQuota int64  `json:"storage_quota"`

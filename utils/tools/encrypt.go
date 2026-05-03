@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
@@ -86,4 +87,21 @@ func PKCS7UnPadding(src []byte) []byte {
 		unpadding = 0
 	}
 	return src[:(length - unpadding)]
+}
+
+// 签名
+func sign(stringToSign, secretKey string) string {
+	mac := hmac.New(sha256.New, []byte(secretKey))
+	mac.Write([]byte(stringToSign))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// 验签（用 hmac.Equal 防时序攻击）
+func Verify(stringToSign, secretKey, signature string) bool {
+	expected := sign(stringToSign, secretKey)
+	sig, err := hex.DecodeString(signature)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal([]byte(expected), sig)
 }

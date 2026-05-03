@@ -23,6 +23,8 @@
 - **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。
 - **分布式锁**: 基于 Redis 的文件锁机制，支持并发控制和原子操作。
 
+> 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
+
 ## API 认证
 
 所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证：
@@ -67,6 +69,38 @@
 - 流式上传，避免内存溢出
 - 并发分片上传
 - 自动超时清理
+
+## Metering／日统计
+
+项目已实现日级流量与请求类型统计，数据写入 `metering_daily` 表。统计包括：
+
+- `storage_size`：当前日期内对象存储量增减（上传增加、删除减少）
+- `object_count`：对象数量变更（上传 +1、删除 -1）
+- `upload_flow`：PUT/上传流量，按对象大小累加
+- `download_flow`：GET/下载流量，按实际传输字节累加（使用 `io.MultiWriter` 流式写出时实时计数）
+- `get_request_count`：GET 请求次数
+- `put_request_count`：PUT 请求次数
+- `del_request_count`：DELETE 请求次数
+
+统计同时支持 bucket 级和用户总计两种粒度：
+
+- `bucket_id` 有值时表示该 bucket 的明细统计
+- `bucket_id` 为 NULL 时表示用户级总计统计
+
+当前接口查询入口为：
+
+- `GET /api/v1/metrics/daily`
+
+支持的查询参数：
+
+- `user_id`：用户 ID
+- `bucket_id`：bucket ID
+- `date_from`：起始统计日期，格式 `YYYY-MM-DD`
+- `date_to`：结束统计日期，格式 `YYYY-MM-DD`
+
+该接口返回按天汇总的统计条目，适用于日常流量审计、费用核算和用户行为分析。
+
+> 注意：对象下载流量统计以实际传输字节为准，避免仅依赖对象元数据 `Size`，已通过 `io.MultiWriter` 统计真实下行流量。
 
 ## 分布式锁机制
 
@@ -179,54 +213,7 @@ go run ./main.go
 
 ## 项目结构
 
-```
-oss/
-├── adaptor/                 # 适配器层，负责外部依赖和仓库实现
-│   ├── adatpor.go           # 适配器接口实现
-│   ├── redis/               # Redis 相关实现
-│   │   ├── file.go          # 分布式文件锁机制
-│   │   ├── lifecycle.go     # 生命周期管理
-│   │   └── multipart.go     # 分片上传 Redis 缓存
-│   └── repo/                # 数据访问层
-│       ├── gen.yaml         # GORM Gen 配置
-│       ├── model/           # 自动生成的数据库模型
-│       ├── query/           # 自动生成的查询方法
-│       ├── accesskey/       # access key 数据访问实现
-│       ├── bucket/          # bucket 数据访问实现
-│       └── object/          # object 数据访问实现
-├── api/                     # API 路由与处理
-│   ├── admin/               # 管理 API
-│   ├── auth/                # 认证相关 API 和中间件
-│   │   ├── middleware.go    # AK/SK 认证中间件
-│   │   ├── routes.go        # 路由注册
-│   │   └── object.go        # object API 处理
-│   └── resp.go              # 响应工具
-├── common/                  # 通用工具和中间件
-├── config/                  # 配置管理
-│   └── config.go
-├── consts/                  # 常量定义
-├── route/                   # 路由定义
-├── service/                 # 业务逻辑层
-│   ├── accesskey/           # access key 服务
-│   ├── bucket/              # bucket 服务
-│   ├── object/              # object 服务
-│   ├── do/                  # 领域对象
-│   ├── dto/                 # 数据传输对象
-│   ├── converter/           # 对象转换器
-│   └── timer/               # 定时任务
-├── timer/                   # 定时器服务
-├── tools/                   # 工具脚本
-├── utils/                   # 工具函数
-│   ├── logger/              # 日志工具
-│   └── tools/               # 加密等工具
-├── main.go                  # 程序入口
-├── go.mod                   # Go 模块
-├── config.yaml              # 配置文件
-├── init.sql                 # 数据库初始化脚本
-├── Agent.md                 # 数据库设计和架构文档
-├── MULTIPART_GUIDE.md       # Multipart上传实现指南
-└── README.md                # 项目说明
-```
+更多项目结构、模块说明与详细索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
 
 ## 关键命令
 
