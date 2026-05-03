@@ -1,0 +1,315 @@
+package object
+
+import (
+	"context"
+	"crypto/md5"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"oss/adaptor"
+	"oss/adaptor/repo/bucket"
+	multipartRepo "oss/adaptor/repo/multipart"
+	objectRepo "oss/adaptor/repo/object"
+	"oss/common"
+	"oss/consts"
+	"oss/service/do"
+	"oss/service/dto"
+	"oss/utils/tools"
+
+	"github.com/cloudwego/hertz/pkg/app"
+)
+
+// calculateFileHash 计算文件的SHA256哈希值，支持流式处理避免大文件OOM
+func saveFileAndComputeHashes(src io.Reader, destPath string) (etag string, sha256sum string, size int64, err error) {
+	if err = os.MkdirAll(filepath.Dir(destPath), consts.FilePermDir); err != nil {
+		return
+	}
+
+	dst, err := os.Create(destPath)
+	if err != nil {
+		return
+	}
+	defer dst.Close()
+
+	md5Hasher := md5.New()
+	sha256Hasher := sha256.New()
+
+	// 一次读取，同时写盘 + 算两个 hash
+	mw := io.MultiWriter(dst, md5Hasher, sha256Hasher)
+	size, err = io.Copy(mw, src)
+	if err != nil {
+		return
+	}
+
+	etag = fmt.Sprintf("%x", md5Hasher.Sum(nil))
+	sha256sum = fmt.Sprintf("%x", sha256Hasher.Sum(nil))
+	return
+}
+
+type Service struct {
+	objRepo       objectRepo.IObjectRepo
+	bucketRepo    bucket.IBucketRepo
+	multipartRepo multipartRepo.IMultipartRepo
+}
+
+func NewService(adaptor adaptor.IAdaptor) *Service {
+	return &Service{
+		objRepo:       objectRepo.NewObjectRepo(adaptor),
+		bucketRepo:    bucket.NewBucketRepo(adaptor),
+		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
+	}
+}
+
+func (srv *Service) ListObjects(ctx context.Context, req *dto.ListObjectsReq) (*dto.ListObjectsResp, common.Errno) {
+	if req.BucketName == "" {
+		return nil, common.ParamErr.WithMsg("bucket_name is required")
+	}
+
+	objects, err := srv.objRepo.ListByFilter(ctx, req.BucketName, req.Prefix, req.Delimiter, req.Marker, req.MaxKeys, req.VersionID)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	items := make([]*dto.ObjectItem, 0, len(objects))
+	for _, obj := range objects {
+		contentType := ""
+		if obj.ContentType != nil {
+			contentType = *obj.ContentType
+		}
+		items = append(items, &dto.ObjectItem{
+			ObjectKey:    obj.ObjectKey,
+			Size:         obj.Size,
+			Etag:         obj.Etag,
+			ContentType:  contentType,
+			StorageClass: obj.StorageClass,
+			VersionID:    obj.VersionID,
+			LastModified: obj.UpdatedAt.UnixMilli(),
+			Status:       obj.Status,
+		})
+	}
+
+	return &dto.ListObjectsResp{Items: items}, common.OK
+}
+
+func (srv *Service) GetObjectMetadata(ctx context.Context, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {
+	if bucketName == "" || objectKey == "" {
+		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
+	}
+
+	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return nil, common.ParamErr.WithErr(err)
+	}
+
+	metadata := ""
+	if obj.Metadata != nil {
+		metadata = *obj.Metadata
+	}
+	contentType := ""
+	if obj.ContentType != nil {
+		contentType = *obj.ContentType
+	}
+
+	return &dto.ObjectMetadata{
+		ObjectKey:    obj.ObjectKey,
+		Size:         obj.Size,
+		Etag:         obj.Etag,
+		ContentType:  contentType,
+		StorageClass: obj.StorageClass,
+		VersionID:    obj.VersionID,
+		Acl:          obj.Acl,
+		Metadata:     metadata,
+		Status:       obj.Status,
+	}, common.OK
+}
+
+func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
+	if req.BucketName == "" || req.ObjectKey == "" {
+		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
+	}
+
+	bucket, err := srv.bucketRepo.GetByName(ctx, req.BucketName)
+	if err != nil {
+		return nil, common.ParamErr.WithMsg("bucket not found")
+	}
+
+	bucketID := bucket.ID
+
+	// Generate object key hash
+	objectKeyHash := tools.Md5Hash(req.ObjectKey)
+
+	// Open file to calculate ETag and size
+	f, err := file.Open()
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+	defer f.Close()
+
+	storagePath := fmt.Sprintf("/storage/%s/%s", req.BucketName, req.ObjectKey)
+	storageDir := filepath.Dir(storagePath)
+	if err := os.MkdirAll(storageDir, consts.FilePermDir); err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+
+	// 一次 IO 搞定
+	etag, _, fileSize, err := saveFileAndComputeHashes(f, storagePath)
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+
+	// Default values
+	storageClass := req.StorageClass
+	if storageClass == "" {
+		storageClass = consts.StorageClassStandard
+	}
+
+	// Create object
+	createObj := &do.CreateObject{
+		BucketID:      bucketID,
+		BucketName:    req.BucketName,
+		ObjectKey:     req.ObjectKey,
+		ObjectKeyHash: objectKeyHash,
+		VersionID:     "", // TODO: Handle versioning
+		Size:          fileSize,
+		Etag:          etag,
+		ContentType:   &req.ContentType,
+		StorageClass:  storageClass,
+		IsMultipart:   consts.ObjectIsMultipartNormal,
+		UploadID:      nil,
+		StoragePath:   &storagePath,
+		Acl:           req.Acl,
+		Metadata:      &req.Metadata,
+	}
+
+	_, err = srv.objRepo.CreateObject(ctx, createObj)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	return &dto.PutObjectResp{
+		ObjectKey:   req.ObjectKey,
+		Size:        fileSize,
+		Etag:        etag,
+		StoragePath: storagePath,
+		VersionID:   "",
+	}, common.OK
+}
+
+func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
+	if bucketName == "" || objectKey == "" {
+		return common.ParamErr.WithMsg("bucket_name and object_key are required")
+	}
+
+	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return common.ParamErr.WithErr(err)
+	}
+
+	// Set response headers
+	contentType := "application/octet-stream"
+	if obj.ContentType != nil && *obj.ContentType != "" {
+		contentType = *obj.ContentType
+	}
+
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Length", fmt.Sprintf("%d", obj.Size))
+	c.Header("ETag", obj.Etag)
+	c.Header("Last-Modified", obj.UpdatedAt.Format(time.RFC1123))
+
+	// Handle multipart objects
+	if obj.IsMultipart == consts.ObjectIsMultipartMerged {
+		return srv.streamMultipartObject(ctx, obj, c)
+	}
+
+	// Handle regular objects
+	if obj.StoragePath == nil {
+		return common.ServerErr.WithMsg("storage path not found")
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(*obj.StoragePath); os.IsNotExist(err) {
+		return common.ParamErr.WithMsg("file not found")
+	}
+
+	// Stream file content directly to response (avoid OOM for large files)
+	c.File(*obj.StoragePath)
+	return common.OK
+}
+
+func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) common.Errno {
+	if bucketName == "" || objectKey == "" {
+		return common.ParamErr.WithMsg("bucket_name and object_key are required")
+	}
+
+	// 先获取要删除的对象信息
+	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	// 执行软删除
+	if err := srv.objRepo.DeleteObject(ctx, bucketName, objectKey, versionID); err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	// 删除物理文件
+	if obj.StoragePath != nil {
+		os.Remove(*obj.StoragePath)
+	}
+
+	return common.OK
+}
+
+// streamMultipartObject 流式返回multipart对象的合并内容
+func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo, c *app.RequestContext) common.Errno {
+	if obj.UploadID == nil {
+		return common.ServerErr.WithMsg("upload_id not found for multipart object")
+	}
+
+	// 获取所有分片
+	parts, err := srv.multipartRepo.ListMultipartParts(ctx, *obj.UploadID)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	if len(parts) == 0 {
+		return common.ServerErr.WithMsg("no parts found for multipart object")
+	}
+
+	// 按分片号排序
+	sort.Slice(parts, func(i, j int) bool {
+		return parts[i].PartNumber < parts[j].PartNumber
+	})
+
+	// 验证分片连续性
+	for i := int32(1); i <= int32(len(parts)); i++ {
+		if parts[i-1].PartNumber != i {
+			return common.ServerErr.WithMsg("multipart parts are not continuous")
+		}
+	}
+
+	// 流式输出所有分片
+	c.Response.Header.Set("Transfer-Encoding", "chunked")
+	c.Response.Header.Del("Content-Length") // 分块传输不能设置Content-Length
+
+	for _, part := range parts {
+		file, err := os.Open(part.StoragePath)
+		if err != nil {
+			return common.ServerErr.WithErr(err)
+		}
+
+		_, err = io.Copy(c.Response.BodyWriter(), file)
+		file.Close()
+		if err != nil {
+			return common.ServerErr.WithErr(err)
+		}
+	}
+
+	return common.OK
+}

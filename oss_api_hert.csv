@@ -1,0 +1,31 @@
+API Name,Group,Method,Path,Auth,Request Parameters,Request Body,Response Body,Description,,,,,,,,,,,,
+# Authentication Methods:
+# - AK/SK: Access Key and Secret Key authentication
+#   * Header: X-Access-Key + X-Secret-Key
+#   * Authorization: AccessKey AK:SK
+# - Multipart uses virtual merge (no physical file assembly)
+CreateAccessKey,Auth,POST,/api/v1/access-keys,AK/SK,{user_id},{alias,permission,expires_at}, {id,access_key,secret_key,alias,status,permission,expires_at},Create a new AK/SK credential for a user,,,,
+ListAccessKeys,Auth,GET,/api/v1/access-keys,AK/SK,{user_id,status},{}, {items:[{id,access_key,alias,status,user_id,expires_at,last_used_at}]},List access keys for a user,,,,,
+GetAccessKey,Auth,GET,/api/v1/access-keys/:access_key,AK/SK,{access_key},{}, {id,access_key,alias,status,user_id,permission,expires_at,last_used_at},Get metadata for an access key,,,,,
+DeactivateAccessKey,Auth,PATCH,/api/v1/access-keys/:access_key/status,AK/SK,{access_key},{status}, {id,access_key,status},Enable or disable an access key,,,,,,,,,,
+CreateBucket,Bucket,POST,/api/v1/buckets,AK/SK,{},{name,region,acl,storage_class,versioning}, {id,name,region,acl,storage_class,versioning,status,user_id,created_at},Create a new bucket
+ListBuckets,Bucket,GET,/api/v1/buckets,AK/SK,{user_id,status,region},{}, {items:[{id,name,region,acl,storage_class,versioning,status,user_id,object_count,storage_size}]},List buckets for a user,
+GetBucket,Bucket,GET,/api/v1/buckets/:bucket_name,AK/SK,{bucket_name},{}, {id,name,region,acl,storage_class,versioning,status,user_id,object_count,storage_size},Get bucket details,,,
+DeleteBucket,Bucket,DELETE,/api/v1/buckets/:bucket_name,AK/SK,{bucket_name},{}, {success},Delete an empty bucket,,,,,,,,,,,,
+ListObjects,Object,GET,/api/v1/buckets/:bucket_name/objects,AK/SK,{bucket_name,prefix,delimiter,max_keys,marker,version_id},{}, {items:[{object_key,size,etag,content_type,storage_class,version_id,last_modified,status}]},List objects in a bucket
+GetObjectMetadata,Object,GET,/api/v1/buckets/:bucket_name/objects/:object_key/metadata,AK/SK,{bucket_name,object_key,version_id},{}, {object_key,size,etag,content_type,storage_class,version_id,acl,metadata,status},Get object metadata,,
+PutObject,Object,PUT,/api/v1/buckets/:bucket_name/objects/:object_key,AK/SK,{bucket_name,object_key},{content_type,storage_class,acl,metadata,file}, {object_key,size,etag,storage_path,version_id},Upload or replace an object metadata entry,,,
+DeleteObject,Object,DELETE,/api/v1/buckets/:bucket_name/objects/:object_key,AK/SK,{bucket_name,object_key,version_id},{}, {success},Delete an object or mark it deleted,,,,,,,,,,
+CreateMultipartUpload,Multipart,POST,/api/v1/buckets/:bucket_name/multipart/uploads,AK/SK,{bucket_name},{object_key,content_type,storage_class,acl,metadata}, {upload_id,bucket_id,object_key,total_chunk,status,expires_at},Initialize a multipart upload session,,,
+UploadMultipartPart,Multipart,PUT,/api/v1/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number,AK/SK,{bucket_name,upload_id,part_number},{file,etag,size}, {part_number,etag,size,storage_path,status},Upload a multipart part,,,,
+CompleteMultipartUpload,Multipart,POST,/api/v1/buckets/:bucket_name/multipart/uploads/:upload_id/complete,AK/SK,{bucket_name,upload_id},{parts:[{part_number,etag}]}, {object_id,object_key,version_id,status},Complete multipart upload using virtual merge (no physical file assembly),,,,,,,
+AbortMultipartUpload,Multipart,DELETE,/api/v1/buckets/:bucket_name/multipart/uploads/:upload_id,AK/SK,{bucket_name,upload_id},{}, {success},Abort multipart upload session,,,,,,,,,,,
+CreateBucketPolicy,Policy,POST,/api/v1/buckets/:bucket_name/policies,AK/SK,{bucket_name},{name,principals,actions,resources,conditions,description}, {policy_id,name,status,bucket_id,created_at},Create a fine-grained bucket policy,,,
+ListBucketPolicies,Policy,GET,/api/v1/buckets/:bucket_name/policies,AK/SK,{bucket_name},{}, {items:[{policy_id,name,status,principals,actions,resources,conditions}]},List bucket policies,,,,,,
+GetPresignedUrl,Presigned,POST,/api/v1/presigned-urls,AK/SK,{},{bucket_name,object_key,method,expires_in,single_use}, {token,url,expires_at,method,single_use},Issue a temporary presigned URL,,,,
+CreateLifecycleRule,Lifecycle,POST,/api/v1/buckets/:bucket_name/lifecycle,AK/SK,{bucket_name},{rule_name,prefix,transition_days,expiration_days,status}, {rule_id,rule_name,prefix,transition_days,expiration_days,status},Add a lifecycle rule for a bucket,,,
+ListLifecycleRules,Lifecycle,GET,/api/v1/buckets/:bucket_name/lifecycle,AK/SK,{bucket_name},{}, {items:[{rule_id,rule_name,prefix,transition_days,expiration_days,status}]},List bucket lifecycle rules,,,,,,,
+GetDailyMetering,Metering,GET,/api/v1/metrics/daily,AK/SK,{date_from,date_to,user_id,bucket_id},{}, {items:[{date,storage_bytes,bandwidth_bytes,request_count}]},Query daily storage and traffic metrics,,,,,,
+ListOperationLogs,Audit,GET,/api/v1/logs,AK/SK,{user_id,bucket_name,action,status,date_from,date_to},{}, {items:[{log_id,user_id,action,status,ip,duration,request_id,timestamp}]},Query operation logs
+CreateEventRule,Event,POST,/api/v1/event-rules,AK/SK,{},{name,bucket_name,events,target_type,target_address,status}, {rule_id,name,bucket_name,events,target_type,target_address,status},Create an event notification rule,
+ListEventDeliveries,Event,GET,/api/v1/event-deliveries,AK/SK,{rule_id,status,date_from,date_to},{}, {items:[{delivery_id,rule_id,status,result,attempted_at}]},Query event delivery records,,,,,
