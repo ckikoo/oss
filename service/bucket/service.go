@@ -11,9 +11,8 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
-	"oss/utils/logger"
 
-	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -44,6 +43,15 @@ func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) 
 		storageClass = consts.StorageClassStandard
 	}
 
+	tmp, err := srv.repo.GetByName(ctx, req.Name)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	if tmp != nil {
+		return nil, common.DatabaseErr.WithMsg("此库已经存在")
+	}
+
 	id, err := srv.repo.CreateBucket(ctx, &do.CreateBucket{
 		UserID:       req.UserID,
 		Name:         req.Name,
@@ -54,50 +62,6 @@ func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) 
 	})
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
-	}
-
-	// 创建默认的生命周期规则
-	ia := consts.StorageClassIA
-	archive := consts.StorageClassArchive
-	transitionDays30 := int32(30)
-	transitionDays90 := int32(90)
-	expirationDays180 := int32(180)
-
-	defaultRules := []*do.CreateLifecycleRule{
-		{
-			BucketID:               id,
-			RuleName:               "Default-IA-Transition",
-			Status:                 1,
-			Prefix:                 nil,
-			TransitionDays:         &transitionDays30,
-			TransitionStorageClass: &ia,
-			ExpirationDays:         nil,
-		},
-		{
-			BucketID:               id,
-			RuleName:               "Default-Archive-Transition",
-			Status:                 1,
-			Prefix:                 nil,
-			TransitionDays:         &transitionDays90,
-			TransitionStorageClass: &archive,
-			ExpirationDays:         nil,
-		},
-		{
-			BucketID:               id,
-			RuleName:               "Default-Expiration",
-			Status:                 1,
-			Prefix:                 nil,
-			TransitionDays:         nil,
-			TransitionStorageClass: nil,
-			ExpirationDays:         &expirationDays180,
-		},
-	}
-
-	for _, rule := range defaultRules {
-		if _, err := srv.lifecycleRepo.CreateLifecycleRule(ctx, rule); err != nil {
-			// Log error but don't fail bucket creation if default rules fail
-			logger.Warn("failed to create default lifecycle rule", zap.String("rule_name", rule.RuleName), zap.Error(err))
-		}
 	}
 
 	return &dto.CreateBucketResp{
@@ -116,9 +80,6 @@ func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) 
 }
 
 func (srv *Service) ListBuckets(ctx context.Context, req *dto.ListBucketsReq) (*dto.ListBucketsResp, common.Errno) {
-	if req.UserID <= 0 {
-		return nil, common.ParamErr.WithMsg("user_id is required")
-	}
 	buckets, err := srv.repo.ListByFilter(ctx, req.UserID, req.Status)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
@@ -171,20 +132,21 @@ func (srv *Service) UpdateBucket(ctx context.Context, name string, req *dto.Upda
 	if name == "" {
 		return nil, common.ParamErr.WithMsg("bucket name is required")
 	}
-	if req.Region == "" && req.Acl == nil && req.Versioning == nil && req.Status == nil && req.StorageClass == "" {
+	if req.Acl == nil && req.Versioning == nil && req.Status == nil && req.StorageClass == "" {
 		return nil, common.ParamErr.WithMsg("no update fields")
 	}
 
 	bucketDo, err := srv.repo.UpdateBucket(ctx, name, &do.UpdateBucket{
-		Region:       req.Region,
 		Acl:          req.Acl,
 		Versioning:   req.Versioning,
 		Status:       req.Status,
 		StorageClass: req.StorageClass,
 	})
+
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
+
 	return &dto.UpdateBucketResp{
 		ID:           bucketDo.ID,
 		UserID:       bucketDo.UserID,

@@ -33,12 +33,12 @@ func (srv *Service) CreateAccessKey(ctx context.Context, req *dto.CreateAccessKe
 		return nil, common.ParamErr.WithMsg("user_id is required")
 	}
 
-	accessKey, err := tools.GenerateRandomKey(24)
+	accessKey, err := tools.GenerateRandomKey(16)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	secretKey, err := tools.GenerateRandomKey(48)
+	secretKey, err := tools.GenerateRandomKey(16)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
@@ -56,11 +56,17 @@ func (srv *Service) CreateAccessKey(ctx context.Context, req *dto.CreateAccessKe
 	}
 
 	ak := &do.CreateAccessKey{
-		UserID:     req.UserID,
-		AccessKey:  accessKey,
-		SecretKey:  encryptedSecretKey,
-		Permission: req.Permission,
-		ExpiresAt:  expiresAt,
+		UserID:    req.UserID,
+		AccessKey: accessKey,
+		SecretKey: encryptedSecretKey,
+		Permission: func() *string {
+			if req.Permission == "" {
+				return nil
+			} else {
+				return &req.Permission
+			}
+		}(),
+		ExpiresAt: expiresAt,
 	}
 
 	id, err := srv.repo.CreateAccessKey(ctx, ak)
@@ -97,8 +103,8 @@ func (srv *Service) ListAccessKeys(ctx context.Context, req *dto.ListAccessKeysR
 			Status:     ak.Status,
 			UserID:     ak.UserID,
 			Permission: (ak.Permission),
-			ExpiresAt:  ak.ExpiresAt.UnixMilli(),
-			LastUsedAt: ak.LastUsedAt.UnixMilli(),
+			ExpiresAt:  ak.ExpiresAt,
+			LastUsedAt: ak.LastUsedAt,
 		}
 	})
 
@@ -122,8 +128,8 @@ func (srv *Service) GetAccessKey(ctx context.Context, accessKey string) (*dto.Ac
 		Status:     ak.Status,
 		UserID:     ak.UserID,
 		Permission: ak.Permission,
-		ExpiresAt:  ak.ExpiresAt.UnixMilli(),
-		LastUsedAt: ak.LastUsedAt.UnixMilli(),
+		ExpiresAt:  ak.ExpiresAt,
+		LastUsedAt: ak.LastUsedAt,
 	}, common.OK
 }
 

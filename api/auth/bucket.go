@@ -4,6 +4,7 @@ import (
 	"context"
 	"oss/api"
 	"oss/common"
+	"oss/consts"
 	"oss/service/bucket"
 	"oss/service/dto"
 
@@ -30,11 +31,16 @@ func (ctrl *BucketCtrl) CreateBucket(ctx context.Context, c *app.RequestContext)
 }
 
 func (ctrl *BucketCtrl) ListBuckets(ctx context.Context, c *app.RequestContext) {
+
 	req := &dto.ListBucketsReq{}
+
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
 		return
 	}
+
+	user_id := c.GetInt64(consts.UserKeyContext)
+	req.UserID = user_id
 
 	resp, errno := ctrl.bucket.ListBuckets(ctx, req)
 	api.WriteResp(c, resp, errno)

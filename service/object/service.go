@@ -18,12 +18,14 @@ import (
 	multipartRepo "oss/adaptor/repo/multipart"
 	objectRepo "oss/adaptor/repo/object"
 	"oss/common"
+	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/utils/tools"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"gorm.io/gorm"
 )
 
 // calculateFileHash 计算文件的SHA256哈希值，支持流式处理避免大文件OOM
@@ -153,8 +155,26 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.ServerErr.WithErr(err)
 	}
 	defer f.Close()
+	// TODO 会有问题,应该使用 filepath 工具管理
+	saveDir := "./storage"
+	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
+		saveDir = config.GlobalConfig.Server.SaveDir
+	}
+	storagePath := filepath.Join(saveDir, req.BucketName, req.ObjectKey)
 
-	storagePath := fmt.Sprintf("/storage/%s/%s", req.BucketName, req.ObjectKey)
+	cacheFile, err := srv.objRepo.GetObjectFromHashKey(ctx, &do.GetObjectFromHashKey{
+		BucketName:    req.BucketName,
+		ObjectKeyHash: objectKeyHash,
+	})
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	// TODO 应该支持覆盖才对
+	if cacheFile != nil {
+		return nil, common.FileNameExists
+	}
+
 	storageDir := filepath.Dir(storagePath)
 	if err := os.MkdirAll(storageDir, consts.FilePermDir); err != nil {
 		return nil, common.ServerErr.WithErr(err)
@@ -187,7 +207,12 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		UploadID:      nil,
 		StoragePath:   &storagePath,
 		Acl:           req.Acl,
-		Metadata:      &req.Metadata,
+		Metadata: func() *string {
+			if req.Metadata == "" {
+				return nil
+			}
+			return &req.Metadata
+		}(),
 	}
 
 	_, err = srv.objRepo.CreateObject(ctx, createObj)

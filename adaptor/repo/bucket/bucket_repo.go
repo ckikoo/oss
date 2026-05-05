@@ -31,6 +31,14 @@ func NewBucketRepo(adaptor adaptor.IAdaptor) *BucketRepo {
 }
 
 func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) (int64, error) {
+	var err error
+
+	ia := consts.StorageClassIA
+	archive := consts.StorageClassArchive
+	transitionDays30 := int32(30)
+	transitionDays90 := int32(90)
+	expirationDays180 := int32(180)
+
 	modelBucket := &model.Bucket{
 		UserID:       bucket.UserID,
 		Name:         bucket.Name,
@@ -45,10 +53,43 @@ func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) 
 		UpdatedAt:    time.Now(),
 	}
 
-	err := query.Use(r.db).Bucket.WithContext(ctx).Create(modelBucket)
-	if err != nil {
-		return 0, err
-	}
+	r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err = tx.Model(&model.Bucket{}).WithContext(ctx).Create(modelBucket).Error; err != nil {
+			return err
+		}
+		defaultRules := []*do.CreateLifecycleRule{
+			{
+				BucketID:               modelBucket.ID,
+				RuleName:               "Default-IA-Transition",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         &transitionDays30,
+				TransitionStorageClass: &ia,
+				ExpirationDays:         nil,
+			},
+			{
+				BucketID:               modelBucket.ID,
+				RuleName:               "Default-Archive-Transition",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         &transitionDays90,
+				TransitionStorageClass: &archive,
+				ExpirationDays:         nil,
+			},
+			{
+				BucketID:               modelBucket.ID,
+				RuleName:               "Default-Expiration",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         nil,
+				TransitionStorageClass: nil,
+				ExpirationDays:         &expirationDays180,
+			},
+		}
+
+		return tx.Model(&model.LifecycleRule{}).CreateInBatches(defaultRules, 3).Error
+	})
+
 	return modelBucket.ID, nil
 }
 
@@ -134,9 +175,6 @@ func (r *BucketRepo) UpdateBucket(ctx context.Context, name string, update *do.U
 	qs := query.Use(r.db).Bucket
 
 	updates := map[string]interface{}{}
-	if update.Region != "" {
-		updates[qs.Region.ColumnName().String()] = update.Region
-	}
 	if update.Acl != nil {
 		updates[qs.Acl.ColumnName().String()] = *update.Acl
 	}

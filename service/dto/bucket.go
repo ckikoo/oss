@@ -48,7 +48,6 @@ type ListBucketsResp struct {
 }
 
 type UpdateBucketReq struct {
-	Region       string `json:"region,omitempty"`
 	Acl          *int32 `json:"acl,omitempty"`
 	Versioning   *int32 `json:"versioning,omitempty"`
 	Status       *int32 `json:"status,omitempty"`

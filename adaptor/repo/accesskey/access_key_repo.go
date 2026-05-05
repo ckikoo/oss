@@ -34,7 +34,7 @@ func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccess
 		UserID:     ak.UserID,
 		AccessKey:  ak.AccessKey,
 		SecretKey:  ak.SecretKey,
-		Permission: &ak.Permission,
+		Permission: ak.Permission,
 		ExpiresAt:  ak.ExpiresAt,
 		Status:     consts.AccessKeyStatusEnable,
 		CreatedAt:  time.Now(),
@@ -55,16 +55,36 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 		return nil, err
 	}
 	doAK := &do.AccessKeyDo{
-		ID:         modelAK.ID,
-		UserID:     modelAK.UserID,
-		AccessKey:  modelAK.AccessKey,
-		SecretKey:  modelAK.SecretKey,
-		Alias:      *modelAK.Alias_,
-		Status:     modelAK.Status,
-		Permission: *modelAK.Permission,
-		CreatedAt:  modelAK.CreatedAt,
-		ExpiresAt:  *modelAK.ExpiresAt,
-		LastUsedAt: *modelAK.LastUsedAt,
+		ID:        modelAK.ID,
+		UserID:    modelAK.UserID,
+		AccessKey: modelAK.AccessKey,
+		SecretKey: modelAK.SecretKey,
+		Alias: func() string {
+			if modelAK.Alias_ != nil {
+				return *modelAK.Alias_
+			}
+			return ""
+		}(),
+		Status: modelAK.Status,
+		Permission: func() string {
+			if modelAK.Permission != nil {
+				return *modelAK.Permission
+			}
+			return ""
+		}(),
+		CreatedAt: modelAK.CreatedAt.UnixMilli(),
+		ExpiresAt: func() int64 {
+			if modelAK.ExpiresAt != nil {
+				return modelAK.ExpiresAt.UnixMilli()
+			}
+			return 0
+		}(),
+		LastUsedAt: func() int64 {
+			if modelAK.LastUsedAt != nil {
+				return modelAK.LastUsedAt.UnixMilli()
+			}
+			return 0
+		}(),
 	}
 	return doAK, nil
 }
@@ -92,16 +112,36 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 	doAKs := make([]*do.AccessKeyDo, len(modelAKs))
 	for i, modelAK := range modelAKs {
 		doAKs[i] = &do.AccessKeyDo{
-			ID:         modelAK.ID,
-			UserID:     modelAK.UserID,
-			AccessKey:  modelAK.AccessKey,
-			SecretKey:  modelAK.SecretKey,
-			Alias:      *modelAK.Alias_,
-			Status:     modelAK.Status,
-			Permission: *modelAK.Permission,
-			CreatedAt:  modelAK.CreatedAt,
-			ExpiresAt:  *modelAK.ExpiresAt,
-			LastUsedAt: *modelAK.LastUsedAt,
+			ID:        modelAK.ID,
+			UserID:    modelAK.UserID,
+			AccessKey: modelAK.AccessKey,
+			SecretKey: modelAK.SecretKey,
+			Alias: func() string {
+				if modelAK.Alias_ != nil {
+					return *modelAK.Alias_
+				}
+				return ""
+			}(),
+			Status: modelAK.Status,
+			Permission: func() string {
+				if modelAK.Permission != nil {
+					return *modelAK.Permission
+				}
+				return ""
+			}(),
+			CreatedAt: modelAK.CreatedAt.UnixMilli(),
+			ExpiresAt: func() int64 {
+				if modelAK.ExpiresAt != nil {
+					return (modelAK.ExpiresAt.UnixMilli())
+				}
+				return -1
+			}(),
+			LastUsedAt: func() int64 {
+				if modelAK.LastUsedAt != nil {
+					return (modelAK.LastUsedAt.UnixMilli())
+				}
+				return -1
+			}(),
 		}
 	}
 	return doAKs, nil

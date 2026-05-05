@@ -10,15 +10,15 @@ type AccessKeyDo struct {
 	Alias      string
 	Status     int32
 	Permission string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	LastUsedAt time.Time
+	CreatedAt  int64
+	ExpiresAt  int64
+	LastUsedAt int64
 }
 
 type CreateAccessKey struct {
 	UserID     int64 `json:"user_id"`
 	AccessKey  string
 	SecretKey  string
-	Permission string     `json:"permission,omitempty"`
+	Permission *string    `json:"permission,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }

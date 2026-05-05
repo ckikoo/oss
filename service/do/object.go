@@ -29,6 +29,12 @@ type ObjectDo struct {
 	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at"`
 }
 
+type GetObjectFromHashKey struct {
+	BucketID      int64
+	BucketName    string
+	ObjectKeyHash string
+}
+
 type CreateObject struct {
 	BucketID      int64
 	BucketName    string

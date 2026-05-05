@@ -94,7 +94,37 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 
 	return objectID, nil
 }
+func (r *ObjectRepo) GetObjectFromHashKey(ctx context.Context, req *do.GetObjectFromHashKey) (*do.ObjectDo, error) {
+	q := query.Use(r.db)
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(req.BucketName), q.Object.ObjectKeyHash.Eq(req.ObjectKeyHash))
 
+	modelObject, err := qs.First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.ObjectDo{
+		ID:            modelObject.ID,
+		BucketID:      modelObject.BucketID,
+		BucketName:    modelObject.BucketName,
+		ObjectKey:     modelObject.ObjectKey,
+		ObjectKeyHash: modelObject.ObjectKeyHash,
+		VersionID:     modelObject.VersionID,
+		Size:          modelObject.Size,
+		Etag:          modelObject.Etag,
+		ContentType:   modelObject.ContentType,
+		StorageClass:  modelObject.StorageClass,
+		IsMultipart:   modelObject.IsMultipart,
+		UploadID:      modelObject.UploadID,
+		StoragePath:   modelObject.StoragePath,
+		Acl:           modelObject.Acl,
+		Metadata:      modelObject.Metadata,
+		Status:        modelObject.Status,
+		AccessCount:   modelObject.AccessCount,
+		CreatedAt:     modelObject.CreatedAt,
+		UpdatedAt:     modelObject.UpdatedAt,
+		DeletedAt:     modelObject.DeletedAt,
+	}, nil
+}
 func (r *ObjectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))

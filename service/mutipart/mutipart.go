@@ -1,9 +1,9 @@
 package mutipart
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"mime/multipart"
 	"os"
 	"oss/adaptor"
 	"oss/adaptor/redis"
@@ -11,6 +11,7 @@ import (
 	mutipartRepo "oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
 	"oss/common"
+	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -32,6 +34,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
+		objRepo:       object.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: mutipartRepo.NewObjectRepo(adaptor),
 		rdsMutipart:   redis.NewMultipart(adaptor),
@@ -42,8 +45,8 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
 
-	if req.TotalChunk < 0 {
-		return nil, common.ParamErr.WithMsg("total_chunk cannot be negative")
+	if req.TotalChunk <= 0 {
+		return nil, common.ParamErr.WithMsg("total_chunk must greate zero")
 	}
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
@@ -53,6 +56,15 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 
 	if bucket.UserID != user_id {
 		return nil, common.AuthErr
+	}
+
+	temp, err := srv.objRepo.GetByKey(ctx, bucketName, req.ObjectKey, "")
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	if temp != nil {
+		return nil, common.FileNameExists
 	}
 
 	uploadID := uuid.NewString()
@@ -74,9 +86,15 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 		Status:        consts.MultipartUploadStatusUploading,
 		StorageClass:  &storageClass,
 		ContentType:   &req.ContentType,
-		Metadata:      &req.Metadata,
-		ExpiresAt:     time.Now().Add(24 * time.Hour),
-		LastActiveAt:  time.Now(),
+		Metadata: func() *string {
+			if req.Metadata != "" {
+				return &req.Metadata
+			}
+
+			return nil
+		}(),
+		ExpiresAt:    time.Now().Add(24 * time.Hour),
+		LastActiveAt: time.Now(),
 	}
 	defer func() {
 		if err != nil {
@@ -106,7 +124,7 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 // upload_etag 参数用于校验文件是否和用户传递的一致，防止用户上传了错误的文件
 // uploadID参数用于校验用户是否有权限上传这个文件
 
-func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, upload_etag string, uploadID string, partNumber int32, file *multipart.FileHeader) (*dto.UploadMultipartPartResp, common.Errno) {
+func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
 	if uploadID == "" || partNumber <= 0 {
 		return nil, common.ParamErr.WithMsg("upload_id and part_number are required")
 	}
@@ -126,19 +144,18 @@ func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, uplo
 		return nil, common.ParamErr.WithMsg("multipart upload is not in uploading state")
 	}
 
-	f, err := file.Open()
-	if err != nil {
-		return nil, common.ServerErr.WithErr(err)
+	saveDir := "./storage"
+	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
+		saveDir = config.GlobalConfig.Server.SaveDir
 	}
-	defer f.Close()
-
-	storagePath := fmt.Sprintf("/storage/%s/multipart/%s/part_%d", upload.BucketName, uploadID, partNumber)
+	storagePath := filepath.Join(saveDir, upload.BucketName, "multipart", uploadID, fmt.Sprintf("part_%d", partNumber))
 	storageDir := filepath.Dir(storagePath)
 	if err := os.MkdirAll(storageDir, consts.FilePermDir); err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	etag, _, size, err := tools.SaveFileAndComputeHashes(f, storagePath)
+	// 直接保存二进制数据并计算哈希
+	etag, _, size, err := tools.SaveFileAndComputeHashes(bytes.NewReader(data), storagePath)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
@@ -261,9 +278,9 @@ func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, u
 	if upload.ContentType != nil {
 		contentType = *upload.ContentType
 	}
-	metadata := ""
-	if upload.Metadata != nil {
-		metadata = *upload.Metadata
+	var metadata *string
+	if upload.Metadata != nil && *upload.Metadata != "" {
+		metadata = upload.Metadata
 	}
 
 	objectID, err := srv.objRepo.CreateObject(ctx, &do.CreateObject{
@@ -279,7 +296,7 @@ func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, u
 		IsMultipart:   consts.ObjectIsMultipartMerged,
 		UploadID:      &uploadID,
 		Acl:           consts.ObjectAclInheritBucket,
-		Metadata:      &metadata,
+		Metadata:      metadata,
 	})
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
@@ -340,7 +357,11 @@ func (srv *Service) AbortMultipartUpload(ctx context.Context, user_id int64, upl
 	if err := srv.multipartRepo.DeleteMultipartParts(ctx, uploadID); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
-	_ = os.RemoveAll(fmt.Sprintf("/storage/%s/multipart/%s", upload.BucketName, uploadID))
+	removeDir := "./storage"
+	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
+		removeDir = config.GlobalConfig.Server.SaveDir
+	}
+	_ = os.RemoveAll(filepath.Join(removeDir, upload.BucketName, "multipart", uploadID))
 	srv.rdsMutipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	return common.OK

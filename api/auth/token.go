@@ -23,7 +23,6 @@ func NewTokenCtrl(adaptor adaptor.IAdaptor) *TokenCtrl {
 }
 
 func (ctrl *TokenCtrl) CreateUploadToken(ctx context.Context, c *app.RequestContext) {
-
 	ak := c.GetString(consts.AccessKeyContext)
 	secure := c.GetString(consts.SecretKeyContext)
 
@@ -49,7 +48,7 @@ func (ctrl *TokenCtrl) CreateDownloadToken(ctx context.Context, c *app.RequestCo
 	secure := c.GetString(consts.SecretKeyContext)
 	req := &dto.CreateDownloadTokenReq{}
 
-	if err := c.BindAndValidate(&req); err != nil {
+	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
 		return
 	}

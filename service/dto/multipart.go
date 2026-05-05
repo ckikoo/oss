@@ -4,6 +4,7 @@ type CreateMultipartUploadReq struct {
 	ObjectKey    string `json:"object_key" form:"object_key"`
 	ContentType  string `json:"content_type,omitempty" form:"content_type"`
 	StorageClass string `json:"storage_class,omitempty" form:"storage_class"`
+	FileEtag     string `json:"file_etag,omitempty" form:"file_etag"`
 	Acl          int32  `json:"acl,omitempty" form:"acl"`
 	Metadata     string `json:"metadata,omitempty" form:"metadata"`
 	TotalChunk   int32  `json:"total_chunk,omitempty" form:"total_chunk"`

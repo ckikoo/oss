@@ -32,6 +32,7 @@ type Server struct {
 	Port        int    `yaml:"port"`
 	EnablePprof bool   `yaml:"enable_prof"`
 	LogLevel    string `yaml:"log_level"`
+	SaveDir     string `yaml:"save_dir"`
 }
 
 type Security struct {
@@ -124,10 +125,13 @@ func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
 	}
 
 	go func() {
-		time.Sleep(time.Second)
-		if err := viper.WatchRemoteConfig(); err == nil {
-			_ = viper.Unmarshal(GlobalConfig)
+		for {
+			time.Sleep(time.Second)
+			if err := viper.WatchRemoteConfig(); err == nil {
+				_ = viper.Unmarshal(GlobalConfig)
+			}
 		}
+
 	}()
 	return tempConf, nil
 }
@@ -147,5 +151,18 @@ func loadConfigFromFile(viper *viper.Viper) (*Config, error) {
 		return nil, err
 	}
 
+	go func() {
+		for {
+			viper.WatchConfig()
+			if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
+				config.TagName = "yaml"
+			}); err != nil {
+				fmt.Printf("failed to reload config: %v\n", err)
+			}
+
+			time.Sleep(time.Second)
+		}
+
+	}()
 	return tempConf, nil
 }

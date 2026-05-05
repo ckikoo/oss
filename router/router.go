@@ -74,4 +74,5 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	authGroup.PUT("/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number", mutipartCtrl.UploadMultipartPart)
 	authGroup.POST("/buckets/:bucket_name/multipart/uploads/:upload_id/complete", mutipartCtrl.CompleteMultipartUpload)
 	authGroup.DELETE("/buckets/:bucket_name/multipart/uploads/:upload_id", mutipartCtrl.AbortMultipartUpload)
+
 }

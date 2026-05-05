@@ -27,7 +27,6 @@ type CreateBucket struct {
 }
 
 type UpdateBucket struct {
-	Region       string
 	Acl          *int32
 	Versioning   *int32
 	Status       *int32

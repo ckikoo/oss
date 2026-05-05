@@ -29,8 +29,8 @@ type CreateAccessKeyResp struct {
 }
 
 type ListAccessKeysReq struct {
-	UserID int64 `form:"user_id"`
-	Status int32 `form:"status"`
+	UserID int64 `json:"user_id"`
+	Status int32 `json:"status"`
 }
 
 type ListAccessKeysResp struct {

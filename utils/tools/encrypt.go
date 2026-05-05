@@ -103,5 +103,10 @@ func HmacSHA256Verify(stringToSign, secretKey, signature string) bool {
 	if err != nil {
 		return false
 	}
-	return hmac.Equal([]byte(expected), sig)
+
+	expectedBytes, err := hex.DecodeString(expected)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(expectedBytes, sig)
 }

@@ -41,6 +41,50 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	repo := accesskey.NewAccessKeyRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
 
+		if string(c.Method()) == "GET" && c.FullPath() == "/api/v1/buckets/:bucket_name/objects/:object_key" {
+			token := c.Query("token")
+
+			if token == "" {
+				goto NEXT
+			}
+			ctrl := auth.NewTokenCtrl(adaptor)
+
+			var (
+				ak   string
+				pass = false
+			)
+
+			ak, pass = ctrl.ValidateToken(ctx, token, consts.DownloadAction)
+			if !pass {
+				c.JSON(401, common.AuthErr.WithMsg("invalid token"))
+				c.Abort()
+				return
+			}
+
+			info, err := repo.GetByAccessKey(ctx, ak)
+			if err != nil {
+				c.JSON(500, common.DatabaseErr.WithErr(err))
+				c.Abort()
+				return
+			}
+
+			sec, err := tools.AESDecrypt(info.SecretKey, []byte(adaptor.GetConfig().Security.AESKey))
+			if err != nil {
+				c.JSON(500, common.ServerErr)
+				c.Abort()
+				return
+			}
+
+			c.Set(consts.UserKeyContext, info.UserID)
+			c.Set(consts.AccessKeyContext, ak)
+			c.Set(consts.SecretKeyContext, string(sec))
+
+			c.Next(ctx)
+			return
+		}
+
+	NEXT:
+
 		// 判定是否x-oss-token， 目前先针对分片上传的接口，后续可以根据需要增加其他接口
 		if ossToken := string(c.GetHeader(consts.HeaderToken)); ossToken != "" {
 			// TODO 校验token
@@ -55,7 +99,6 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				)
 
 				ak, pass = ctrl.ValidateToken(ctx, ossToken, action)
-
 				if !pass {
 					c.JSON(401, common.AuthErr.WithMsg("invalid token"))
 					c.Abort()
@@ -138,7 +181,8 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 
 		contentType := string(c.GetHeader("Content-Type"))
 		var body string
-		if contentType != "application/octet-stream" {
+		// 跳过二进制流和 multipart 请求的 body，因为 boundary 是动态的
+		if contentType != "application/octet-stream" && !strings.Contains(contentType, "multipart/") {
 			b, _ := c.Body()
 			body = string(b)
 		}
@@ -160,7 +204,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		sec, err := tools.AESDecrypt(akInfo.SecretKey, []byte(adaptor.GetConfig().Security.AESKey))
+		sec, err := tools.AESDecrypt(string(sk), []byte(adaptor.GetConfig().Security.AESKey))
 		if err != nil {
 			c.JSON(500, common.ServerErr)
 			c.Abort()

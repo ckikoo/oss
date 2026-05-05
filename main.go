@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"oss/adaptor"
-	"oss/api/auth"
 	"oss/config"
+	"oss/router"
 	"oss/utils/logger"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -35,7 +35,7 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
 	h := server.Default(server.WithHostPorts(address))
-	auth.RegisterRoutes(h, newAdaptor)
+	router.RegisterRoutes(h, newAdaptor)
 
 	h.Spin()
 
