@@ -44,4 +44,6 @@ var (
 	FilePartyErr         = Errno{Code: 11001, Msg: "文件分片不一致"}
 	FileHasUploadSuccess = Errno{Code: 11001, Msg: "该上传id 已经合并"}
 	FilePartNotFound     = Errno{Code: 11002, Msg: "分片不存在"}
+	TokenInvalid         = Errno{Code: 11003, Msg: "Token无效"}
+	TokenExpired         = Errno{Code: 11004, Msg: "Token已过期"}
 )

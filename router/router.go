@@ -1,7 +1,8 @@
-package auth
+package router
 
 import (
 	"oss/adaptor"
+	"oss/api/auth"
 	"oss/service/accesskey"
 	"oss/service/audit"
 	"oss/service/bucket"
@@ -10,34 +11,32 @@ import (
 	"oss/service/mutipart"
 	"oss/service/object"
 	"oss/service/policy"
-	"oss/service/presigned"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 )
 
 func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	akService := accesskey.NewService(adaptor)
-	akCtrl := NewCtrl(akService)
+	akCtrl := auth.NewCtrl(akService)
 	bucketService := bucket.NewService(adaptor)
-	bucketCtrl := NewBucketCtrl(bucketService)
+	bucketCtrl := auth.NewBucketCtrl(bucketService)
 	objectService := object.NewService(adaptor)
-	objectCtrl := NewObjectCtrl(objectService)
+	objectCtrl := auth.NewObjectCtrl(objectService)
 	auditService := audit.NewService(adaptor)
-	auditCtrl := NewAuditCtrl(auditService)
+	auditCtrl := auth.NewAuditCtrl(auditService)
 
 	meteringService := metering.NewService(adaptor)
-	meteringCtrl := NewMeteringCtrl(meteringService)
+	meteringCtrl := auth.NewMeteringCtrl(meteringService)
 
 	mutipartService := mutipart.NewService(adaptor)
-	mutipartCtrl := NewMutipartCtrl(mutipartService)
+	mutipartCtrl := auth.NewMutipartCtrl(mutipartService)
 	policyService := policy.NewService(adaptor)
-	policyCtrl := NewPolicyCtrl(policyService)
+	policyCtrl := auth.NewPolicyCtrl(policyService)
 
 	lifecycleService := lifecycle.NewService(adaptor)
-	lifecycleCtrl := NewLifecycleCtrl(lifecycleService)
+	lifecycleCtrl := auth.NewLifecycleCtrl(lifecycleService)
 
-	presignedService := presigned.NewService(adaptor)
-	presignedCtrl := NewPresignedCtrl(presignedService)
+	tokenCtrl := auth.NewTokenCtrl(adaptor)
 
 	h.POST("/api/v1/access-keys", akCtrl.CreateAccessKey)
 	h.GET("/api/v1/access-keys", akCtrl.ListAccessKeys)
@@ -45,6 +44,10 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	h.PATCH("/api/v1/access-keys/:access_key/status", akCtrl.DeactivateAccessKey)
 
 	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor))
+
+	authGroup.POST("/upload/tokens", tokenCtrl.CreateUploadToken)
+	authGroup.POST("/download/tokens", tokenCtrl.CreateDownloadToken)
+
 	authGroup.POST("/buckets", bucketCtrl.CreateBucket)
 	authGroup.GET("/buckets", bucketCtrl.ListBuckets)
 	authGroup.GET("/buckets/:bucket_name", bucketCtrl.GetBucket)
@@ -58,9 +61,6 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	authGroup.GET("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.GetLifecycleRule)
 	authGroup.PUT("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.UpdateLifecycleRule)
 	authGroup.DELETE("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.DeleteLifecycleRule)
-
-	authGroup.POST("/presigned-urls", presignedCtrl.CreatePresignedUrl)
-	authGroup.DELETE("/presigned-urls/:token", presignedCtrl.RevokePresignedUrl)
 
 	authGroup.GET("/buckets/:bucket_name/objects", objectCtrl.ListObjects)
 	authGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", objectCtrl.GetObjectMetadata)

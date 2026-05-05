@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"oss/consts"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -11,12 +12,8 @@ import (
 	"github.com/spf13/viper"
 )
 
-const (
-	ServerName = "oss-server"
-)
-
 var (
-	EtcdKey         = fmt.Sprintf("config/%s/system", ServerName)
+	EtcdKey         = fmt.Sprintf("config/%s/system", consts.ServerName)
 	EtcdAddr        string
 	localConfigPath string
 	GlobalConfig    *Config

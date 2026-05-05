@@ -3,6 +3,13 @@ package consts
 const (
 	UserKeyContext   = "user_id"
 	AccessKeyContext = "access_key"
+	SecretKeyContext = "secret_key"
+)
+
+const (
+	// 使用签名算法
+	Request    = "oss4_request"
+	ServerName = "oss-server"
 )
 
 // 1=正常 2=禁用 3=注销
@@ -87,4 +94,16 @@ const (
 	StorageClassStandard = "STANDARD"
 	StorageClassIA       = "IA"
 	StorageClassArchive  = "ARCHIVE"
+)
+
+const (
+	DownloadAction = "download"
+	DownloadMethod = "GET"
+
+	UploadAction = "upload"
+	UploadMethod = "PUT"
+)
+
+const (
+	HeaderToken = "X-OSS-Token"
 )

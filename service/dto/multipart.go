@@ -7,6 +7,12 @@ type CreateMultipartUploadReq struct {
 	Acl          int32  `json:"acl,omitempty" form:"acl"`
 	Metadata     string `json:"metadata,omitempty" form:"metadata"`
 	TotalChunk   int32  `json:"total_chunk,omitempty" form:"total_chunk"`
+
+	// 上传专属 policy（Action=write 时生效）
+	MimeLimit   string `json:"mime_limit"`   // 限制文件类型 如 image/*
+	SizeLimit   int64  `json:"size_limit"`   // 限制文件大小（字节）
+	Overwrite   bool   `json:"overwrite"`    // 是否允许覆盖同名文件
+	CallbackUrl string `json:"callback_url"` // 上传成功回调
 }
 
 type CreateMultipartUploadResp struct {

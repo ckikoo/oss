@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"oss/adaptor"
-	"oss/config"
+	"oss/consts"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -31,7 +31,7 @@ func NewMultipart(adaptor adaptor.IAdaptor) *Multipart {
 var _ IMultipart = (*Multipart)(nil)
 
 func fmtTimeoutOrderCancelZSetKey() string {
-	return fmt.Sprintf("%s:mutipart:timeout:cancel", config.ServerName)
+	return fmt.Sprintf("%s:mutipart:timeout:cancel", consts.ServerName)
 }
 func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID string) error {
 	redisKey := fmtTimeoutOrderCancelZSetKey()

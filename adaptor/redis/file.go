@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"oss/adaptor"
-	"oss/config"
+	"oss/consts"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -41,7 +41,7 @@ func NewFileLock(adaptor adaptor.IAdaptor) *fileLock {
 
 // generateLockKey 生成锁的 Redis key
 func (fl *fileLock) generateLockKey(bucketName string, objectName string) string {
-	return fmt.Sprintf("%s:lock:file:%s:%s", config.ServerName, bucketName, objectName)
+	return fmt.Sprintf("%s:lock:file:%s:%s", consts.ServerName, bucketName, objectName)
 }
 func (fl *fileLock) AcquireLock(ctx context.Context, bucketName string, objectName string, uuid string, ttl time.Duration) (bool, error) {
 	lockKey := fl.generateLockKey(bucketName, objectName)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"oss/adaptor"
-	"oss/config"
+	"oss/consts"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -30,7 +30,7 @@ func getRedisKey(bucketID int64, ruleID int64, prefix string, operation string) 
 	if prefix == "" {
 		prefix = "*"
 	}
-	return fmt.Sprintf("%s:lifecycle:%d:%d:%s:%s", config.ServerName, bucketID, ruleID, prefix, operation)
+	return fmt.Sprintf("%s:lifecycle:%d:%d:%s:%s", consts.ServerName, bucketID, ruleID, prefix, operation)
 }
 
 func NewLifecycle(adaptor adaptor.IAdaptor) *lifeCycle {

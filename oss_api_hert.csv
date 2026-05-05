@@ -23,6 +23,8 @@ AbortMultipartUpload,Multipart,DELETE,/api/v1/buckets/:bucket_name/multipart/upl
 CreateBucketPolicy,Policy,POST,/api/v1/buckets/:bucket_name/policies,AK/SK,{bucket_name},{name,principals,actions,resources,conditions,description}, {policy_id,name,status,bucket_id,created_at},Create a fine-grained bucket policy,,,
 ListBucketPolicies,Policy,GET,/api/v1/buckets/:bucket_name/policies,AK/SK,{bucket_name},{}, {items:[{policy_id,name,status,principals,actions,resources,conditions}]},List bucket policies,,,,,,
 GetPresignedUrl,Presigned,POST,/api/v1/presigned-urls,AK/SK,{},{bucket_name,object_key,method,expires_in,single_use}, {token,url,expires_at,method,single_use},Issue a temporary presigned URL,,,,
+UsePresignedUrlGet,Presigned,GET,/api/v1/presigned-urls/:token,AK/SK,{token},{}, {token,bucket_name,object_key,method,expires_at,valid},Use a presigned URL for GET/download,,,,,
+UsePresignedUrlPut,Presigned,PUT,/api/v1/presigned-urls/:token,AK/SK,{token},{}, {token,bucket_name,object_key,method,expires_at,valid},Use a presigned URL for PUT/upload,,,,,
 RevokePresignedUrl,Presigned,DELETE,/api/v1/presigned-urls/:token,AK/SK,{token},{}, {success},Revoke a presigned URL,,,,,,,,,,,
 CreateLifecycleRule,Lifecycle,POST,/api/v1/buckets/:bucket_name/lifecycle,AK/SK,{bucket_name},{rule_name,prefix,transition_days,expiration_days,status}, {rule_id,rule_name,prefix,transition_days,expiration_days,status},Add a lifecycle rule for a bucket,,,
 ListLifecycleRules,Lifecycle,GET,/api/v1/buckets/:bucket_name/lifecycle,AK/SK,{bucket_name},{}, {items:[{rule_id,rule_name,prefix,transition_days,expiration_days,status}]},List bucket lifecycle rules,,,,,,,

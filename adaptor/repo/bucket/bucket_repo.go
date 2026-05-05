@@ -74,6 +74,28 @@ func (r *BucketRepo) GetByName(ctx context.Context, name string) (*do.BucketDo, 
 	}, nil
 }
 
+func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error) {
+	q := query.Use(r.db)
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.ID.Eq(id)).First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.BucketDo{
+		ID:           modelBucket.ID,
+		UserID:       modelBucket.UserID,
+		Name:         modelBucket.Name,
+		Region:       modelBucket.Region,
+		Acl:          modelBucket.Acl,
+		Versioning:   modelBucket.Versioning,
+		Status:       modelBucket.Status,
+		StorageClass: modelBucket.StorageClass,
+		ObjectCount:  modelBucket.ObjectCount,
+		StorageSize:  modelBucket.StorageSize,
+		CreatedAt:    modelBucket.CreatedAt,
+		UpdatedAt:    modelBucket.UpdatedAt,
+	}, nil
+}
+
 func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.BucketDo, error) {
 	q := query.Use(r.db)
 	qs := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID))

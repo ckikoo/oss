@@ -1,70 +1,51 @@
 package auth
 
-import (
-	"context"
+// type PresignedCtrl struct {
+// 	presigned *presigned.Service
+// }
 
-	"oss/api"
-	"oss/common"
-	"oss/consts"
-	"oss/service/dto"
-	"oss/service/presigned"
+// func NewPresignedCtrl(service *presigned.Service) *PresignedCtrl {
+// 	return &PresignedCtrl{presigned: service}
+// }
 
-	"github.com/cloudwego/hertz/pkg/app"
-)
+// func (ctrl *PresignedCtrl) CreatePresignedUrl(ctx context.Context, c *app.RequestContext) {
 
-type PresignedCtrl struct {
-	presigned *presigned.Service
-}
+// 	ak := c.GetString(consts.AccessKeyContext)
+// 	sk := c.GetString(consts.SecretKeyContext)
 
-func NewPresignedCtrl(service *presigned.Service) *PresignedCtrl {
-	return &PresignedCtrl{presigned: service}
-}
+// 	req := &dto.CreatePresignedUrlReq{}
+// 	if err := c.BindAndValidate(req); err != nil {
+// 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
+// 		return
+// 	}
 
-func (ctrl *PresignedCtrl) CreatePresignedUrl(ctx context.Context, c *app.RequestContext) {
-	uidAny, ok := c.Get(consts.UserKeyContext)
-	if !ok {
-		api.WriteResp(c, nil, common.AuthErr.WithMsg("user context missing"))
-		return
-	}
-	userID, ok := uidAny.(int64)
-	if !ok {
-		api.WriteResp(c, nil, common.AuthErr.WithMsg("invalid user context"))
-		return
-	}
+// 	resp, errno := ctrl.presigned.CreatePresignedUrl(ctx, ak, sk, req)
+// 	api.WriteResp(c, resp, errno)
+// }
 
-	req := &dto.CreatePresignedUrlReq{}
-	if err := c.BindAndValidate(req); err != nil {
-		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
-		return
-	}
+// 创建下载url
+// func (ctrl *PresignedCtrl) CreateDownloadURL(ctx context.Context, c *app.RequestContext) {
+// 	ak := c.GetString(consts.AccessKeyContext)
+// 	sk := c.GetString(consts.SecretKeyContext)
 
-	resp, errno := ctrl.presigned.CreatePresignedUrl(ctx, userID, req)
-	api.WriteResp(c, resp, errno)
-}
+// 	req := &dto.CreateDownloadURLReq{}
+// 	if err := c.BindAndValidate(req); err != nil {
+// 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
+// 		return
+// 	}
 
-func (ctrl *PresignedCtrl) RevokePresignedUrl(ctx context.Context, c *app.RequestContext) {
-	uidAny, ok := c.Get(consts.UserKeyContext)
-	if !ok {
-		api.WriteResp(c, nil, common.AuthErr.WithMsg("user context missing"))
-		return
-	}
-	userID, ok := uidAny.(int64)
-	if !ok {
-		api.WriteResp(c, nil, common.AuthErr.WithMsg("invalid user context"))
-		return
-	}
+// 	resp, errno := ctrl.presigned.CreateDownloadURL(ctx, ak, sk, req)
+// 	api.WriteResp(c, resp, errno)
+// }
 
-	token := c.Param("token")
-	if token == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("token is required"))
-		return
-	}
+// // 创建简单上传URL
+// func (ctrl *PresignedCtrl) CreateUploadURL(ctx context.Context, c *app.RequestContext) {
+// 	ak := c.GetString(consts.AccessKeyContext)
+// 	sk := c.GetString(consts.SecretKeyContext)
+// }
 
-	errno := ctrl.presigned.RevokePresignedUrl(ctx, userID, token)
-	if errno.NotOk() {
-		api.WriteResp(c, nil, errno)
-		return
-	}
-
-	api.WriteResp(c, map[string]bool{"success": true}, errno)
-}
+// // 分片上传URL
+// func (ctrl *PresignedCtrl) CreateMultipartUploadURL(ctx context.Context, c *app.RequestContext) {
+// 	ak := c.GetString(consts.AccessKeyContext)
+// 	sk := c.GetString(consts.SecretKeyContext)
+// }

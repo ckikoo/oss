@@ -43,8 +43,10 @@ type PutObjectReq struct {
 	StorageClass string `json:"storage_class,omitempty"`
 	Acl          int32  `json:"acl,omitempty"`
 	Metadata     string `json:"metadata,omitempty"`
-	UploadID     string `json:"upload_id,omitempty"` // 上传ID，用于验证上传权限
-	// File is handled via multipart/form-data, not JSON
+	UploadID     string `json:"upload_id,omitempty"` // 临时token 时产生的token，但是在这边可有可无
+	MimeLimit    string `json:"mime_limit"`          // 限制文件类型 如 image/*
+	Overwrite    bool   `json:"overwrite"`           // 是否允许覆盖同名文件
+	CallbackUrl  string `json:"callback_url"`        // 上传成功回调
 }
 
 type PutObjectResp struct {
