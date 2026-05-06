@@ -3,30 +3,22 @@ package router
 import (
 	"oss/adaptor"
 	"oss/api/auth"
-	"oss/service/accesskey"
-	"oss/service/audit"
-	"oss/service/bucket"
 	"oss/service/lifecycle"
-	"oss/service/metering"
 	"oss/service/multipart"
-	"oss/service/object"
 	"oss/service/policy"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 )
 
 func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
-	akService := accesskey.NewService(adaptor)
-	akCtrl := auth.NewCtrl(akService)
-	bucketService := bucket.NewService(adaptor)
-	bucketCtrl := auth.NewBucketCtrl(bucketService)
-	objectService := object.NewService(adaptor)
-	objectCtrl := auth.NewObjectCtrl(objectService)
-	auditService := audit.NewService(adaptor)
-	auditCtrl := auth.NewAuditCtrl(auditService)
+	akCtrl := auth.NewCtrl(adaptor)
+	bucketCtrl := auth.NewBucketCtrl(adaptor)
 
-	meteringService := metering.NewService(adaptor)
-	meteringCtrl := auth.NewMeteringCtrl(meteringService)
+	objectCtrl := auth.NewObjectCtrl(adaptor)
+
+	auditCtrl := auth.NewAuditCtrl(adaptor)
+
+	meteringCtrl := auth.NewMeteringCtrl(adaptor)
 
 	multipartService := multipart.NewService(adaptor)
 	multipartCtrl := auth.NewmultipartCtrl(multipartService)
@@ -49,31 +41,36 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	authGroup.POST("/upload/tokens", tokenCtrl.CreateUploadToken)
 	authGroup.POST("/download/tokens", tokenCtrl.CreateDownloadToken)
 
-	authGroup.POST("/buckets", bucketCtrl.CreateBucket)
-	authGroup.GET("/buckets", bucketCtrl.ListBuckets)
-	authGroup.GET("/buckets/:bucket_name", bucketCtrl.GetBucket)
-	authGroup.PATCH("/buckets/:bucket_name", bucketCtrl.UpdateBucket)
-	authGroup.DELETE("/buckets/:bucket_name", bucketCtrl.DeleteBucket)
-	authGroup.POST("/buckets/:bucket_name/policies", policyCtrl.CreateBucketPolicy)
-	authGroup.GET("/buckets/:bucket_name/policies", policyCtrl.ListBucketPolicies)
+	// Bucket operations - require bucket ownership
+	bucketGroup := authGroup.Group("", NewBucketACLMiddleware(adaptor))
+	bucketGroup.POST("/buckets", bucketCtrl.CreateBucket)
+	bucketGroup.GET("/buckets", bucketCtrl.ListBuckets)
+	bucketGroup.GET("/buckets/:bucket_name", bucketCtrl.GetBucket)
+	bucketGroup.PATCH("/buckets/:bucket_name", bucketCtrl.UpdateBucket)
+	bucketGroup.DELETE("/buckets/:bucket_name", bucketCtrl.DeleteBucket)
+	bucketGroup.POST("/buckets/:bucket_name/policies", policyCtrl.CreateBucketPolicy)
+	bucketGroup.GET("/buckets/:bucket_name/policies", policyCtrl.ListBucketPolicies)
 
-	authGroup.POST("/buckets/:bucket_name/lifecycle", lifecycleCtrl.CreateLifecycleRule)
-	authGroup.GET("/buckets/:bucket_name/lifecycle", lifecycleCtrl.ListLifecycleRules)
-	authGroup.GET("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.GetLifecycleRule)
-	authGroup.PUT("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.UpdateLifecycleRule)
-	authGroup.DELETE("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.DeleteLifecycleRule)
+	bucketGroup.POST("/buckets/:bucket_name/lifecycle", lifecycleCtrl.CreateLifecycleRule)
+	bucketGroup.GET("/buckets/:bucket_name/lifecycle", lifecycleCtrl.ListLifecycleRules)
+	bucketGroup.GET("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.GetLifecycleRule)
+	bucketGroup.PUT("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.UpdateLifecycleRule)
+	bucketGroup.DELETE("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.DeleteLifecycleRule)
 
-	authGroup.GET("/buckets/:bucket_name/objects", objectCtrl.ListObjects)
-	authGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", objectCtrl.GetObjectMetadata)
-	authGroup.PUT("/buckets/:bucket_name/objects/:object_key", objectCtrl.PutObject)
-	authGroup.GET("/buckets/:bucket_name/objects/:object_key", objectCtrl.GetObject)
-	authGroup.DELETE("/buckets/:bucket_name/objects/:object_key", objectCtrl.DeleteObject)
+	// Object operations - check bucket ACL
+	objectGroup := authGroup.Group("", NewObjectACLMiddleware(adaptor))
+	objectGroup.GET("/buckets/:bucket_name/objects", objectCtrl.ListObjects)
+	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", objectCtrl.GetObjectMetadata)
+	objectGroup.PUT("/buckets/:bucket_name/objects/:object_key", objectCtrl.PutObject)
+	objectGroup.GET("/buckets/:bucket_name/objects/:object_key", objectCtrl.GetObject)
+	objectGroup.DELETE("/buckets/:bucket_name/objects/:object_key", objectCtrl.DeleteObject)
+
+	objectGroup.POST("/buckets/:bucket_name/multipart/uploads", multipartCtrl.CreateMultipartUpload)
+	objectGroup.PUT("/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number", multipartCtrl.UploadMultipartPart)
+	objectGroup.POST("/buckets/:bucket_name/multipart/uploads/:upload_id/complete", multipartCtrl.CompleteMultipartUpload)
+	objectGroup.DELETE("/buckets/:bucket_name/multipart/uploads/:upload_id", multipartCtrl.AbortMultipartUpload)
+
 	authGroup.GET("/metrics/daily", meteringCtrl.GetDailyMetering)
 	authGroup.GET("/logs", auditCtrl.ListOperationLogs)
-
-	authGroup.POST("/buckets/:bucket_name/multipart/uploads", multipartCtrl.CreateMultipartUpload)
-	authGroup.PUT("/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number", multipartCtrl.UploadMultipartPart)
-	authGroup.POST("/buckets/:bucket_name/multipart/uploads/:upload_id/complete", multipartCtrl.CompleteMultipartUpload)
-	authGroup.DELETE("/buckets/:bucket_name/multipart/uploads/:upload_id", multipartCtrl.AbortMultipartUpload)
 
 }

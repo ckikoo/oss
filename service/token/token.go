@@ -34,11 +34,16 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 
-func (s *Service) CreateUploadToken(ctx context.Context, ak string, secure string, req *dto.CreateUploadTokenReq) (*dto.CreateTokenResp, common.Errno) {
+func (s *Service) CreateUploadToken(ctx *common.UserInfoCtx, req *dto.CreateUploadTokenReq) (*dto.CreateTokenResp, common.Errno) {
 	expireAt := time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
 	expireAtUnix := expireAt.Unix()
 
-	bucketInfo, err := s.bucket.GetByName(ctx, req.BucketName)
+	accessInfo, err := s.access.GetByAccessKey(ctx, ctx.AccessKey)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	bucketInfo, err := s.bucket.GetByName(ctx, accessInfo.UserID, req.BucketName)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -47,7 +52,7 @@ func (s *Service) CreateUploadToken(ctx context.Context, ak string, secure strin
 		return nil, common.ParamErr.WithMsg("bucket not exist")
 	}
 
-	token := genToken(ak, req.BucketName, req.ObjectKey, consts.UploadMethod, consts.UploadAction, expireAtUnix, secure)
+	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.UploadMethod, consts.UploadAction, expireAtUnix, ctx.SecretKey)
 
 	s.rds.CreateUploadToken(ctx, token, gconv.String(req), time.Duration(req.ExpiresIn)*time.Second)
 	return &dto.CreateTokenResp{
@@ -56,10 +61,11 @@ func (s *Service) CreateUploadToken(ctx context.Context, ak string, secure strin
 	}, common.OK
 }
 
-func (s *Service) CreateDownloadToken(ctx context.Context, ak string, secure string, req *dto.CreateDownloadTokenReq) (*dto.CreateTokenResp, common.Errno) {
+func (s *Service) CreateDownloadToken(ctx *common.UserInfoCtx, req *dto.CreateDownloadTokenReq) (*dto.CreateTokenResp, common.Errno) {
 	expireAt := time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
 	expireAtUnix := expireAt.Unix()
-	bucketInfo, err := s.bucket.GetByName(ctx, req.BucketName)
+
+	bucketInfo, err := s.bucket.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -68,7 +74,7 @@ func (s *Service) CreateDownloadToken(ctx context.Context, ak string, secure str
 		return nil, common.ParamErr.WithMsg("bucket not exist")
 	}
 
-	token := genToken(ak, req.BucketName, req.ObjectKey, consts.DownloadMethod, consts.DownloadAction, expireAtUnix, secure)
+	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.DownloadMethod, consts.DownloadAction, expireAtUnix, ctx.SecretKey)
 
 	s.rds.CreateDownloadToken(ctx, token, gconv.String(req), time.Duration(req.ExpiresIn)*time.Second)
 

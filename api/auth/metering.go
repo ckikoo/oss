@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/dto"
@@ -15,8 +16,8 @@ type MeteringCtrl struct {
 	service *metering.Service
 }
 
-func NewMeteringCtrl(service *metering.Service) *MeteringCtrl {
-	return &MeteringCtrl{service: service}
+func NewMeteringCtrl(adaptor adaptor.IAdaptor) *MeteringCtrl {
+	return &MeteringCtrl{service: metering.NewService(adaptor)}
 }
 
 func (ctrl *MeteringCtrl) GetDailyMetering(ctx context.Context, c *app.RequestContext) {
@@ -26,6 +27,12 @@ func (ctrl *MeteringCtrl) GetDailyMetering(ctx context.Context, c *app.RequestCo
 		return
 	}
 
-	resp, errno := ctrl.service.ListDailyMetrics(ctx, req)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	resp, errno := ctrl.service.ListDailyMetrics(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }

@@ -2,7 +2,6 @@ package multipart
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"oss/adaptor"
@@ -40,7 +39,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		rdsmultipart:  redis.NewMultipart(adaptor),
 	}
 }
-func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
+func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
 	if bucketName == "" || req.ObjectKey == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
@@ -49,13 +48,9 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 		return nil, common.ParamErr.WithMsg("total_chunk must greate zero")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.DatabaseErr.WithMsg("bucket not found")
-	}
-
-	if bucket.UserID != user_id {
-		return nil, common.AuthErr
 	}
 
 	temp, err := srv.objRepo.GetByKey(ctx, bucketName, req.ObjectKey, "")
@@ -124,7 +119,7 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 // upload_etag 参数用于校验文件是否和用户传递的一致，防止用户上传了错误的文件
 // uploadID参数用于校验用户是否有权限上传这个文件
 
-func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
+func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
 	if uploadID == "" || partNumber <= 0 {
 		return nil, common.ParamErr.WithMsg("upload_id and part_number are required")
 	}
@@ -135,7 +130,7 @@ func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, uplo
 	}
 
 	// 校验上传权限和上传状态
-	if upload.UserID != user_id {
+	if upload.UserID != ctx.UserID {
 		return nil, common.AuthErr
 	}
 
@@ -199,10 +194,11 @@ func (srv *Service) UploadMultipartPart(ctx context.Context, user_id int64, uplo
 }
 
 // 不做真正的合并逻辑 做的是伪合并逻辑
-func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, uploadID string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
+func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
 	if uploadID == "" {
 		return nil, common.ParamErr.WithMsg("upload_id are required")
 	}
+
 	if len(req.Parts) == 0 {
 		return nil, common.ParamErr.WithMsg("parts are required")
 	}
@@ -212,7 +208,7 @@ func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, u
 		return nil, common.ParamErr.WithErr(err)
 	}
 
-	if upload.UserID != userId {
+	if upload.UserID != ctx.UserID {
 		return nil, common.AuthErr
 	}
 
@@ -327,7 +323,7 @@ func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, u
 	}, common.OK
 }
 
-func (srv *Service) AbortMultipartUpload(ctx context.Context, user_id int64, uploadID string) common.Errno {
+func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {
 	if uploadID == "" {
 		return common.ParamErr.WithMsg("bucket_name and upload_id are required")
 	}
@@ -337,7 +333,7 @@ func (srv *Service) AbortMultipartUpload(ctx context.Context, user_id int64, upl
 		return common.ParamErr.WithErr(err)
 	}
 
-	if upload.UserID != user_id {
+	if upload.UserID != ctx.UserID {
 		return common.AuthErr
 	}
 

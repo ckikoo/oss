@@ -93,9 +93,31 @@ func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) 
 	return modelBucket.ID, nil
 }
 
-func (r *BucketRepo) GetByName(ctx context.Context, name string) (*do.BucketDo, error) {
+func (r *BucketRepo) GetByName(ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
 	q := query.Use(r.db)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.Name.Eq(name)).First()
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.BucketDo{
+		ID:           modelBucket.ID,
+		UserID:       modelBucket.UserID,
+		Name:         modelBucket.Name,
+		Region:       modelBucket.Region,
+		Acl:          modelBucket.Acl,
+		Versioning:   modelBucket.Versioning,
+		Status:       modelBucket.Status,
+		StorageClass: modelBucket.StorageClass,
+		ObjectCount:  modelBucket.ObjectCount,
+		StorageSize:  modelBucket.StorageSize,
+		CreatedAt:    modelBucket.CreatedAt,
+		UpdatedAt:    modelBucket.UpdatedAt,
+	}, nil
+}
+
+func (r *BucketRepo) GetByUserAndName(ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
+	q := query.Use(r.db)
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +193,7 @@ func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int3
 	return buckets, nil
 }
 
-func (r *BucketRepo) UpdateBucket(ctx context.Context, name string, update *do.UpdateBucket) (*do.BucketDo, error) {
+func (r *BucketRepo) UpdateBucket(ctx context.Context, userID int64, name string, update *do.UpdateBucket) (*do.BucketDo, error) {
 	qs := query.Use(r.db).Bucket
 
 	updates := map[string]interface{}{}
@@ -192,22 +214,22 @@ func (r *BucketRepo) UpdateBucket(ctx context.Context, name string, update *do.U
 	}
 	updates[qs.UpdatedAt.ColumnName().String()] = time.Now()
 
-	if _, err := qs.WithContext(ctx).Where(qs.Name.Eq(name)).Updates(updates); err != nil {
+	if _, err := qs.WithContext(ctx).Where(qs.UserID.Eq(userID), qs.Name.Eq(name)).Updates(updates); err != nil {
 		return nil, err
 	}
-	return r.GetByName(ctx, name)
+	return r.GetByUserAndName(ctx, userID, name)
 }
 
-func (r *BucketRepo) DeleteBucket(ctx context.Context, name string) error {
+func (r *BucketRepo) DeleteBucket(ctx context.Context, userID int64, name string) error {
 	q := query.Use(r.db)
-	_, err := q.Bucket.WithContext(ctx).Where(q.Bucket.Name.Eq(name)).Update(q.Bucket.Status, consts.BucketStatusDeleted)
+	_, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).Update(q.Bucket.Status, consts.BucketStatusDeleted)
 	return err
 }
 
-func (r *BucketRepo) UpdateBucketStats(ctx context.Context, bucketName string, deltaCount, deltaSize int64) error {
+func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucketName string, deltaCount, deltaSize int64) error {
 	q := query.Use(r.db)
 	_, err := q.Bucket.WithContext(ctx).
-		Where(q.Bucket.Name.Eq(bucketName)).
+		Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(bucketName)).
 		Updates(map[string]interface{}{
 			q.Bucket.ObjectCount.ColumnName().String(): q.Bucket.ObjectCount.Add(deltaCount),
 			q.Bucket.StorageSize.ColumnName().String(): q.Bucket.StorageSize.Add(deltaSize),
@@ -215,9 +237,9 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, bucketName string, d
 	return err
 }
 
-func (r *BucketRepo) GetByNameWithTx(tx *gorm.DB, ctx context.Context, name string) (*do.BucketDo, error) {
+func (r *BucketRepo) GetByNameWithTx(tx *gorm.DB, ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
 	q := query.Use(tx)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.Name.Eq(name)).First()
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +259,32 @@ func (r *BucketRepo) GetByNameWithTx(tx *gorm.DB, ctx context.Context, name stri
 	}, nil
 }
 
-func (r *BucketRepo) UpdateBucketStatsWithTx(tx *gorm.DB, ctx context.Context, bucketName string, deltaCount, deltaSize int64) error {
+func (r *BucketRepo) GetByUserAndNameWithTx(tx *gorm.DB, ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
+	q := query.Use(tx)
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.BucketDo{
+		ID:           modelBucket.ID,
+		UserID:       modelBucket.UserID,
+		Name:         modelBucket.Name,
+		Region:       modelBucket.Region,
+		Acl:          modelBucket.Acl,
+		Versioning:   modelBucket.Versioning,
+		Status:       modelBucket.Status,
+		StorageClass: modelBucket.StorageClass,
+		ObjectCount:  modelBucket.ObjectCount,
+		StorageSize:  modelBucket.StorageSize,
+		CreatedAt:    modelBucket.CreatedAt,
+		UpdatedAt:    modelBucket.UpdatedAt,
+	}, nil
+}
+
+func (r *BucketRepo) UpdateBucketStatsWithTx(tx *gorm.DB, ctx context.Context, userID int64, bucketName string, deltaCount, deltaSize int64) error {
 	q := query.Use(tx)
 	_, err := q.Bucket.WithContext(ctx).
-		Where(q.Bucket.Name.Eq(bucketName)).
+		Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(bucketName)).
 		Updates(map[string]interface{}{
 			q.Bucket.ObjectCount.ColumnName().String(): q.Bucket.ObjectCount.Add(deltaCount),
 			q.Bucket.StorageSize.ColumnName().String(): q.Bucket.StorageSize.Add(deltaSize),

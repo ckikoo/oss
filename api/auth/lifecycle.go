@@ -21,6 +21,12 @@ func NewLifecycleCtrl(service *lifecycle.Service) *LifecycleCtrl {
 }
 
 func (ctrl *LifecycleCtrl) CreateLifecycleRule(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
@@ -33,22 +39,34 @@ func (ctrl *LifecycleCtrl) CreateLifecycleRule(ctx context.Context, c *app.Reque
 		return
 	}
 
-	resp, errno := ctrl.lifecycle.CreateLifecycleRule(ctx, bucketName, req)
+	resp, errno := ctrl.lifecycle.CreateLifecycleRule(ctx1, bucketName, req)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *LifecycleCtrl) ListLifecycleRules(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
 		return
 	}
 
-	resp, errno := ctrl.lifecycle.ListLifecycleRules(ctx, bucketName)
+	resp, errno := ctrl.lifecycle.ListLifecycleRules(ctx1, bucketName)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *LifecycleCtrl) GetLifecycleRule(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
@@ -61,11 +79,17 @@ func (ctrl *LifecycleCtrl) GetLifecycleRule(ctx context.Context, c *app.RequestC
 		return
 	}
 
-	resp, errno := ctrl.lifecycle.GetLifecycleRule(ctx, bucketName, ruleID)
+	resp, errno := ctrl.lifecycle.GetLifecycleRule(ctx1, bucketName, ruleID)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *LifecycleCtrl) UpdateLifecycleRule(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
@@ -84,11 +108,17 @@ func (ctrl *LifecycleCtrl) UpdateLifecycleRule(ctx context.Context, c *app.Reque
 		return
 	}
 
-	resp, errno := ctrl.lifecycle.UpdateLifecycleRule(ctx, bucketName, ruleID, req)
+	resp, errno := ctrl.lifecycle.UpdateLifecycleRule(ctx1, bucketName, ruleID, req)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *LifecycleCtrl) DeleteLifecycleRule(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
@@ -101,6 +131,6 @@ func (ctrl *LifecycleCtrl) DeleteLifecycleRule(ctx context.Context, c *app.Reque
 		return
 	}
 
-	errno := ctrl.lifecycle.DeleteLifecycleRule(ctx, bucketName, ruleID)
+	errno := ctrl.lifecycle.DeleteLifecycleRule(ctx1, bucketName, ruleID)
 	api.WriteResp(c, nil, errno)
 }

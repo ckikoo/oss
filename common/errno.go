@@ -49,4 +49,5 @@ var (
 	TokenInvalid         = Errno{Code: 11004, Msg: "Token无效"}
 	TokenExpired         = Errno{Code: 11005, Msg: "Token已过期"}
 	StorageQuotaOver     = Errno{Code: 12000, Msg: "剩余空间不够"}
+	BucketNotFoundErr    = Errno{Code: 13000, Msg: "Bucket Not Found"}
 )

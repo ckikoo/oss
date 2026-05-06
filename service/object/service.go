@@ -1,7 +1,6 @@
 package object
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -55,7 +54,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 
-func (srv *Service) ListObjects(ctx context.Context, req *dto.ListObjectsReq) (*dto.ListObjectsResp, common.Errno) {
+func (srv *Service) ListObjects(ctx *common.UserInfoCtx, req *dto.ListObjectsReq) (*dto.ListObjectsResp, common.Errno) {
 	if req.BucketName == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -86,18 +85,18 @@ func (srv *Service) ListObjects(ctx context.Context, req *dto.ListObjectsReq) (*
 	return &dto.ListObjectsResp{Items: items}, common.OK
 }
 
-func (srv *Service) GetObjectMetadata(ctx context.Context, uid int64, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {
+func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {
 	if bucketName == "" || objectKey == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
 
-	bucketInfo, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	if bucketInfo.UserID != uid {
-		return nil, common.AuthErr
+	if bucket == nil {
+		return nil, common.BucketNotFoundErr
 	}
 
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
@@ -127,17 +126,17 @@ func (srv *Service) GetObjectMetadata(ctx context.Context, uid int64, bucketName
 	}, common.OK
 }
 
-func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
+func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
 	if req.BucketName == "" || req.ObjectKey == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, req.BucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithMsg("bucket not found")
 	}
 
-	if bucket.UserID != req.UserId {
+	if bucket.UserID != ctx.UserID {
 		return nil, common.AuthErr
 	}
 
@@ -160,7 +159,7 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.FileNameExists
 	}
 
-	uInfo, err := srv.userRepo.GetUserInfoById(ctx, req.UserId)
+	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -209,7 +208,7 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 			return &req.Metadata
 		}(),
 		CallBack: func() error {
-			return srv.userRepo.UpdateStorageUsed(ctx, req.UserId, putResult.Size)
+			return srv.userRepo.UpdateStorageUsed(ctx, ctx.UserID, putResult.Size)
 		},
 	}
 
@@ -227,7 +226,7 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 	}, common.OK
 }
 
-func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
+func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
 	if bucketName == "" || objectKey == "" {
 		return common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
@@ -284,8 +283,8 @@ func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versio
 	return common.OK
 }
 
-func (srv *Service) incrementGetObjectMetering(ctx context.Context, obj *do.ObjectDo, transmittedBytes int64) common.Errno {
-	bucket, err := srv.bucketRepo.GetByName(ctx, obj.BucketName)
+func (srv *Service) incrementGetObjectMetering(ctx *common.UserInfoCtx, obj *do.ObjectDo, transmittedBytes int64) common.Errno {
+	bucket, err := srv.bucketRepo.GetByID(ctx, obj.BucketID)
 	if err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
@@ -310,7 +309,7 @@ func (w *countingWriter) Count() int64 {
 	return w.bytes
 }
 
-func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, objectKey, versionID string) common.Errno {
+func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) common.Errno {
 	if bucketName == "" || objectKey == "" {
 		return common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
@@ -323,12 +322,12 @@ func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, 
 		}
 		deletedObj = obj
 
-		bucket, err := srv.bucketRepo.GetByNameWithTx(tx, ctx, bucketName)
+		bucket, err := srv.bucketRepo.GetByUserAndNameWithTx(tx, ctx, ctx.UserID, bucketName)
 		if err != nil {
 			return err
 		}
 
-		if bucket.UserID != userId || obj.BucketID != bucket.ID {
+		if bucket.UserID != ctx.UserID || obj.BucketID != bucket.ID {
 			return common.AuthErr
 		}
 
@@ -340,11 +339,11 @@ func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, 
 			return err
 		}
 
-		if err := srv.bucketRepo.UpdateBucketStatsWithTx(tx, ctx, bucketName, -1, -obj.Size); err != nil {
+		if err := srv.bucketRepo.UpdateBucketStatsWithTx(tx, ctx, ctx.UserID, bucketName, -1, -obj.Size); err != nil {
 			return err
 		}
 
-		if err := srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, userId, -obj.Size); err != nil {
+		if err := srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, ctx.UserID, -obj.Size); err != nil {
 			return err
 		}
 
@@ -374,7 +373,7 @@ func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, 
 }
 
 // streamMultipartObject 流式返回multipart对象的合并内容
-func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo, c *app.RequestContext, counter io.Writer) common.Errno {
+func (srv *Service) streamMultipartObject(ctx *common.UserInfoCtx, obj *do.ObjectDo, c *app.RequestContext, counter io.Writer) common.Errno {
 	if obj.UploadID == nil {
 		return common.ServerErr.WithMsg("upload_id not found for multipart object")
 	}

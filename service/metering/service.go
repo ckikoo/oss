@@ -1,7 +1,6 @@
 package metering
 
 import (
-	"context"
 	"time"
 
 	"oss/adaptor"
@@ -18,7 +17,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{repo: metering.NewMeteringRepo(adaptor)}
 }
 
-func (srv *Service) ListDailyMetrics(ctx context.Context, req *dto.ListDailyMeteringReq) (*dto.ListDailyMeteringResp, common.Errno) {
+func (srv *Service) ListDailyMetrics(ctx *common.UserInfoCtx, req *dto.ListDailyMeteringReq) (*dto.ListDailyMeteringResp, common.Errno) {
 	var dateFrom *time.Time
 	var dateTo *time.Time
 	if req.DateFrom != "" {
@@ -37,7 +36,7 @@ func (srv *Service) ListDailyMetrics(ctx context.Context, req *dto.ListDailyMete
 	}
 
 	hasBucketID := req.BucketID != 0
-	results, err := srv.repo.ListDailyMetrics(ctx, req.UserID, req.BucketID, hasBucketID, dateFrom, dateTo)
+	results, err := srv.repo.ListDailyMetrics(ctx, ctx.UserID, req.BucketID, hasBucketID, dateFrom, dateTo)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}

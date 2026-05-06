@@ -1,6 +1,7 @@
 package dto
 
 type CreateUploadTokenReq struct {
+	UserId     int64
 	BucketName string `json:"bucket_name" validate:"required"`
 	ObjectKey  string `json:"object_key"` // 上传时可选，不传则 hash 命名
 	ExpiresIn  int64  `json:"expires_in"`

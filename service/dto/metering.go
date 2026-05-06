@@ -3,7 +3,6 @@ package dto
 type ListDailyMeteringReq struct {
 	DateFrom string `form:"date_from,omitempty"`
 	DateTo   string `form:"date_to,omitempty"`
-	UserID   int64  `form:"user_id,omitempty"`
 	BucketID int64  `form:"bucket_id,omitempty"`
 }
 

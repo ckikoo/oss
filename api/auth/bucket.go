@@ -2,9 +2,9 @@ package auth
 
 import (
 	"context"
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
-	"oss/consts"
 	"oss/service/bucket"
 	"oss/service/dto"
 
@@ -15,8 +15,8 @@ type BucketCtrl struct {
 	bucket *bucket.Service
 }
 
-func NewBucketCtrl(service *bucket.Service) *BucketCtrl {
-	return &BucketCtrl{bucket: service}
+func NewBucketCtrl(adaptor adaptor.IAdaptor) *BucketCtrl {
+	return &BucketCtrl{bucket: bucket.NewService(adaptor)}
 }
 
 func (ctrl *BucketCtrl) CreateBucket(ctx context.Context, c *app.RequestContext) {
@@ -26,7 +26,13 @@ func (ctrl *BucketCtrl) CreateBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
-	resp, errno := ctrl.bucket.CreateBucket(ctx, req)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	resp, errno := ctrl.bucket.CreateBucket(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }
 
@@ -39,10 +45,13 @@ func (ctrl *BucketCtrl) ListBuckets(ctx context.Context, c *app.RequestContext) 
 		return
 	}
 
-	user_id := c.GetInt64(consts.UserKeyContext)
-	req.UserID = user_id
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
 
-	resp, errno := ctrl.bucket.ListBuckets(ctx, req)
+	resp, errno := ctrl.bucket.ListBuckets(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }
 
@@ -52,8 +61,13 @@ func (ctrl *BucketCtrl) GetBucket(ctx context.Context, c *app.RequestContext) {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
 		return
 	}
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
 
-	resp, errno := ctrl.bucket.GetBucket(ctx, bucketName)
+	resp, errno := ctrl.bucket.GetBucket(ctx1, bucketName)
 	api.WriteResp(c, resp, errno)
 }
 
@@ -70,7 +84,13 @@ func (ctrl *BucketCtrl) UpdateBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
-	resp, errno := ctrl.bucket.UpdateBucket(ctx, bucketName, req)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	resp, errno := ctrl.bucket.UpdateBucket(ctx1, bucketName, req)
 	api.WriteResp(c, resp, errno)
 }
 
@@ -81,6 +101,12 @@ func (ctrl *BucketCtrl) DeleteBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
-	errno := ctrl.bucket.DeleteBucket(ctx, bucketName)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	errno := ctrl.bucket.DeleteBucket(ctx1, bucketName)
 	api.WriteResp(c, nil, errno)
 }

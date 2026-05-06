@@ -5,7 +5,6 @@ import (
 )
 
 type ListOperationLogsReq struct {
-	UserID     int64  `form:"user_id,omitempty"`
 	BucketName string `form:"bucket_name,omitempty"`
 	Action     string `form:"action,omitempty"`
 	Status     *int32 `form:"status,omitempty"`

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/audit"
@@ -15,8 +16,8 @@ type AuditCtrl struct {
 	service *audit.Service
 }
 
-func NewAuditCtrl(service *audit.Service) *AuditCtrl {
-	return &AuditCtrl{service: service}
+func NewAuditCtrl(adaptor adaptor.IAdaptor) *AuditCtrl {
+	return &AuditCtrl{service: audit.NewService(adaptor)}
 }
 
 func (ctrl *AuditCtrl) ListOperationLogs(ctx context.Context, c *app.RequestContext) {
@@ -26,6 +27,12 @@ func (ctrl *AuditCtrl) ListOperationLogs(ctx context.Context, c *app.RequestCont
 		return
 	}
 
-	resp, errno := ctrl.service.ListOperationLogs(ctx, req)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	resp, errno := ctrl.service.ListOperationLogs(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }

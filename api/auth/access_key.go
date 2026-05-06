@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/accesskey"
@@ -14,8 +15,8 @@ type Ctrl struct {
 	auth *accesskey.Service
 }
 
-func NewCtrl(service *accesskey.Service) *Ctrl {
-	return &Ctrl{auth: service}
+func NewCtrl(adaptor adaptor.IAdaptor) *Ctrl {
+	return &Ctrl{auth: accesskey.NewService(adaptor)}
 }
 
 func (ctrl *Ctrl) CreateAccessKey(ctx context.Context, c *app.RequestContext) {
@@ -33,11 +34,6 @@ func (ctrl *Ctrl) ListAccessKeys(ctx context.Context, c *app.RequestContext) {
 	req := &dto.ListAccessKeysReq{}
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
-		return
-	}
-
-	if req.UserID <= 0 {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("user_id is required"))
 		return
 	}
 

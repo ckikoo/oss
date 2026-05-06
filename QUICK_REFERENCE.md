@@ -2,6 +2,31 @@
 
 ## 🎯 最新改动总结
 
+### ✅ ACL 控制完善
+
+**新增**: Bucket 和 Object 级别的访问控制列表 (ACL)
+
+**核心模块**:
+- [router/acl.go](router/acl.go) - ACL 中间件实现
+- [api/auth/object.go](api/auth/object.go) - Object ACL 解析
+- [consts/consts.go](consts/consts.go) - ACL 常量定义
+
+**ACL 级别**:
+- **Bucket ACL**: Private (仅所有者), Public-Read (所有人可读), Public-RW (所有人可读写)
+- **Object ACL**: Inherit (继承 Bucket), Private (仅所有者), Public-Read (所有人可读)
+
+**中间件检查**:
+- `NewBucketACLMiddleware`: 检查 Bucket 操作权限 (创建、更新、删除等)
+- `NewObjectACLMiddleware`: 检查 Object 操作权限，支持 Object 特定 ACL
+
+**优势**:
+- 细粒度权限控制
+- 支持 Bucket 和 Object 级别 ACL
+- 自动继承和覆盖机制
+- 防止未授权访问
+
+---
+
 ### ✅ 存储层架构：Adaptor 与 Service 集成
 
 **新增**: 统一的存储接口 `IStorage`，支持多种存储后端（本地、S3 等）

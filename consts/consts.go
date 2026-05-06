@@ -2,8 +2,10 @@ package consts
 
 const (
 	UserKeyContext   = "user_id"
+	UserInfoContext  = "user_info"
 	AccessKeyContext = "access_key"
 	SecretKeyContext = "secret_key"
+	BucketContext    = "bucket"
 )
 
 const (

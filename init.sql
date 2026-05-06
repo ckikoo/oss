@@ -66,7 +66,7 @@ CREATE TABLE  IF NOT EXISTS  buckets (
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     PRIMARY KEY (id),
-    UNIQUE KEY uk_name    (name),
+    UNIQUE KEY uk_user_name (user_id, name),
     INDEX      idx_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bucket 表';
 

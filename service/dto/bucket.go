@@ -39,7 +39,6 @@ type CreateBucketResp struct {
 }
 
 type ListBucketsReq struct {
-	UserID int64 `form:"user_id"`
 	Status int32 `form:"status"`
 }
 

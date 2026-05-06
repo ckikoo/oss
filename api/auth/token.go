@@ -5,7 +5,6 @@ import (
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
-	"oss/consts"
 	"oss/service/dto"
 	"oss/service/token"
 
@@ -23,17 +22,19 @@ func NewTokenCtrl(adaptor adaptor.IAdaptor) *TokenCtrl {
 }
 
 func (ctrl *TokenCtrl) CreateUploadToken(ctx context.Context, c *app.RequestContext) {
-	ak := c.GetString(consts.AccessKeyContext)
-	secure := c.GetString(consts.SecretKeyContext)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
 
 	req := &dto.CreateUploadTokenReq{}
-
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
 		return
 	}
 
-	resp, errno := ctrl.srv.CreateUploadToken(ctx, ak, secure, req)
+	resp, errno := ctrl.srv.CreateUploadToken(ctx1, req)
 	if errno.NotOk() {
 		api.WriteResp(c, nil, errno)
 		return
@@ -43,9 +44,12 @@ func (ctrl *TokenCtrl) CreateUploadToken(ctx context.Context, c *app.RequestCont
 
 }
 func (ctrl *TokenCtrl) CreateDownloadToken(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
 
-	ak := c.GetString(consts.AccessKeyContext)
-	secure := c.GetString(consts.SecretKeyContext)
 	req := &dto.CreateDownloadTokenReq{}
 
 	if err := c.BindAndValidate(req); err != nil {
@@ -53,7 +57,7 @@ func (ctrl *TokenCtrl) CreateDownloadToken(ctx context.Context, c *app.RequestCo
 		return
 	}
 
-	resp, errno := ctrl.srv.CreateDownloadToken(ctx, ak, secure, req)
+	resp, errno := ctrl.srv.CreateDownloadToken(ctx1, req)
 	if errno.NotOk() {
 		api.WriteResp(c, nil, errno)
 		return

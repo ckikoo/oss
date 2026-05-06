@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/consts"
@@ -15,11 +16,17 @@ type ObjectCtrl struct {
 	object *object.Service
 }
 
-func NewObjectCtrl(service *object.Service) *ObjectCtrl {
-	return &ObjectCtrl{object: service}
+func NewObjectCtrl(adaptor adaptor.IAdaptor) *ObjectCtrl {
+	return &ObjectCtrl{object: object.NewService(adaptor)}
 }
 
 func (ctrl *ObjectCtrl) ListObjects(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	req := &dto.ListObjectsReq{}
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
@@ -29,30 +36,39 @@ func (ctrl *ObjectCtrl) ListObjects(ctx context.Context, c *app.RequestContext) 
 	bucketName := c.Param("bucket_name")
 	req.BucketName = bucketName
 
-	resp, errno := ctrl.object.ListObjects(ctx, req)
+	resp, errno := ctrl.object.ListObjects(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *ObjectCtrl) GetObjectMetadata(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
 	versionID := c.Query("version_id")
-
-	userId := c.GetInt64(consts.UserKeyContext)
 
 	if bucketName == "" || objectKey == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
 		return
 	}
 
-	resp, errno := ctrl.object.GetObjectMetadata(ctx, userId, bucketName, objectKey, versionID)
+	resp, errno := ctrl.object.GetObjectMetadata(ctx1, bucketName, objectKey, versionID)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
-	userId := c.GetInt64(consts.UserKeyContext)
 
 	if bucketName == "" || objectKey == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
@@ -78,13 +94,21 @@ func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
 	aclStr := c.PostForm("acl")
 	acl := int32(consts.ObjectAclInheritBucket)
 	if aclStr != "" {
-		// Parse acl if needed
-		// TODO: Implement ACL parsing
+		switch aclStr {
+		case "private":
+			acl = consts.ObjectAclPrivate
+		case "public-read":
+			acl = consts.ObjectAclPublicRead
+		case "default", "":
+			acl = consts.ObjectAclInheritBucket
+		default:
+			api.WriteResp(c, nil, common.ParamErr.WithMsg("invalid acl value"))
+			return
+		}
 	}
 	metadata := c.PostForm("metadata")
 
 	req := &dto.PutObjectReq{
-		UserId:       userId,
 		BucketName:   bucketName,
 		ObjectKey:    objectKey,
 		ContentType:  contentType,
@@ -93,11 +117,17 @@ func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
 		Metadata:     metadata,
 	}
 
-	resp, errno := ctrl.object.PutObject(ctx, req, file)
+	resp, errno := ctrl.object.PutObject(ctx1, req, file)
 	api.WriteResp(c, resp, errno)
 }
 
 func (ctrl *ObjectCtrl) GetObject(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
 	versionID := c.Query("version_id")
@@ -107,7 +137,7 @@ func (ctrl *ObjectCtrl) GetObject(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	errno := ctrl.object.GetObject(ctx, bucketName, objectKey, versionID, c)
+	errno := ctrl.object.GetObject(ctx1, bucketName, objectKey, versionID, c)
 	if errno.NotOk() {
 		api.WriteResp(c, nil, errno)
 	}
@@ -117,13 +147,18 @@ func (ctrl *ObjectCtrl) DeleteObject(ctx context.Context, c *app.RequestContext)
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
 	versionID := c.Query("version_id")
-	userId := c.GetInt64(consts.UserKeyContext)
 
 	if bucketName == "" || objectKey == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
 		return
 	}
 
-	errno := ctrl.object.DeleteObject(ctx, userId, bucketName, objectKey, versionID)
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	errno := ctrl.object.DeleteObject(ctx1, bucketName, objectKey, versionID)
 	api.WriteResp(c, nil, errno)
 }

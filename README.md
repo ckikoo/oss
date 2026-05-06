@@ -19,6 +19,7 @@
 - **Object 存储**: 上传、下载、获取元数据和删除对象（带事务一致性保证）。
 - **Multipart Upload**: 支持分片上传，实现大文件上传。
 - **权限控制**: 基于 JSON 的细粒度权限系统，支持 bucket policy 及多维策略规则。
+- **ACL 控制**: 支持 Bucket 和 Object 级别的访问控制列表 (ACL)，包括 Private、Public-Read、Public-RW 等权限级别。
 - **策略查询优化**: `bucket_policies` 查询使用 `utils/pool` 控制并发加载子表，避免 N+1 查询卡顿。
 - **版本控制**: 支持对象版本管理。
 - **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。

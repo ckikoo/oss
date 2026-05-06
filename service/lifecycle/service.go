@@ -1,7 +1,6 @@
 package lifecycle
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -25,7 +24,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 
-func (srv *Service) CreateLifecycleRule(ctx context.Context, bucketName string, req *dto.CreateLifecycleRuleReq) (*dto.CreateLifecycleRuleResp, common.Errno) {
+func (srv *Service) CreateLifecycleRule(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateLifecycleRuleReq) (*dto.CreateLifecycleRuleResp, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -33,7 +32,7 @@ func (srv *Service) CreateLifecycleRule(ctx context.Context, bucketName string, 
 		return nil, common.ParamErr.WithMsg("rule_name is required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -74,12 +73,12 @@ func (srv *Service) CreateLifecycleRule(ctx context.Context, bucketName string, 
 	}, common.OK
 }
 
-func (srv *Service) ListLifecycleRules(ctx context.Context, bucketName string) (*dto.ListLifecycleRulesResp, common.Errno) {
+func (srv *Service) ListLifecycleRules(ctx *common.UserInfoCtx, bucketName string) (*dto.ListLifecycleRulesResp, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -107,7 +106,7 @@ func (srv *Service) ListLifecycleRules(ctx context.Context, bucketName string) (
 	return &dto.ListLifecycleRulesResp{Items: items}, common.OK
 }
 
-func (srv *Service) GetLifecycleRule(ctx context.Context, bucketName string, ruleID int64) (*dto.LifecycleRuleItem, common.Errno) {
+func (srv *Service) GetLifecycleRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64) (*dto.LifecycleRuleItem, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -115,7 +114,7 @@ func (srv *Service) GetLifecycleRule(ctx context.Context, bucketName string, rul
 		return nil, common.ParamErr.WithMsg("rule_id is required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -138,7 +137,7 @@ func (srv *Service) GetLifecycleRule(ctx context.Context, bucketName string, rul
 	}, common.OK
 }
 
-func (srv *Service) UpdateLifecycleRule(ctx context.Context, bucketName string, ruleID int64, req *dto.UpdateLifecycleRuleReq) (*dto.LifecycleRuleItem, common.Errno) {
+func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64, req *dto.UpdateLifecycleRuleReq) (*dto.LifecycleRuleItem, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -146,7 +145,7 @@ func (srv *Service) UpdateLifecycleRule(ctx context.Context, bucketName string, 
 		return nil, common.ParamErr.WithMsg("rule_id is required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -182,7 +181,7 @@ func (srv *Service) UpdateLifecycleRule(ctx context.Context, bucketName string, 
 	}, common.OK
 }
 
-func (srv *Service) DeleteLifecycleRule(ctx context.Context, bucketName string, ruleID int64) common.Errno {
+func (srv *Service) DeleteLifecycleRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64) common.Errno {
 	if strings.TrimSpace(bucketName) == "" {
 		return common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -190,7 +189,7 @@ func (srv *Service) DeleteLifecycleRule(ctx context.Context, bucketName string, 
 		return common.ParamErr.WithMsg("rule_id is required")
 	}
 
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return common.ParamErr.WithErr(err)
 	}

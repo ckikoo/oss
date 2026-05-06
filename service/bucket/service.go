@@ -1,7 +1,6 @@
 package bucket
 
 import (
-	"context"
 	"time"
 
 	"oss/adaptor"
@@ -27,7 +26,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 
-func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) (*dto.CreateBucketResp, common.Errno) {
+func (srv *Service) CreateBucket(ctx *common.UserInfoCtx, req *dto.CreateBucketReq) (*dto.CreateBucketResp, common.Errno) {
 	if req.UserID <= 0 {
 		return nil, common.ParamErr.WithMsg("user_id is required")
 	}
@@ -43,7 +42,7 @@ func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) 
 		storageClass = consts.StorageClassStandard
 	}
 
-	tmp, err := srv.repo.GetByName(ctx, req.Name)
+	tmp, err := srv.repo.GetByUserAndName(ctx, req.UserID, req.Name)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -79,8 +78,8 @@ func (srv *Service) CreateBucket(ctx context.Context, req *dto.CreateBucketReq) 
 	}, common.OK
 }
 
-func (srv *Service) ListBuckets(ctx context.Context, req *dto.ListBucketsReq) (*dto.ListBucketsResp, common.Errno) {
-	buckets, err := srv.repo.ListByFilter(ctx, req.UserID, req.Status)
+func (srv *Service) ListBuckets(ctx *common.UserInfoCtx, req *dto.ListBucketsReq) (*dto.ListBucketsResp, common.Errno) {
+	buckets, err := srv.repo.ListByFilter(ctx, ctx.UserID, req.Status)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -104,11 +103,11 @@ func (srv *Service) ListBuckets(ctx context.Context, req *dto.ListBucketsReq) (*
 	return &dto.ListBucketsResp{Items: items}, common.OK
 }
 
-func (srv *Service) GetBucket(ctx context.Context, name string) (*dto.BucketItem, common.Errno) {
+func (srv *Service) GetBucket(ctx *common.UserInfoCtx, name string) (*dto.BucketItem, common.Errno) {
 	if name == "" {
 		return nil, common.ParamErr.WithMsg("bucket name is required")
 	}
-	bucketDo, err := srv.repo.GetByName(ctx, name)
+	bucketDo, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -128,7 +127,7 @@ func (srv *Service) GetBucket(ctx context.Context, name string) (*dto.BucketItem
 	}, common.OK
 }
 
-func (srv *Service) UpdateBucket(ctx context.Context, name string, req *dto.UpdateBucketReq) (*dto.UpdateBucketResp, common.Errno) {
+func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.UpdateBucketReq) (*dto.UpdateBucketResp, common.Errno) {
 	if name == "" {
 		return nil, common.ParamErr.WithMsg("bucket name is required")
 	}
@@ -136,7 +135,13 @@ func (srv *Service) UpdateBucket(ctx context.Context, name string, req *dto.Upda
 		return nil, common.ParamErr.WithMsg("no update fields")
 	}
 
-	bucketDo, err := srv.repo.UpdateBucket(ctx, name, &do.UpdateBucket{
+	// First check if bucket exists and belongs to user
+	_, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
+	if err != nil {
+		return nil, common.ParamErr.WithErr(err)
+	}
+
+	bucketDo, err := srv.repo.UpdateBucket(ctx, ctx.UserID, name, &do.UpdateBucket{
 		Acl:          req.Acl,
 		Versioning:   req.Versioning,
 		Status:       req.Status,
@@ -163,11 +168,16 @@ func (srv *Service) UpdateBucket(ctx context.Context, name string, req *dto.Upda
 	}, common.OK
 }
 
-func (srv *Service) DeleteBucket(ctx context.Context, name string) common.Errno {
+func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, name string) common.Errno {
 	if name == "" {
 		return common.ParamErr.WithMsg("bucket name is required")
 	}
-	if err := srv.repo.DeleteBucket(ctx, name); err != nil {
+	// First check if bucket exists and belongs to user
+	_, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
+	if err != nil {
+		return common.ParamErr.WithErr(err)
+	}
+	if err := srv.repo.DeleteBucket(ctx, ctx.UserID, name); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
 	return common.OK

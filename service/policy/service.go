@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -25,7 +24,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 
-func (srv *Service) CreateBucketPolicy(ctx context.Context, bucketName string, req *dto.CreateBucketPolicyReq) (*dto.CreateBucketPolicyResp, common.Errno) {
+func (srv *Service) CreateBucketPolicy(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateBucketPolicyReq) (*dto.CreateBucketPolicyResp, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
@@ -48,7 +47,7 @@ func (srv *Service) CreateBucketPolicy(ctx context.Context, bucketName string, r
 		return nil, common.ParamErr.WithMsg("effect must be Allow or Deny")
 	}
 
-	bucketDo, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
@@ -93,12 +92,12 @@ func (srv *Service) CreateBucketPolicy(ctx context.Context, bucketName string, r
 	}, common.OK
 }
 
-func (srv *Service) ListBucketPolicies(ctx context.Context, bucketName string) (*dto.ListBucketPoliciesResp, common.Errno) {
+func (srv *Service) ListBucketPolicies(ctx *common.UserInfoCtx, bucketName string) (*dto.ListBucketPoliciesResp, common.Errno) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name is required")
 	}
 
-	bucketDo, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}

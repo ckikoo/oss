@@ -41,6 +41,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	repo := accesskey.NewAccessKeyRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
 
+		// 特定接口处理
 		if string(c.Method()) == "GET" && c.FullPath() == "/api/v1/buckets/:bucket_name/objects/:object_key" {
 			token := c.Query("token")
 
@@ -75,7 +76,9 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				return
 			}
 
+			userInfo := &common.UserInfoCtx{UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
 			c.Set(consts.UserKeyContext, info.UserID)
+			c.Set(consts.UserInfoContext, userInfo)
 			c.Set(consts.AccessKeyContext, ak)
 			c.Set(consts.SecretKeyContext, string(sec))
 
@@ -119,7 +122,9 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 					return
 				}
 
+				userInfo := &common.UserInfoCtx{UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
 				c.Set(consts.UserKeyContext, info.UserID)
+				c.Set(consts.UserInfoContext, userInfo)
 				c.Set(consts.AccessKeyContext, ak)
 				c.Set(consts.SecretKeyContext, string(sec))
 
@@ -204,8 +209,10 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
+		userInfo := &common.UserInfoCtx{UserID: akInfo.UserID, AccessKey: akInfo.AccessKey, SecretKey: string(sk)}
 		c.Set(consts.SecretKeyContext, sk)
 		c.Set(consts.UserKeyContext, akInfo.UserID)
+		c.Set(consts.UserInfoContext, userInfo)
 		c.Set(consts.AccessKeyContext, akInfo.AccessKey)
 
 		c.Next(ctx)
