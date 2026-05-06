@@ -3,6 +3,8 @@ package multipart
 import (
 	"context"
 	"oss/service/do"
+
+	"gorm.io/gorm"
 )
 
 type IMultipartRepo interface {
@@ -13,4 +15,5 @@ type IMultipartRepo interface {
 	GetMultipartPart(ctx context.Context, uploadID string, partNumber int32) (*do.MultipartPartDo, error)
 	ListMultipartParts(ctx context.Context, uploadID string) ([]*do.MultipartPartDo, error)
 	DeleteMultipartParts(ctx context.Context, uploadID string) error
+	DeleteMultipartPartsWithTx(tx *gorm.DB, ctx context.Context, uploadID string) error
 }

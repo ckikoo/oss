@@ -7,6 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/gogf/gf/util/gconv"
 	"github.com/spf13/viper"
@@ -151,18 +152,14 @@ func loadConfigFromFile(viper *viper.Viper) (*Config, error) {
 		return nil, err
 	}
 
-	go func() {
-		for {
-			viper.WatchConfig()
-			if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
-				config.TagName = "yaml"
-			}); err != nil {
-				fmt.Printf("failed to reload config: %v\n", err)
-			}
-
-			time.Sleep(time.Second)
+	viper.WatchConfig()
+	viper.OnConfigChange(func(e fsnotify.Event) {
+		if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
+			config.TagName = "yaml"
+		}); err != nil {
+			fmt.Printf("failed to reload config: %v\n", err)
 		}
+	})
 
-	}()
 	return tempConf, nil
 }

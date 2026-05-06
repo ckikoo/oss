@@ -1,4 +1,4 @@
-package mutipart
+package multipart
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/bucket"
-	mutipartRepo "oss/adaptor/repo/multipart"
+	multipartRepo "oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
 	"oss/common"
 	"oss/config"
@@ -27,17 +27,17 @@ import (
 
 type Service struct {
 	objRepo       object.IObjectRepo
-	multipartRepo mutipartRepo.IMultipartRepo
+	multipartRepo multipartRepo.IMultipartRepo
 	bucketRepo    bucket.IBucketRepo
-	rdsMutipart   redis.IMultipart
+	rdsmultipart  redis.IMultipart
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		objRepo:       object.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
-		multipartRepo: mutipartRepo.NewObjectRepo(adaptor),
-		rdsMutipart:   redis.NewMultipart(adaptor),
+		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
+		rdsmultipart:  redis.NewMultipart(adaptor),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -98,7 +98,7 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 	}
 	defer func() {
 		if err != nil {
-			srv.rdsMutipart.DelTimeoutMultipartCancel(ctx, uploadID)
+			srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 		}
 	}()
 
@@ -106,7 +106,7 @@ func (srv *Service) CreateMultipartUpload(ctx context.Context, user_id int64, bu
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	err = srv.rdsMutipart.SetTimeoutMultipartCancel(ctx, uploadID)
+	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, uploadID)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -317,7 +317,7 @@ func (srv *Service) CompleteMultipartUpload(ctx context.Context, userId int64, u
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	srv.rdsMutipart.DelTimeoutMultipartCancel(ctx, uploadID)
+	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	return &dto.CompleteMultipartUploadResp{
 		ObjectID:  objectID,
@@ -362,7 +362,7 @@ func (srv *Service) AbortMultipartUpload(ctx context.Context, user_id int64, upl
 		removeDir = config.GlobalConfig.Server.SaveDir
 	}
 	_ = os.RemoveAll(filepath.Join(removeDir, upload.BucketName, "multipart", uploadID))
-	srv.rdsMutipart.DelTimeoutMultipartCancel(ctx, uploadID)
+	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	return common.OK
 }

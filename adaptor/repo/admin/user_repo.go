@@ -78,3 +78,14 @@ func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) e
 	return nil
 
 }
+
+func (u *User) UpdateStorageUsedWithTx(tx *gorm.DB, ctx context.Context, id int64, storage int64) error {
+	qs := query.Use(tx).User
+
+	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumns(qs.StorageUsed.Add(storage))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

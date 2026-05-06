@@ -59,7 +59,7 @@ adaptor/repo/
 #### `adaptor/redis/` - Redis操作
 ```
 adaptor/redis/
-├── mutipart.go     ✅ 分片上传超时管理 (ZSet存储)
+├── multipart.go     ✅ 分片上传超时管理 (ZSet存储)
 ├── lifecycle.go    ⚠️ 生命周期事件存储 (待实现消息处理)
 └── file.go         ✅ 分布式文件锁 (基于bucket+object名称)
 ```
@@ -98,8 +98,8 @@ adaptor/redis/
   - 支持多种storage_class (STANDARD/IA/ARCHIVE)
   - 流式处理，避免大文件OOM
 
-#### `service/mutipart/` - 分片上传服务
-- `mutipart.go`: 初始化、上传分片、完成合并、中止上传
+#### `service/multipart/` - 分片上传服务
+- `multipart.go`: 初始化、上传分片、完成合并、中止上传
 - **虚拟合并策略**:
   - 分片存储在 `/storage/{bucket}/multipart/{upload_id}/part_{number}`
   - 完成时创建object记录，不进行物理合并
@@ -289,7 +289,6 @@ PUT /api/v1/buckets/{bucket}/objects/{object_key}
   ↓ object.Service.PutObject()
     ├─ bucket.Repo.GetByName()        // 获取bucket_id
     ├─ Tools.Md5Hash(object_key)      // 生成object_key_hash
-    ├─ saveFileAndComputeHashes()     // 流式存储文件 + 计算etag
     ├─ object.Repo.CreateObject()     // 创建object记录
     └─ 返回PutObjectResp
 ```
@@ -297,20 +296,20 @@ PUT /api/v1/buckets/{bucket}/objects/{object_key}
 ### 分片上传的完整流程
 ```
 1️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads
-   └─ mutipart.Service.CreateMultipartUpload()
+   └─ multipart.Service.CreateMultipartUpload()
       ├─ 生成upload_id (UUID)
       ├─ redis.SetTimeoutMultipartCancel() // 设置超时
       └─ 返回upload_id + expires_at
 
 2️⃣ PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}
-   └─ mutipart.Service.UploadMultipartPart()
+   └─ multipart.Service.UploadMultipartPart()
       ├─ 验证权限 + 上传状态
       ├─ 流式存储分片到 /storage/{bucket}/multipart/{upload_id}/part_{n}
       ├─ multipart.Repo.CreateOrUpdateMultipartPart()
       └─ 返回etag
 
 3️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete
-   └─ mutipart.Service.CompleteMultipartUpload()
+   └─ multipart.Service.CompleteMultipartUpload()
       ├─ 验证所有分片
       ├─ 计算最终etag
       ├─ object.Repo.CreateObject() // 虚拟合并

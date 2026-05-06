@@ -8,7 +8,7 @@ import (
 	"oss/service/bucket"
 	"oss/service/lifecycle"
 	"oss/service/metering"
-	"oss/service/mutipart"
+	"oss/service/multipart"
 	"oss/service/object"
 	"oss/service/policy"
 
@@ -28,8 +28,8 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	meteringService := metering.NewService(adaptor)
 	meteringCtrl := auth.NewMeteringCtrl(meteringService)
 
-	mutipartService := mutipart.NewService(adaptor)
-	mutipartCtrl := auth.NewMutipartCtrl(mutipartService)
+	multipartService := multipart.NewService(adaptor)
+	multipartCtrl := auth.NewmultipartCtrl(multipartService)
 	policyService := policy.NewService(adaptor)
 	policyCtrl := auth.NewPolicyCtrl(policyService)
 
@@ -71,9 +71,9 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	authGroup.GET("/metrics/daily", meteringCtrl.GetDailyMetering)
 	authGroup.GET("/logs", auditCtrl.ListOperationLogs)
 
-	authGroup.POST("/buckets/:bucket_name/multipart/uploads", mutipartCtrl.CreateMultipartUpload)
-	authGroup.PUT("/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number", mutipartCtrl.UploadMultipartPart)
-	authGroup.POST("/buckets/:bucket_name/multipart/uploads/:upload_id/complete", mutipartCtrl.CompleteMultipartUpload)
-	authGroup.DELETE("/buckets/:bucket_name/multipart/uploads/:upload_id", mutipartCtrl.AbortMultipartUpload)
+	authGroup.POST("/buckets/:bucket_name/multipart/uploads", multipartCtrl.CreateMultipartUpload)
+	authGroup.PUT("/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number", multipartCtrl.UploadMultipartPart)
+	authGroup.POST("/buckets/:bucket_name/multipart/uploads/:upload_id/complete", multipartCtrl.CompleteMultipartUpload)
+	authGroup.DELETE("/buckets/:bucket_name/multipart/uploads/:upload_id", multipartCtrl.AbortMultipartUpload)
 
 }

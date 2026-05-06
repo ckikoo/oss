@@ -276,6 +276,55 @@ func (r *ObjectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, ve
 	return err
 }
 
+func (r *ObjectRepo) GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
+	q := query.Use(tx)
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
+	if versionID != "" {
+		qs = qs.Where(q.Object.VersionID.Eq(versionID))
+	} else {
+		qs = qs.Where(q.Object.VersionID.Eq(""))
+	}
+
+	modelObject, err := qs.First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.ObjectDo{
+		ID:            modelObject.ID,
+		BucketID:      modelObject.BucketID,
+		BucketName:    modelObject.BucketName,
+		ObjectKey:     modelObject.ObjectKey,
+		ObjectKeyHash: modelObject.ObjectKeyHash,
+		VersionID:     modelObject.VersionID,
+		Size:          modelObject.Size,
+		Etag:          modelObject.Etag,
+		ContentType:   modelObject.ContentType,
+		StorageClass:  modelObject.StorageClass,
+		IsMultipart:   modelObject.IsMultipart,
+		UploadID:      modelObject.UploadID,
+		StoragePath:   modelObject.StoragePath,
+		Acl:           modelObject.Acl,
+		Metadata:      modelObject.Metadata,
+		Status:        modelObject.Status,
+		AccessCount:   modelObject.AccessCount,
+		CreatedAt:     modelObject.CreatedAt,
+		UpdatedAt:     modelObject.UpdatedAt,
+		DeletedAt:     modelObject.DeletedAt,
+	}, nil
+}
+
+func (r *ObjectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) error {
+	q := query.Use(tx)
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
+	if versionID != "" {
+		qs = qs.Where(q.Object.VersionID.Eq(versionID))
+	} else {
+		qs = qs.Where(q.Object.VersionID.Eq(""))
+	}
+	_, err := qs.Update(q.Object.Status, consts.ObjectStatusDeleted)
+	return err
+}
+
 func (r *ObjectRepo) updateDailyMetering(tx *gorm.DB, ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {
 	sql := `INSERT INTO metering_daily
         (user_id, bucket_id, stat_date, storage_size, object_count, upload_flow, download_flow, get_request_count, put_request_count, del_request_count)

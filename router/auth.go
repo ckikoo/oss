@@ -204,14 +204,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		sec, err := tools.AESDecrypt(string(sk), []byte(adaptor.GetConfig().Security.AESKey))
-		if err != nil {
-			c.JSON(500, common.ServerErr)
-			c.Abort()
-			return
-		}
-
-		c.Set(consts.SecretKeyContext, string(sec))
+		c.Set(consts.SecretKeyContext, sk)
 		c.Set(consts.UserKeyContext, akInfo.UserID)
 		c.Set(consts.AccessKeyContext, akInfo.AccessKey)
 

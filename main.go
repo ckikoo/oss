@@ -55,9 +55,12 @@ func initMysql(conf *config.Mysql) (*sql.DB, error) {
 		return nil, err
 	}
 
-	if _, err = sqlDB.Query("show tables"); err != nil {
+	rows, err := sqlDB.Query("show tables")
+	if err != nil {
 		return nil, err
 	}
+
+	rows.Close()
 
 	sqlDB.SetMaxIdleConns(conf.MaxIdle)
 	sqlDB.SetMaxOpenConns(conf.MaxOpen)

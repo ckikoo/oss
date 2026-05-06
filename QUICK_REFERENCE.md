@@ -1,45 +1,41 @@
-# OSS 项目快速参考 (2026-05-03)
+# OSS 项目快速参考 (2026-05-06)
 
-## 🎯 关键改动总结
+## 🎯 最新改动总结
 
-### ✅ 已完成：默认生命周期规则
+### ✅ 存储层架构：Adaptor 与 Service 集成
 
-**问题**: 之前创建bucket时，没有自动创建任何lifecycle规则，上传的对象永远保存在STANDARD存储
+**新增**: 统一的存储接口 `IStorage`，支持多种存储后端（本地、S3 等）
 
-**解决方案**: 在 [service/bucket/service.go](service/bucket/service.go) CreateBucket 中添加自动规则创建
+**核心模块**:
+- [adaptor/storage/istorage.go](adaptor/storage/istorage.go) - 存储接口定义
+- [adaptor/storage/local/local.go](adaptor/storage/local/local.go) - 本地磁盘实现
+- [adaptor/adatpor.go](adaptor/adatpor.go) - Adaptor 整合存储
 
-**具体改动**:
-```go
-// CreateBucket 中新增代码
-defaultRules := []*do.CreateLifecycleRule{
-    {
-        BucketID: id,
-        RuleName: "Default-IA-Transition",
-        TransitionDays: 30,           // 30天转换到IA
-        TransitionStorageClass: "IA",
-        Status: 1,
-    },
-    {
-        BucketID: id,
-        RuleName: "Default-Archive-Transition", 
-        TransitionDays: 90,           // 90天转换到ARCHIVE
-        TransitionStorageClass: "ARCHIVE",
-        Status: 1,
-    },
-    {
-        BucketID: id,
-        RuleName: "Default-Expiration",
-        ExpirationDays: 180,          // 180天自动删除
-        Status: 1,
-    },
-}
+**Service 层改造**:
+- `PutObject` 调用 `srv.storage.Put()` 替代直接文件操作
+- `GetObject` 调用 `srv.storage.Get()` 替代 `os.Open()`
+- `DeleteObject` 调用 `srv.storage.Delete()` 替代 `os.Remove()`
+- `streamMultipartObject` 使用存储接口获取分片
 
-for _, rule := range defaultRules {
-    srv.lifecycleRepo.CreateLifecycleRule(ctx, rule)
-}
-```
+**优势**:
+- 业务逻辑与存储实现完全解耦
+- 支持无缝切换存储后端（本地 → S3 → MinIO）
+- 便于单元测试（可 mock 存储接口）
 
-**效果**: 现在每创建一个bucket，自动生成3条生命周期规则
+---
+
+### ✅ DeleteObject 事务支持
+
+**问题**: 删除对象涉及多个表更新（objects、buckets、users、metering），如中途失败可能导致数据不一致
+
+**解决方案**: 使用 GORM 事务，所有数据库更新要么全部成功，要么全部回滚
+
+**实现**:
+- 新增事务方法: `GetByKeyWithTx`, `DeleteObjectWithTx`, `UpdateBucketStatsWithTx`, `UpdateStorageUsedWithTx`, `DeleteMultipartPartsWithTx`
+- `service.DeleteObject()` 使用 `srv.db.WithContext(ctx).Transaction()` 包装所有数据库操作
+- 事务外进行物理文件删除（通过存储接口），确保数据一致性
+
+**效果**: DeleteObject 操作的数据完整性得到保证
 
 ---
 
@@ -47,10 +43,11 @@ for _, rule := range defaultRules {
 
 | 模块 | 位置 | 职能 | 状态 |
 |------|------|------|------|
+| **Storage** | `adaptor/storage/` | 统一存储接口 | ✅ 完成 |
 | **AccessKey** | `service/accesskey/` | 生成AK/SK、认证 | ✅ 完成 |
 | **Bucket** | `service/bucket/` | 创建、管理bucket、自动规则 | ✅ 完成 |
 | **Object** | `service/object/` | 上传、下载、删除对象 | ✅ 完成 |
-| **Multipart** | `service/mutipart/` | 分片上传（虚拟合并） | ✅ 完成 |
+| **Multipart** | `service/multipart/` | 分片上传（虚拟合并） | ✅ 完成 |
 | **Policy** | `service/policy/` | 权限策略管理 | ✅ 完成 |
 | **Presigned** | `service/presigned/` | 预签名URL | ✅ 完成 |
 | **Lifecycle** | `service/lifecycle/` | 规则管理 | ✅ 完成 |
@@ -266,9 +263,3 @@ consts.BucketStatusDeleted = 3  // 已删除
 | 查看日志 | `utils/logger/logger.go` 配置 |
 | 修改常数 | `consts/consts.go` |
 | 添加路由 | `api/auth/routes.go` |
-
----
-
-**最后更新**: 2026-05-03  
-**编译状态**: ✅ 通过  
-**建议**: 下一步实现lifecycle规则执行器完成功能闭环

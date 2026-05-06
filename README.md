@@ -10,18 +10,21 @@
 - **数据库**: MySQL
 - **缓存**: Redis
 - **对象转换**: [Govertor](https://github.com/jmattheis/goverter)
+- **存储层**: 抽象接口 + 本地磁盘实现（支持扩展至 S3/MinIO）
 
 ## 功能特性
 
 - **AK/SK 认证**: 支持 Access Key 和 Secret Key 认证，保护所有 bucket、object 和 multipart API。
 - **Bucket 管理**: 创建、列出、获取、更新和删除 bucket。
-- **Object 存储**: 上传、下载、获取元数据和删除对象。
+- **Object 存储**: 上传、下载、获取元数据和删除对象（带事务一致性保证）。
 - **Multipart Upload**: 支持分片上传，实现大文件上传。
 - **权限控制**: 基于 JSON 的细粒度权限系统，支持 bucket policy 及多维策略规则。
 - **策略查询优化**: `bucket_policies` 查询使用 `utils/pool` 控制并发加载子表，避免 N+1 查询卡顿。
 - **版本控制**: 支持对象版本管理。
 - **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。
 - **分布式锁**: 基于 Redis 的文件锁机制，支持并发控制和原子操作。
+- **存储接口抽象**: 统一存储层接口 `IStorage`，支持多种后端实现（本地、S3、MinIO 等）。
+- **事务一致性**: 删除操作使用 GORM 事务确保数据完整性。
 
 > 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
 
@@ -102,6 +105,55 @@
 该接口返回按天汇总的统计条目，适用于日常流量审计、费用核算和用户行为分析。
 
 > 注意：对象下载流量统计以实际传输字节为准，避免仅依赖对象元数据 `Size`，已通过 `io.MultiWriter` 统计真实下行流量。
+
+## 存储层架构
+
+项目实现了抽象的存储接口 `IStorage`，支持多种后端实现，实现业务逻辑与存储实现的完全解耦。
+
+### 存储接口设计
+
+```go
+type IStorage interface {
+    // 保存普通对象，返回存储路径和哈希信息
+    Put(bucket, objectKey string, src io.Reader) (*PutResult, error)
+
+    // 读取文件，调用方负责关闭返回的 ReadCloser
+    Get(storagePath string) (io.ReadCloser, error)
+
+    // 删除单个文件，文件不存在时不报错
+    Delete(storagePath string) error
+
+    // 保存分片，路径规则由实现层维护
+    PutPart(bucket, uploadID string, partNumber int32, src io.Reader) (*PutResult, error)
+
+    // 删除某次分片上传的全部分片目录
+    DeleteParts(bucket, uploadID string) error
+
+    // 给外部查询对象最终路径用
+    BuildObjectPath(bucket, objectKey string) string
+}
+```
+
+### 本地存储实现
+
+- **位置**: [adaptor/storage/local/local.go](adaptor/storage/local/local.go)
+- **目录结构**:
+  ```
+  {baseDir}/{bucket}/{objectKey}                               ← 普通对象
+  {baseDir}/{bucket}/multipart/{uploadID}/part_{partNumber}   ← 分片
+  ```
+- **特性**: 流式保存，一次 IO 同时计算 MD5 和 SHA256，避免大文件 OOM
+
+### Service 层集成
+
+- `PutObject`: 调用 `srv.storage.Put()` 完成文件上传
+- `GetObject`: 调用 `srv.storage.Get()` 获取文件流
+- `DeleteObject`: 调用 `srv.storage.Delete()` 删除物理文件（在事务外进行）
+- `streamMultipartObject`: 调用 `srv.storage.Get()` 流式返回分片内容
+
+### 扩展支持
+
+未来可扩展支持其他存储后端（如 S3、MinIO），只需实现 `IStorage` 接口，无需修改 service 层逻辑。
 
 ## 分布式锁机制
 

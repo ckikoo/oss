@@ -31,7 +31,7 @@ func NewMultipart(adaptor adaptor.IAdaptor) *Multipart {
 var _ IMultipart = (*Multipart)(nil)
 
 func fmtTimeoutOrderCancelZSetKey() string {
-	return fmt.Sprintf("%s:mutipart:timeout:cancel", consts.ServerName)
+	return fmt.Sprintf("%s:multipart:timeout:cancel", consts.ServerName)
 }
 func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID string) error {
 	redisKey := fmtTimeoutOrderCancelZSetKey()

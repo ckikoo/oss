@@ -38,6 +38,7 @@ var (
 	ParamErr             = Errno{Code: 400, Msg: "Param Error"}
 	AuthErr              = Errno{Code: 401, Msg: "Auth Error"}
 	PermissionErr        = Errno{Code: 403, Msg: "Permission Error"}
+	ResouceNotFoundErr   = Errno{Code: 404, Msg: "Permission Error"}
 	DatabaseErr          = Errno{Code: 10000, Msg: "Database Error"}
 	RedisErr             = Errno{Code: 10001, Msg: "Redis Error"}
 	FileCheckErr         = Errno{Code: 11000, Msg: "文件校验错误"}

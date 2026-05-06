@@ -2,13 +2,10 @@ package object
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -18,43 +15,17 @@ import (
 	meteringRepo "oss/adaptor/repo/metering"
 	multipartRepo "oss/adaptor/repo/multipart"
 	objectRepo "oss/adaptor/repo/object"
+	"oss/adaptor/storage"
 	"oss/common"
-	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/utils/tools"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
-
-// calculateFileHash 计算文件的SHA256哈希值，支持流式处理避免大文件OOM
-func saveFileAndComputeHashes(src io.Reader, destPath string) (etag string, sha256sum string, size int64, err error) {
-	if err = os.MkdirAll(filepath.Dir(destPath), consts.FilePermDir); err != nil {
-		return
-	}
-
-	dst, err := os.Create(destPath)
-	if err != nil {
-		return
-	}
-	defer dst.Close()
-
-	md5Hasher := md5.New()
-	sha256Hasher := sha256.New()
-
-	// 一次读取，同时写盘 + 算两个 hash
-	mw := io.MultiWriter(dst, md5Hasher, sha256Hasher)
-	size, err = io.Copy(mw, src)
-	if err != nil {
-		return
-	}
-
-	etag = fmt.Sprintf("%x", md5Hasher.Sum(nil))
-	sha256sum = fmt.Sprintf("%x", sha256Hasher.Sum(nil))
-	return
-}
 
 type Service struct {
 	userRepo      admin.IUser
@@ -62,15 +33,25 @@ type Service struct {
 	bucketRepo    bucket.IBucketRepo
 	multipartRepo multipartRepo.IMultipartRepo
 	meteringRepo  *meteringRepo.MeteringRepo
+	db            *gorm.DB
+	storage       storage.IStorage
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
+	sqlDB := adaptor.GetDB()
+	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+
 	return &Service{
 		userRepo:      admin.NewUser(adaptor),
 		objRepo:       objectRepo.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
 		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor),
+		db:            ormDB,
+		storage:       adaptor.GetStorage(),
 	}
 }
 
@@ -105,14 +86,23 @@ func (srv *Service) ListObjects(ctx context.Context, req *dto.ListObjectsReq) (*
 	return &dto.ListObjectsResp{Items: items}, common.OK
 }
 
-func (srv *Service) GetObjectMetadata(ctx context.Context, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {
+func (srv *Service) GetObjectMetadata(ctx context.Context, uid int64, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {
 	if bucketName == "" || objectKey == "" {
 		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
 
+	bucketInfo, err := srv.bucketRepo.GetByName(ctx, bucketName)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	if bucketInfo.UserID != uid {
+		return nil, common.AuthErr
+	}
+
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.ResouceNotFoundErr.WithErr(err)
 	}
 
 	metadata := ""
@@ -156,19 +146,7 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 	// Generate object key hash
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 
-	// Open file to calculate ETag and size
-	f, err := file.Open()
-	if err != nil {
-		return nil, common.ServerErr.WithErr(err)
-	}
-	defer f.Close()
-	// TODO 会有问题,应该使用 filepath 工具管理
-	saveDir := "./storage"
-	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
-		saveDir = config.GlobalConfig.Server.SaveDir
-	}
-	storagePath := filepath.Join(saveDir, req.BucketName, req.ObjectKey)
-
+	// Check if object already exists
 	cacheFile, err := srv.objRepo.GetObjectFromHashKey(ctx, &do.GetObjectFromHashKey{
 		BucketName:    req.BucketName,
 		ObjectKeyHash: objectKeyHash,
@@ -182,11 +160,6 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.FileNameExists
 	}
 
-	storageDir := filepath.Dir(storagePath)
-	if err := os.MkdirAll(storageDir, consts.FilePermDir); err != nil {
-		return nil, common.ServerErr.WithErr(err)
-	}
-
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, req.UserId)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
@@ -196,8 +169,14 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.StorageQuotaOver
 	}
 
-	// 一次 IO 搞定
-	etag, _, fileSize, err := saveFileAndComputeHashes(f, storagePath)
+	// Open file and upload to storage
+	f, err := file.Open()
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+	defer f.Close()
+
+	putResult, err := srv.storage.Put(req.BucketName, req.ObjectKey, f)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
@@ -215,13 +194,13 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		ObjectKey:     req.ObjectKey,
 		ObjectKeyHash: objectKeyHash,
 		VersionID:     "", // TODO: Handle versioning
-		Size:          fileSize,
-		Etag:          etag,
+		Size:          putResult.Size,
+		Etag:          putResult.Etag,
 		ContentType:   &req.ContentType,
 		StorageClass:  storageClass,
 		IsMultipart:   consts.ObjectIsMultipartNormal,
 		UploadID:      nil,
-		StoragePath:   &storagePath,
+		StoragePath:   &putResult.StoragePath,
 		Acl:           req.Acl,
 		Metadata: func() *string {
 			if req.Metadata == "" {
@@ -230,7 +209,7 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 			return &req.Metadata
 		}(),
 		CallBack: func() error {
-			return srv.userRepo.UpdateStorageUsed(ctx, req.UserId, fileSize)
+			return srv.userRepo.UpdateStorageUsed(ctx, req.UserId, putResult.Size)
 		},
 	}
 
@@ -241,9 +220,9 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 
 	return &dto.PutObjectResp{
 		ObjectKey:   req.ObjectKey,
-		Size:        fileSize,
-		Etag:        etag,
-		StoragePath: storagePath,
+		Size:        putResult.Size,
+		Etag:        putResult.Etag,
+		StoragePath: putResult.StoragePath,
 		VersionID:   "",
 	}, common.OK
 }
@@ -287,12 +266,7 @@ func (srv *Service) GetObject(ctx context.Context, bucketName, objectKey, versio
 		return common.ServerErr.WithMsg("storage path not found")
 	}
 
-	// Check if file exists
-	if _, err := os.Stat(*obj.StoragePath); os.IsNotExist(err) {
-		return common.ParamErr.WithMsg("file not found")
-	}
-
-	file, err := os.Open(*obj.StoragePath)
+	file, err := srv.storage.Get(*obj.StoragePath)
 	if err != nil {
 		return common.ServerErr.WithErr(err)
 	}
@@ -341,48 +315,59 @@ func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, 
 		return common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
 
-	// 先获取要删除的对象信息
-	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
-	if err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	bucket, err := srv.bucketRepo.GetByName(ctx, bucketName)
-	if err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	if bucket.UserID != userId || obj.BucketID != bucket.ID {
-		return common.AuthErr
-	}
-
-	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	if err := srv.objRepo.DeleteObject(ctx, bucketName, objectKey, versionID); err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	//
-	if err := srv.bucketRepo.UpdateBucketStats(ctx, bucketName, -1, -obj.Size); err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	if err := srv.userRepo.UpdateStorageUsed(ctx, userId, -obj.Size); err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
-
-	// 虚拟合并
-	if obj.Status == consts.MultipartUploadStatusMergedVirtual {
-		if err = srv.multipartRepo.DeleteMultipartParts(ctx, *obj.UploadID); err != nil {
-			return common.DatabaseErr.WithErr(err)
+	var deletedObj *do.ObjectDo
+	err := srv.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		obj, err := srv.objRepo.GetByKeyWithTx(tx, ctx, bucketName, objectKey, versionID)
+		if err != nil {
+			return err
 		}
+		deletedObj = obj
+
+		bucket, err := srv.bucketRepo.GetByNameWithTx(tx, ctx, bucketName)
+		if err != nil {
+			return err
+		}
+
+		if bucket.UserID != userId || obj.BucketID != bucket.ID {
+			return common.AuthErr
+		}
+
+		if err := srv.meteringRepo.UpdateDailyMetricsWithTx(tx, ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
+			return err
+		}
+
+		if err := srv.objRepo.DeleteObjectWithTx(tx, ctx, bucketName, objectKey, versionID); err != nil {
+			return err
+		}
+
+		if err := srv.bucketRepo.UpdateBucketStatsWithTx(tx, ctx, bucketName, -1, -obj.Size); err != nil {
+			return err
+		}
+
+		if err := srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, userId, -obj.Size); err != nil {
+			return err
+		}
+
+		if obj.Status == consts.MultipartUploadStatusMergedVirtual {
+			if err = srv.multipartRepo.DeleteMultipartPartsWithTx(tx, ctx, *obj.UploadID); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		var errno common.Errno
+		if errors.As(err, &errno) {
+			return errno
+		}
+		return common.DatabaseErr.WithErr(err)
 	}
 
-	// 删除物理文件
-	if obj.StoragePath != nil {
-		os.Remove(*obj.StoragePath)
+	// 删除物理文件（在事务外进行，数据库更新已确保）
+	if deletedObj != nil && deletedObj.StoragePath != nil {
+		_ = srv.storage.Delete(*deletedObj.StoragePath)
 	}
 
 	return common.OK
@@ -421,7 +406,7 @@ func (srv *Service) streamMultipartObject(ctx context.Context, obj *do.ObjectDo,
 	c.Response.Header.Del("Content-Length") // 分块传输不能设置Content-Length
 
 	for _, part := range parts {
-		file, err := os.Open(part.StoragePath)
+		file, err := srv.storage.Get(part.StoragePath)
 		if err != nil {
 			return common.ServerErr.WithErr(err)
 		}

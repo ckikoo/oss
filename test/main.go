@@ -423,7 +423,7 @@ func doCompleteMultipartUpload(fileContent, fileName, bucketName, objectKey stri
 	fmt.Printf("分片上传完成，ObjectID: %d, ObjectKey: %s\n", completeResp.ObjectID, completeResp.ObjectKey)
 }
 
-// func doMutipartUpload() {
+// func domultipartUpload() {
 // 	createReq := dto.CreateMultipartUploadReq{
 // 		ObjectKey:   "text.txt",
 // 		ContentType: "txt",
@@ -462,7 +462,7 @@ func main() {
 	doRequest("POST", "/api/v1/download/tokens", "", `{"bucket_name":"test-bucket","object_key":"large.txt","expires_in":3600}`, "application/json")
 
 	// ---- 初始化分片上传 ----
-	// doMutipartUpload()
+	// domultipartUpload()
 
 	// ---- 完整分片上传 ----
 	// largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB

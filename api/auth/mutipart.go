@@ -6,21 +6,21 @@ import (
 	"oss/common"
 	"oss/consts"
 	"oss/service/dto"
-	"oss/service/mutipart"
+	"oss/service/multipart"
 	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
-type MutipartCtrl struct {
-	object *mutipart.Service
+type multipartCtrl struct {
+	object *multipart.Service
 }
 
-func NewMutipartCtrl(service *mutipart.Service) *MutipartCtrl {
-	return &MutipartCtrl{object: service}
+func NewmultipartCtrl(service *multipart.Service) *multipartCtrl {
+	return &multipartCtrl{object: service}
 }
 
-func (ctrl *MutipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.RequestContext) {
+func (ctrl *multipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
 	if bucketName == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
@@ -43,7 +43,7 @@ func (ctrl *MutipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.Requ
 	api.WriteResp(c, resp, errno)
 }
 
-func (ctrl *MutipartCtrl) UploadMultipartPart(ctx context.Context, c *app.RequestContext) {
+func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.RequestContext) {
 	uploadID := c.Param("upload_id")
 	partNumberStr := c.Param("part_number")
 
@@ -70,7 +70,7 @@ func (ctrl *MutipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reques
 	api.WriteResp(c, resp, errno)
 }
 
-func (ctrl *MutipartCtrl) CompleteMultipartUpload(ctx context.Context, c *app.RequestContext) {
+func (ctrl *multipartCtrl) CompleteMultipartUpload(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
 	uploadID := c.Param("upload_id")
 	if bucketName == "" || uploadID == "" {
@@ -94,7 +94,7 @@ func (ctrl *MutipartCtrl) CompleteMultipartUpload(ctx context.Context, c *app.Re
 	api.WriteResp(c, resp, errno)
 }
 
-func (ctrl *MutipartCtrl) AbortMultipartUpload(ctx context.Context, c *app.RequestContext) {
+func (ctrl *multipartCtrl) AbortMultipartUpload(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
 	uploadID := c.Param("upload_id")
 	if bucketName == "" || uploadID == "" {

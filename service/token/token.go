@@ -117,7 +117,7 @@ func genToken(ak string, bucket, object, method, action string, ExpiresIn int64,
 	sb.WriteString(action)
 	sb.WriteString(":")
 
-	expire := time.Now().Add(time.Duration(time.Unix(ExpiresIn, 0).Second())).UnixMilli()
+	expire := time.Now().Add(time.Duration(ExpiresIn) * time.Second).UnixMilli()
 
 	sb.WriteString(gconv.String(expire))
 

@@ -201,6 +201,11 @@ func (r *ObjectRepo) DeleteMultipartParts(ctx context.Context, uploadID string) 
 	return r.db.WithContext(ctx).Where("upload_id = ?", uploadID).Delete(modelPart).Error
 }
 
+func (r *ObjectRepo) DeleteMultipartPartsWithTx(tx *gorm.DB, ctx context.Context, uploadID string) error {
+	modelPart := &model.MultipartPart{}
+	return tx.WithContext(ctx).Where("upload_id = ?", uploadID).Delete(modelPart).Error
+}
+
 // Helper function to generate object key hash
 func GenerateObjectKeyHash(objectKey string) string {
 	hash := md5.Sum([]byte(objectKey))

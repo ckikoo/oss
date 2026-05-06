@@ -214,3 +214,36 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, bucketName string, d
 		})
 	return err
 }
+
+func (r *BucketRepo) GetByNameWithTx(tx *gorm.DB, ctx context.Context, name string) (*do.BucketDo, error) {
+	q := query.Use(tx)
+	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.Name.Eq(name)).First()
+	if err != nil {
+		return nil, err
+	}
+	return &do.BucketDo{
+		ID:           modelBucket.ID,
+		UserID:       modelBucket.UserID,
+		Name:         modelBucket.Name,
+		Region:       modelBucket.Region,
+		Acl:          modelBucket.Acl,
+		Versioning:   modelBucket.Versioning,
+		Status:       modelBucket.Status,
+		StorageClass: modelBucket.StorageClass,
+		ObjectCount:  modelBucket.ObjectCount,
+		StorageSize:  modelBucket.StorageSize,
+		CreatedAt:    modelBucket.CreatedAt,
+		UpdatedAt:    modelBucket.UpdatedAt,
+	}, nil
+}
+
+func (r *BucketRepo) UpdateBucketStatsWithTx(tx *gorm.DB, ctx context.Context, bucketName string, deltaCount, deltaSize int64) error {
+	q := query.Use(tx)
+	_, err := q.Bucket.WithContext(ctx).
+		Where(q.Bucket.Name.Eq(bucketName)).
+		Updates(map[string]interface{}{
+			q.Bucket.ObjectCount.ColumnName().String(): q.Bucket.ObjectCount.Add(deltaCount),
+			q.Bucket.StorageSize.ColumnName().String(): q.Bucket.StorageSize.Add(deltaSize),
+		})
+	return err
+}
