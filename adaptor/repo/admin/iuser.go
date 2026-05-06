@@ -8,4 +8,5 @@ import (
 type IUser interface {
 	CreateUser(ctx context.Context, req *do.CreateUser) (int64, error)
 	GetUserInfoById(ctx context.Context, id int64) (*do.UserDo, error)
+	UpdateStorageUsed(ctx context.Context, id int64, storage int64) error
 }

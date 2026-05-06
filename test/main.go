@@ -423,17 +423,18 @@ func doCompleteMultipartUpload(fileContent, fileName, bucketName, objectKey stri
 	fmt.Printf("分片上传完成，ObjectID: %d, ObjectKey: %s\n", completeResp.ObjectID, completeResp.ObjectKey)
 }
 
-func doMutipartUpload() {
-	createReq := dto.CreateMultipartUploadReq{
-		ObjectKey:   "text.txt",
-		ContentType: "txt",
-		TotalChunk:  4,
-		Overwrite:   true,
-		CallbackUrl: "https://baidu.com",
-	}
+// func doMutipartUpload() {
+// 	createReq := dto.CreateMultipartUploadReq{
+// 		ObjectKey:   "text.txt",
+// 		ContentType: "txt",
+// 		TotalChunk:  4,
+// 		Overwrite:   true,
+// 		CallbackUrl: "https://baidu.com",
+// 	}
 
-	doRequest("POST", "/api/v1/buckets/test-bucket/multipart/uploads", "", gconv.String(createReq), "application/json")
-}
+//		doRequest("POST", "/api/v1/buckets/test-bucket/multipart/uploads", "", gconv.String(createReq), "application/json")
+//	}
+
 func main() {
 	// createUploadToken()
 	// createBucket()
@@ -458,14 +459,14 @@ func main() {
 	// doRequest("POST", "/api/v1/upload/tokens", "", `{"bucket_name":"test-bucket","object_key":"test.txt","expires_in":3600}`, "application/json")
 
 	// ---- 生成下载 Token ----
-	// doRequest("POST", "/api/v1/download/tokens", "", `{"bucket_name":"test-bucket","object_key":"test.txt","expires_in":3600}`, "application/json")
+	doRequest("POST", "/api/v1/download/tokens", "", `{"bucket_name":"test-bucket","object_key":"large.txt","expires_in":3600}`, "application/json")
 
 	// ---- 初始化分片上传 ----
 	// doMutipartUpload()
 
 	// ---- 完整分片上传 ----
-	largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
-	doCompleteMultipartUpload(largeContent, "large.txt", "test-bucket", "large.txt")
+	// largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
+	// doCompleteMultipartUpload(largeContent, "large.txt", "test-bucket", "large.txt")
 
 	// ---- 默认跑一个测试 ----
 	fmt.Println("请取消注释 main() 中需要测试的接口")

@@ -29,11 +29,10 @@
 
 所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证：
 
-- **Header 方式**: 
-  - `X-Access-Key`: Access Key
-  - `X-Secret-Key`: Secret Key
 - **Authorization 方式**: 
-  - `Authorization: AccessKey AK:SK`
+  - `Authorization: OSS <access_key>:<timestamp>:<signature>`
+  - `<timestamp>` 用于防重放，签名过期范围约为 30 秒
+- 对于 `application/octet-stream` 和 `multipart/*` 请求，签名计算时会跳过 body 内容
 
 ## Bucket Policy API
 
@@ -60,6 +59,8 @@
 
 1. **初始化**: `POST /api/v1/buckets/{bucket}/multipart/uploads`
 2. **上传分片**: `PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}`
+   - 直接发送分片二进制 body
+   - 需携带 `Content-MD5` 头进行校验
 3. **完成上传**: `POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete`
 4. **中止上传**: `DELETE /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}`
 
@@ -67,7 +68,7 @@
 
 - 虚拟合并，无需物理文件组装
 - 流式上传，避免内存溢出
-- 并发分片上传
+- 分片独立存储，便于管理与重传
 - 自动超时清理
 
 ## Metering／日统计

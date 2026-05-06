@@ -38,6 +38,7 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 
 	tokenCtrl := auth.NewTokenCtrl(adaptor)
 
+	// 后续完善管理端那边的
 	h.POST("/api/v1/access-keys", akCtrl.CreateAccessKey)
 	h.GET("/api/v1/access-keys", akCtrl.ListAccessKeys)
 	h.GET("/api/v1/access-keys/:access_key", akCtrl.GetAccessKey)

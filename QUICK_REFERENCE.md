@@ -76,6 +76,7 @@ for _, rule := range defaultRules {
 
 #### ...了解认证流程
 → [api/auth/middleware.go](api/auth/middleware.go) `NewAccessKeyMiddleware()`
+- 认证头格式为 `Authorization: OSS <access_key>:<timestamp>:<signature>`
 
 #### ...添加新API端点
 → [api/auth/routes.go](api/auth/routes.go) 注册路由  

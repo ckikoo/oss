@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"oss/adaptor"
+	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/bucket"
 	meteringRepo "oss/adaptor/repo/metering"
 	multipartRepo "oss/adaptor/repo/multipart"
@@ -56,6 +57,7 @@ func saveFileAndComputeHashes(src io.Reader, destPath string) (etag string, sha2
 }
 
 type Service struct {
+	userRepo      admin.IUser
 	objRepo       objectRepo.IObjectRepo
 	bucketRepo    bucket.IBucketRepo
 	multipartRepo multipartRepo.IMultipartRepo
@@ -64,6 +66,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
+		userRepo:      admin.NewUser(adaptor),
 		objRepo:       objectRepo.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
@@ -144,6 +147,10 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.ParamErr.WithMsg("bucket not found")
 	}
 
+	if bucket.UserID != req.UserId {
+		return nil, common.AuthErr
+	}
+
 	bucketID := bucket.ID
 
 	// Generate object key hash
@@ -180,6 +187,15 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 		return nil, common.ServerErr.WithErr(err)
 	}
 
+	uInfo, err := srv.userRepo.GetUserInfoById(ctx, req.UserId)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	if uInfo.StorageUsed+file.Size > uInfo.StorageQuota {
+		return nil, common.StorageQuotaOver
+	}
+
 	// 一次 IO 搞定
 	etag, _, fileSize, err := saveFileAndComputeHashes(f, storagePath)
 	if err != nil {
@@ -213,6 +229,9 @@ func (srv *Service) PutObject(ctx context.Context, req *dto.PutObjectReq, file *
 			}
 			return &req.Metadata
 		}(),
+		CallBack: func() error {
+			return srv.userRepo.UpdateStorageUsed(ctx, req.UserId, fileSize)
+		},
 	}
 
 	_, err = srv.objRepo.CreateObject(ctx, createObj)
@@ -317,7 +336,7 @@ func (w *countingWriter) Count() int64 {
 	return w.bytes
 }
 
-func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) common.Errno {
+func (srv *Service) DeleteObject(ctx context.Context, userId int64, bucketName, objectKey, versionID string) common.Errno {
 	if bucketName == "" || objectKey == "" {
 		return common.ParamErr.WithMsg("bucket_name and object_key are required")
 	}
@@ -333,6 +352,10 @@ func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, ver
 		return common.DatabaseErr.WithErr(err)
 	}
 
+	if bucket.UserID != userId || obj.BucketID != bucket.ID {
+		return common.AuthErr
+	}
+
 	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
@@ -341,8 +364,20 @@ func (srv *Service) DeleteObject(ctx context.Context, bucketName, objectKey, ver
 		return common.DatabaseErr.WithErr(err)
 	}
 
+	//
 	if err := srv.bucketRepo.UpdateBucketStats(ctx, bucketName, -1, -obj.Size); err != nil {
 		return common.DatabaseErr.WithErr(err)
+	}
+
+	if err := srv.userRepo.UpdateStorageUsed(ctx, userId, -obj.Size); err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
+
+	// 虚拟合并
+	if obj.Status == consts.MultipartUploadStatusMergedVirtual {
+		if err = srv.multipartRepo.DeleteMultipartParts(ctx, *obj.UploadID); err != nil {
+			return common.DatabaseErr.WithErr(err)
+		}
 	}
 
 	// 删除物理文件

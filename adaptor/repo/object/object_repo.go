@@ -85,7 +85,8 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 			return err
 		}
 
-		return nil
+		return object.CallBack()
+
 	})
 
 	if err != nil {

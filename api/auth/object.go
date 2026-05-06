@@ -56,6 +56,7 @@ func (ctrl *ObjectCtrl) GetObjectMetadata(ctx context.Context, c *app.RequestCon
 func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
+	userId := c.GetInt64(consts.UserKeyContext)
 
 	if bucketName == "" || objectKey == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
@@ -87,6 +88,7 @@ func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
 	metadata := c.PostForm("metadata")
 
 	req := &dto.PutObjectReq{
+		UserId:       userId,
 		BucketName:   bucketName,
 		ObjectKey:    objectKey,
 		ContentType:  contentType,
@@ -119,13 +121,14 @@ func (ctrl *ObjectCtrl) DeleteObject(ctx context.Context, c *app.RequestContext)
 	bucketName := c.Param("bucket_name")
 	objectKey := c.Param("object_key")
 	versionID := c.Query("version_id")
+	userId := c.GetInt64(consts.UserKeyContext)
 
 	if bucketName == "" || objectKey == "" {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
 		return
 	}
 
-	errno := ctrl.object.DeleteObject(ctx, bucketName, objectKey, versionID)
+	errno := ctrl.object.DeleteObject(ctx, userId, bucketName, objectKey, versionID)
 	api.WriteResp(c, nil, errno)
 }
 func saveFileAndComputeHashes(src io.Reader, destPath string) (etag string, sha256sum string, size int64, err error) {

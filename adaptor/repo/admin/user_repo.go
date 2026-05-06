@@ -17,6 +17,8 @@ type User struct {
 	db *gorm.DB
 }
 
+var _ IUser = (*User)(nil)
+
 func NewUser(adaptor adaptor.IAdaptor) *User {
 	sqlDB := adaptor.GetDB()
 	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
@@ -64,4 +66,15 @@ func (u *User) GetUserInfoById(ctx context.Context, id int64) (*do.UserDo, error
 		CreatedAt:    uinfo.CreatedAt,
 		UpdatedAt:    uinfo.UpdatedAt,
 	}, nil
+}
+func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) error {
+	qs := query.Use(u.db).User
+
+	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumns(qs.StorageUsed.Add(storage))
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }

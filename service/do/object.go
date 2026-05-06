@@ -50,6 +50,7 @@ type CreateObject struct {
 	StoragePath   *string
 	Acl           int32
 	Metadata      *string
+	CallBack      func() error
 }
 
 type UpdateObject struct {

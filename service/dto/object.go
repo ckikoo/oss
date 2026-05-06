@@ -37,6 +37,7 @@ type ObjectMetadata struct {
 }
 
 type PutObjectReq struct {
+	UserId       int64
 	BucketName   string `json:"bucket_name"`
 	ObjectKey    string `json:"object_key"`
 	ContentType  string `json:"content_type,omitempty"`
