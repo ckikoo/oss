@@ -36,7 +36,7 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	h.GET("/api/v1/access-keys/:access_key", akCtrl.GetAccessKey)
 	h.PATCH("/api/v1/access-keys/:access_key/status", akCtrl.DeactivateAccessKey)
 
-	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor))
+	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor), NewOperationLogMiddleware(adaptor))
 
 	authGroup.POST("/upload/tokens", tokenCtrl.CreateUploadToken)
 	authGroup.POST("/download/tokens", tokenCtrl.CreateDownloadToken)

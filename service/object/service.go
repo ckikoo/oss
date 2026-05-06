@@ -44,7 +44,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 
 	return &Service{
-		userRepo:      admin.NewUser(adaptor),
+		userRepo:      admin.NewUserRepo(adaptor),
 		objRepo:       objectRepo.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
@@ -348,7 +348,7 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 		}
 
 		if obj.Status == consts.MultipartUploadStatusMergedVirtual {
-			if err = srv.multipartRepo.DeleteMultipartPartsWithTx(tx, ctx, *obj.UploadID); err != nil {
+			if err = srv.multipartRepo.DeleteMultipartPartsWithTx(tx, ctx, ctx.UserID, *obj.UploadID); err != nil {
 				return err
 			}
 		}
@@ -379,7 +379,7 @@ func (srv *Service) streamMultipartObject(ctx *common.UserInfoCtx, obj *do.Objec
 	}
 
 	// 获取所有分片
-	parts, err := srv.multipartRepo.ListMultipartParts(ctx, *obj.UploadID)
+	parts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, *obj.UploadID)
 	if err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}

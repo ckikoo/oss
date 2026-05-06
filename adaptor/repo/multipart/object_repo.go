@@ -55,9 +55,9 @@ func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.Creat
 	return modelUpload.ID, nil
 }
 
-func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, uploadID string) (*do.MultipartUploadDo, error) {
+func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userID int64, uploadID string) (*do.MultipartUploadDo, error) {
 	q := query.Use(r.db)
-	modelUpload, err := q.MultipartUpload.WithContext(ctx).Where(q.MultipartUpload.UploadID.Eq(uploadID)).First()
+	modelUpload, err := q.MultipartUpload.WithContext(ctx).Where(q.MultipartUpload.UploadID.Eq(uploadID), q.MultipartUpload.UserID.Eq(userID)).First()
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, uploadID string
 	}, nil
 }
 
-func (r *ObjectRepo) UpdateMultipartUpload(ctx context.Context, uploadID string, update *do.UpdateMultipartUpload) (*do.MultipartUploadDo, error) {
+func (r *ObjectRepo) UpdateMultipartUpload(ctx context.Context, userID int64, uploadID string, update *do.UpdateMultipartUpload) (*do.MultipartUploadDo, error) {
 	qs := query.Use(r.db).MultipartUpload
 
 	updates := map[string]interface{}{}
@@ -114,10 +114,10 @@ func (r *ObjectRepo) UpdateMultipartUpload(ctx context.Context, uploadID string,
 
 	updates[qs.UpdatedAt.ColumnName().String()] = time.Now()
 
-	if _, err := qs.WithContext(ctx).Where(qs.UploadID.Eq(uploadID)).Updates(updates); err != nil {
+	if _, err := qs.WithContext(ctx).Where(qs.UploadID.Eq(uploadID), qs.UserID.Eq(userID)).Updates(updates); err != nil {
 		return nil, err
 	}
-	return r.GetMultipartUploadByID(ctx, uploadID)
+	return r.GetMultipartUploadByID(ctx, userID, uploadID)
 }
 
 func (r *ObjectRepo) CreateOrUpdateMultipartPart(ctx context.Context, part *do.CreateMultipartPart) (bool, error) {
@@ -156,7 +156,16 @@ func (r *ObjectRepo) CreateOrUpdateMultipartPart(ctx context.Context, part *do.C
 	return false, nil
 }
 
-func (r *ObjectRepo) GetMultipartPart(ctx context.Context, uploadID string, partNumber int32) (*do.MultipartPartDo, error) {
+func (r *ObjectRepo) GetMultipartPart(ctx context.Context, userID int64, uploadID string, partNumber int32) (*do.MultipartPartDo, error) {
+	// Verify ownership: check that the upload belongs to the user
+	upload, err := r.GetMultipartUploadByID(ctx, userID, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if upload == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+
 	q := query.Use(r.db)
 	modelPart, err := q.MultipartPart.WithContext(ctx).Where(q.MultipartPart.UploadID.Eq(uploadID), q.MultipartPart.PartNumber.Eq(partNumber)).First()
 	if err != nil {
@@ -174,7 +183,16 @@ func (r *ObjectRepo) GetMultipartPart(ctx context.Context, uploadID string, part
 	}, nil
 }
 
-func (r *ObjectRepo) ListMultipartParts(ctx context.Context, uploadID string) ([]*do.MultipartPartDo, error) {
+func (r *ObjectRepo) ListMultipartParts(ctx context.Context, userID int64, uploadID string) ([]*do.MultipartPartDo, error) {
+	// Verify ownership: check that the upload belongs to the user
+	upload, err := r.GetMultipartUploadByID(ctx, userID, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if upload == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+
 	q := query.Use(r.db)
 	modelParts, err := q.MultipartPart.WithContext(ctx).Where(q.MultipartPart.UploadID.Eq(uploadID)).Order(q.MultipartPart.PartNumber).Find()
 	if err != nil {
@@ -196,12 +214,30 @@ func (r *ObjectRepo) ListMultipartParts(ctx context.Context, uploadID string) ([
 	return parts, nil
 }
 
-func (r *ObjectRepo) DeleteMultipartParts(ctx context.Context, uploadID string) error {
+func (r *ObjectRepo) DeleteMultipartParts(ctx context.Context, userID int64, uploadID string) error {
+	// Verify ownership: check that the upload belongs to the user
+	upload, err := r.GetMultipartUploadByID(ctx, userID, uploadID)
+	if err != nil {
+		return err
+	}
+	if upload == nil {
+		return gorm.ErrRecordNotFound
+	}
+
 	modelPart := &model.MultipartPart{}
 	return r.db.WithContext(ctx).Where("upload_id = ?", uploadID).Delete(modelPart).Error
 }
 
-func (r *ObjectRepo) DeleteMultipartPartsWithTx(tx *gorm.DB, ctx context.Context, uploadID string) error {
+func (r *ObjectRepo) DeleteMultipartPartsWithTx(tx *gorm.DB, ctx context.Context, userID int64, uploadID string) error {
+	// Verify ownership: check that the upload belongs to the user
+	upload, err := r.GetMultipartUploadByID(ctx, userID, uploadID)
+	if err != nil {
+		return err
+	}
+	if upload == nil {
+		return gorm.ErrRecordNotFound
+	}
+
 	modelPart := &model.MultipartPart{}
 	return tx.WithContext(ctx).Where("upload_id = ?", uploadID).Delete(modelPart).Error
 }

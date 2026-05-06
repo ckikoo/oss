@@ -25,13 +25,6 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 }
 
 func (srv *Service) CreateLifecycleRule(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateLifecycleRuleReq) (*dto.CreateLifecycleRuleResp, common.Errno) {
-	if strings.TrimSpace(bucketName) == "" {
-		return nil, common.ParamErr.WithMsg("bucket_name is required")
-	}
-	if strings.TrimSpace(req.RuleName) == "" {
-		return nil, common.ParamErr.WithMsg("rule_name is required")
-	}
-
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)

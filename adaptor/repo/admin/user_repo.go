@@ -19,7 +19,7 @@ type User struct {
 
 var _ IUser = (*User)(nil)
 
-func NewUser(adaptor adaptor.IAdaptor) *User {
+func NewUserRepo(adaptor adaptor.IAdaptor) *User {
 	sqlDB := adaptor.GetDB()
 	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
 	if err != nil {

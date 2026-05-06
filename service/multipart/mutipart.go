@@ -3,19 +3,18 @@ package multipart
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"oss/adaptor"
 	"oss/adaptor/redis"
+	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/bucket"
 	multipartRepo "oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
+	"oss/adaptor/storage"
 	"oss/common"
-	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/utils/tools"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -25,18 +24,22 @@ import (
 )
 
 type Service struct {
+	userRepo      admin.IUser
 	objRepo       object.IObjectRepo
 	multipartRepo multipartRepo.IMultipartRepo
 	bucketRepo    bucket.IBucketRepo
 	rdsmultipart  redis.IMultipart
+	storage       storage.IStorage
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
+		userRepo:      admin.NewUserRepo(adaptor),
 		objRepo:       object.NewObjectRepo(adaptor),
 		bucketRepo:    bucket.NewBucketRepo(adaptor),
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
 		rdsmultipart:  redis.NewMultipart(adaptor),
+		storage:       adaptor.GetStorage(),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -60,6 +63,15 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 
 	if temp != nil {
 		return nil, common.FileNameExists
+	}
+
+	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
+	if uInfo.StorageQuota > 0 && uInfo.StorageUsed+req.FileSize > uInfo.StorageQuota {
+		return nil, common.StorageQuotaOver
 	}
 
 	uploadID := uuid.NewString()
@@ -124,14 +136,9 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 		return nil, common.ParamErr.WithMsg("upload_id and part_number are required")
 	}
 
-	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, uploadID)
+	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
-	}
-
-	// 校验上传权限和上传状态
-	if upload.UserID != ctx.UserID {
-		return nil, common.AuthErr
 	}
 
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
@@ -139,32 +146,22 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 		return nil, common.ParamErr.WithMsg("multipart upload is not in uploading state")
 	}
 
-	saveDir := "./storage"
-	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
-		saveDir = config.GlobalConfig.Server.SaveDir
-	}
-	storagePath := filepath.Join(saveDir, upload.BucketName, "multipart", uploadID, fmt.Sprintf("part_%d", partNumber))
-	storageDir := filepath.Dir(storagePath)
-	if err := os.MkdirAll(storageDir, consts.FilePermDir); err != nil {
-		return nil, common.ServerErr.WithErr(err)
-	}
-
-	// 直接保存二进制数据并计算哈希
-	etag, _, size, err := tools.SaveFileAndComputeHashes(bytes.NewReader(data), storagePath)
+	res, err := srv.storage.PutPart(upload.BucketName, uploadID, partNumber, bytes.NewReader(data))
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	if etag != upload_etag {
+	if res.Etag != upload_etag {
+		srv.storage.DeletePart(upload.BucketName, uploadID, partNumber)
 		return nil, common.FileCheckErr
 	}
 
 	part := &do.CreateMultipartPart{
 		UploadID:    uploadID,
 		PartNumber:  partNumber,
-		Size:        size,
-		Etag:        etag,
-		StoragePath: storagePath,
+		Size:        res.Size,
+		Etag:        res.Etag,
+		StoragePath: res.StoragePath,
 		Status:      consts.MultipartPartStatusConfirmed,
 	}
 
@@ -181,14 +178,14 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 		update.TotalChunk = &totalChunk
 	}
 
-	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, uploadID, update); err != nil {
+	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	return &dto.UploadMultipartPartResp{
 		PartNumber: partNumber,
-		Etag:       etag,
-		Size:       size,
+		Etag:       res.Etag,
+		Size:       res.Size,
 		Status:     consts.MultipartPartStatusConfirmed,
 	}, common.OK
 }
@@ -203,9 +200,14 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		return nil, common.ParamErr.WithMsg("parts are required")
 	}
 
-	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, uploadID)
+	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
+	}
+
+	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	if upload.UserID != ctx.UserID {
@@ -216,7 +218,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		return nil, common.FileHasUploadSuccess
 	}
 
-	storedParts, err := srv.multipartRepo.ListMultipartParts(ctx, uploadID)
+	storedParts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -230,6 +232,11 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	for _, part := range storedParts {
 		partIndex[part.PartNumber] = part
 		totalSize += part.Size
+	}
+
+	if uInfo.StorageQuota != 0 && uInfo.StorageUsed+totalSize > uInfo.StorageQuota {
+		srv.AbortMultipartUpload(ctx, uploadID)
+		return nil, common.StorageQuotaOver
 	}
 
 	for _, part := range req.Parts {
@@ -309,7 +316,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		update.TotalChunk = &totalChunk
 	}
 
-	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, uploadID, update); err != nil {
+	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
@@ -328,7 +335,7 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 		return common.ParamErr.WithMsg("bucket_name and upload_id are required")
 	}
 
-	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, uploadID)
+	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return common.ParamErr.WithErr(err)
 	}
@@ -343,21 +350,22 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 
 	var statusAborted int32 = consts.MultipartUploadStatusAborted
 	lastActive := time.Now()
-	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, uploadID, &do.UpdateMultipartUpload{
+	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, &do.UpdateMultipartUpload{
 		Status:       &statusAborted,
 		LastActiveAt: &lastActive,
 	}); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
 
-	if err := srv.multipartRepo.DeleteMultipartParts(ctx, uploadID); err != nil {
+	if err := srv.multipartRepo.DeleteMultipartParts(ctx, ctx.UserID, uploadID); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
-	removeDir := "./storage"
-	if config.GlobalConfig != nil && config.GlobalConfig.Server.SaveDir != "" {
-		removeDir = config.GlobalConfig.Server.SaveDir
+
+	// TODO 需要通知存储服务删除分片数据
+	if err := srv.storage.DeleteParts(upload.BucketName, uploadID); err != nil {
+		return common.ServerErr.WithErr(err)
 	}
-	_ = os.RemoveAll(filepath.Join(removeDir, upload.BucketName, "multipart", uploadID))
+
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	return common.OK

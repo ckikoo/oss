@@ -14,6 +14,6 @@ type Service struct {
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		conf:      adaptor.GetConfig(),
-		adminUser: admin.NewUser(adaptor),
+		adminUser: admin.NewUserRepo(adaptor),
 	}
 }

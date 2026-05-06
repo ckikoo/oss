@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"context"
 	"time"
 
 	"oss/adaptor"
@@ -20,7 +19,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{repo: auditRepo.NewOperationLogRepo(adaptor)}
 }
 
-func (srv *Service) ListOperationLogs(ctx context.Context, req *dto.ListOperationLogsReq) (*dto.ListOperationLogsResp, common.Errno) {
+func (srv *Service) ListOperationLogs(ctx *common.UserInfoCtx, req *dto.ListOperationLogsReq) (*dto.ListOperationLogsResp, common.Errno) {
 	var dateFrom *time.Time
 	var dateTo *time.Time
 	if req.DateFrom != "" {
@@ -42,7 +41,7 @@ func (srv *Service) ListOperationLogs(ctx context.Context, req *dto.ListOperatio
 	}
 
 	filter := &do.OperationLogFilter{
-		UserID:     req.UserID,
+		UserID:     ctx.UserID,
 		BucketName: req.BucketName,
 		Action:     req.Action,
 		Status:     req.Status,
