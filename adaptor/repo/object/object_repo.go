@@ -264,6 +264,15 @@ func (r *ObjectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 	return r.GetByKey(ctx, bucketName, objectKey, versionID)
 }
 
+func (r *ObjectRepo) UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error {
+	q := query.Use(r.db).Object
+	_, err := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).Updates(map[string]interface{}{
+		q.StorageClass.ColumnName().String(): storageClass,
+		q.UpdatedAt.ColumnName().String():    time.Now(),
+	})
+	return err
+}
+
 func (r *ObjectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) error {
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))

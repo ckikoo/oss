@@ -7,6 +7,7 @@ import (
 	"oss/adaptor"
 	bucketRepo "oss/adaptor/repo/bucket"
 	lifecycleRepo "oss/adaptor/repo/lifecycle"
+	objectRepo "oss/adaptor/repo/object"
 	"oss/common"
 	"oss/service/do"
 	"oss/service/dto"
@@ -15,12 +16,14 @@ import (
 type Service struct {
 	repo       lifecycleRepo.ILifecycleRepo
 	bucketRepo bucketRepo.IBucketRepo
+	objectRepo objectRepo.IObjectRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		repo:       lifecycleRepo.NewLifecycleRepo(adaptor),
 		bucketRepo: bucketRepo.NewBucketRepo(adaptor),
+		objectRepo: objectRepo.NewObjectRepo(adaptor),
 	}
 }
 

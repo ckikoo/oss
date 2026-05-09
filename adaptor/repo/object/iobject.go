@@ -14,6 +14,7 @@ type IObjectRepo interface {
 	GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error)
 	ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error)
 	UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error)
+	UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error
 	DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) error
 	DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) error
 }

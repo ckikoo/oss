@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"oss/adaptor"
 	"oss/config"
 	"oss/router"
+	"oss/timer"
 	"oss/utils/logger"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -35,6 +37,18 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
 	h := server.Default(server.WithHostPorts(address))
 	router.RegisterRoutes(h, newAdaptor)
+
+	// 启动后台定时任务
+	ctx := context.Background()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// 记录panic信息
+				fmt.Printf("timer goroutine panic: %v\n", r)
+			}
+		}()
+		timer.StartTimer(ctx, newAdaptor)
+	}()
 
 	h.Spin()
 

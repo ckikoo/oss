@@ -2,21 +2,33 @@ package timer
 
 import (
 	"context"
+	"os"
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/async"
+	"oss/adaptor/repo/bucket"
+	"oss/adaptor/repo/lifecycle"
 	"oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
+	"oss/adaptor/storage"
 	"oss/consts"
 	"oss/service/do"
+	"oss/utils/logger"
 	"oss/utils/pool"
+	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/gogf/gf/util/gconv"
 	"github.com/google/uuid"
 	"github.com/samber/lo"
+	"go.uber.org/zap"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
+
+var log = logger.GetLogger()
 
 func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, status int32, errMsg string) {
 	update := &do.UpdateAsyncTask{Status: status}
@@ -215,12 +227,229 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 }
 
+// handlerLifecycleEvents 处理生命周期事件的主函数
+// 该函数负责处理对象的存储类转换和过期删除操作
+// 使用协程池并发处理多个生命周期规则，提高处理效率
+func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
+	lifecycleRedis := redis.NewLifecycle(adaptor)
+	lifecycleRepo := lifecycle.NewLifecycleRepo(adaptor)
+	objectRepo := object.NewObjectRepo(adaptor)
+	bucketRepo := bucket.NewBucketRepo(adaptor)
+	storage := adaptor.GetStorage()
+	uinfoRepo := admin.NewUserRepo(adaptor)
+
+	// 创建gorm DB实例用于事务
+	sqlDB := adaptor.GetDB()
+	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
+	if err != nil {
+		log.Error("failed to create gorm DB instance", zap.Error(err))
+		return
+	}
+
+	// 获取所有活跃的生命周期规则
+	rules, err := lifecycleRepo.ListAllActiveLifecycleRules(ctx)
+	if err != nil {
+		log.Error("failed to list active lifecycle rules", zap.Error(err))
+		return
+	}
+
+	// 动态协程池大小，默认使用CPU核心数
+	poolSize := getLifecyclePoolSize()
+	pool := pool.NewPoolWithSize(poolSize)
+
+	for _, rule := range rules {
+		rule := rule // 避免闭包捕获问题
+
+		pool.RunGo(func() {
+			bucket, err := bucketRepo.GetByID(ctx, rule.BucketID)
+			if err != nil {
+				// 处理错误
+				return
+			}
+
+			// 处理转换事件
+			handleTransitionEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo)
+
+			// 处理过期删除事件
+			handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, gormDB, storage)
+		})
+	}
+
+	pool.Wait()
+}
+
+// getLifecyclePoolSize 获取生命周期处理协程池大小
+func getLifecyclePoolSize() int {
+	if size := os.Getenv("LIFECYCLE_POOL_SIZE"); size != "" {
+		if parsed, err := strconv.Atoi(size); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	// 默认使用CPU核心数的2倍
+	return runtime.NumCPU() * 2
+}
+
+// getRulePrefix 获取规则的前缀
+func getRulePrefix(rule *do.LifecycleRuleDo) string {
+	if rule.Prefix != nil {
+		return *rule.Prefix
+	}
+	return ""
+}
+
+// handleTransitionEvents 处理存储类转换事件
+func handleTransitionEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.LifecycleRuleDo, bucket *do.BucketDo,
+	lifecycleRedis redis.ILifecycle, objectRepo object.IObjectRepo) {
+
+	if rule.TransitionDays == nil || *rule.TransitionDays <= 0 {
+		return
+	}
+
+	prefix := getRulePrefix(rule)
+	objects, err := lifecycleRedis.GetPendingLifecycleEvents(ctx, rule.BucketID, rule.ID, prefix, "transition")
+	if err != nil {
+		log.Error("failed to get pending transition events",
+			zap.Int64("bucketID", rule.BucketID),
+			zap.Int64("ruleID", rule.ID),
+			zap.String("prefix", prefix),
+			zap.Error(err))
+		return
+	}
+
+	for _, objectKey := range objects {
+		// 检查对象是否仍然存在
+		obj, err := objectRepo.GetByKey(ctx, bucket.Name, objectKey, "")
+		if err != nil || obj == nil {
+			// 对象不存在，删除事件
+			log.Warn("object not found, removing lifecycle event",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+				zap.Int64("bucketID", rule.BucketID),
+				zap.Int64("ruleID", rule.ID))
+			lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "transition", objectKey)
+			continue
+		}
+
+		// 验证存储类有效性
+		if rule.TransitionStorageClass != nil && consts.ValidStorageClass(*rule.TransitionStorageClass) {
+			err = objectRepo.UpdateObjectStorageClass(ctx, bucket.Name, objectKey, *rule.TransitionStorageClass)
+			if err != nil {
+				log.Error("failed to update object storage class",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.String("storageClass", *rule.TransitionStorageClass),
+					zap.Error(err))
+				continue
+			}
+			log.Info("successfully transitioned object storage class",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+				zap.String("fromClass", obj.StorageClass),
+				zap.String("toClass", *rule.TransitionStorageClass))
+		}
+
+		// 删除已处理的事件
+		lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "transition", objectKey)
+	}
+}
+
+// handleExpirationEvents 处理对象过期删除事件
+func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.LifecycleRuleDo, bucket *do.BucketDo,
+	lifecycleRedis redis.ILifecycle, objectRepo object.IObjectRepo, bucketRepo bucket.IBucketRepo,
+	uinfoRepo admin.IUser, gormDB *gorm.DB, storage storage.IStorage) {
+
+	if rule.ExpirationDays == nil || *rule.ExpirationDays <= 0 {
+		return
+	}
+
+	prefix := getRulePrefix(rule)
+	objects, err := lifecycleRedis.GetPendingLifecycleEvents(ctx, rule.BucketID, rule.ID, prefix, "expiration")
+	if err != nil {
+		log.Error("failed to get pending expiration events",
+			zap.Int64("bucketID", rule.BucketID),
+			zap.Int64("ruleID", rule.ID),
+			zap.String("prefix", prefix),
+			zap.Error(err))
+		return
+	}
+
+	for _, objectKey := range objects {
+		// 在事务内部处理删除，避免竞态条件
+		err = gormDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			// 在事务内部重新检查对象是否存在
+			obj, err := objectRepo.GetByKeyWithTx(tx, ctx, bucket.Name, objectKey, "")
+			if err != nil || obj == nil {
+				// 对象不存在，删除事件
+				log.Warn("object not found in transaction, removing lifecycle event",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.Int64("bucketID", rule.BucketID),
+					zap.Int64("ruleID", rule.ID))
+				lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+				return nil // 不算错误，继续处理
+			}
+
+			// 删除对象记录
+			err = objectRepo.DeleteObjectWithTx(tx, ctx, bucket.Name, objectKey, "")
+			if err != nil {
+				return err
+			}
+
+			// 更新bucket统计
+			err = bucketRepo.UpdateBucketStatsWithTx(tx, ctx, bucket.UserID, bucket.Name, -1, -obj.Size)
+			if err != nil {
+				return err
+			}
+
+			// 更新用户存储使用量
+			err = uinfoRepo.UpdateStorageUsedWithTx(tx, ctx, bucket.UserID, -obj.Size)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			log.Error("failed to delete expired object",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+				zap.Int64("bucketID", rule.BucketID),
+				zap.Int64("ruleID", rule.ID),
+				zap.Error(err))
+			continue
+		}
+
+		// 获取对象信息用于删除物理文件（在事务外部，因为存储删除不应该在事务中）
+		obj, err := objectRepo.GetByKey(ctx, bucket.Name, objectKey, "")
+		if err == nil && obj != nil && obj.StoragePath != nil {
+			if err := storage.Delete(ctx, *obj.StoragePath); err != nil {
+				log.Error("failed to delete physical file",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.String("storagePath", *obj.StoragePath),
+					zap.Error(err))
+			} else {
+				log.Info("successfully deleted expired object",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.Int64("size", obj.Size))
+			}
+		}
+
+		// 删除已处理的事件
+		lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+	}
+}
+
 // 定时器相关的代码
 func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	taskDone := make(chan struct{}, 1)
 	timeoutDone := make(chan struct{}, 1)
+	lifecycleDone := make(chan struct{}, 1)
 	taskDone <- struct{}{}
 	timeoutDone <- struct{}{}
+	lifecycleDone <- struct{}{}
 
 	for {
 		select {
@@ -243,6 +472,15 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 			go func() {
 				handlerUploadMergeTimeout(ctx, adaptor)
 				timeoutDone <- struct{}{}
+			}()
+		default:
+		}
+
+		select {
+		case <-lifecycleDone:
+			go func() {
+				handlerLifecycleEvents(ctx, adaptor)
+				lifecycleDone <- struct{}{}
 			}()
 		default:
 		}

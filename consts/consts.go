@@ -98,6 +98,16 @@ const (
 	StorageClassArchive  = "ARCHIVE"
 )
 
+// ValidStorageClass 验证存储类是否有效
+func ValidStorageClass(storageClass string) bool {
+	switch storageClass {
+	case StorageClassStandard, StorageClassIA, StorageClassArchive:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	DownloadAction = "download"
 	DownloadMethod = "GET"
@@ -111,10 +121,12 @@ const (
 )
 
 const (
-	TaskTypePhysicalMerge  = "PHYSICAL_MERGE"
-	TaskTypeTranscode      = "TRANSCODE"
-	TaskTypeImageProcess   = "IMG_PROCESS"
-	TaskTypeAbortMultipart = "ABORT_MULTIPART"
+	TaskTypePhysicalMerge       = "PHYSICAL_MERGE"
+	TaskTypeTranscode           = "TRANSCODE"
+	TaskTypeImageProcess        = "IMG_PROCESS"
+	TaskTypeAbortMultipart      = "ABORT_MULTIPART"
+	TaskTypeLifecycleTransition = "LIFECYCLE_TRANSITION"
+	TaskTypeLifecycleExpiration = "LIFECYCLE_EXPIRATION"
 )
 
 const (
@@ -126,7 +138,7 @@ const (
 
 func ValidAsyncTaskType(taskType string) bool {
 	switch taskType {
-	case TaskTypePhysicalMerge, TaskTypeTranscode, TaskTypeImageProcess, TaskTypeAbortMultipart:
+	case TaskTypePhysicalMerge, TaskTypeTranscode, TaskTypeImageProcess, TaskTypeAbortMultipart, TaskTypeLifecycleTransition, TaskTypeLifecycleExpiration:
 		return true
 	default:
 		return false

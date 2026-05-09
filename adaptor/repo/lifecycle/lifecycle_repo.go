@@ -79,6 +79,32 @@ func (r *LifecycleRepo) ListLifecycleRules(ctx context.Context, bucketID int64) 
 	return rules, nil
 }
 
+func (r *LifecycleRepo) ListAllActiveLifecycleRules(ctx context.Context) ([]*do.LifecycleRuleDo, error) {
+	modelRules, err := query.Use(r.db).LifecycleRule.WithContext(ctx).Where(query.Use(r.db).LifecycleRule.Status.Eq(1)).Find()
+	if err != nil {
+		return nil, err
+	}
+
+	rules := make([]*do.LifecycleRuleDo, 0, len(modelRules))
+	for _, modelRule := range modelRules {
+		rules = append(rules, &do.LifecycleRuleDo{
+			ID:                             modelRule.ID,
+			BucketID:                       modelRule.BucketID,
+			RuleName:                       modelRule.RuleName,
+			Status:                         modelRule.Status,
+			Prefix:                         modelRule.Prefix,
+			TransitionDays:                 modelRule.TransitionDays,
+			TransitionStorageClass:         modelRule.TransitionStorageClass,
+			ExpirationDays:                 modelRule.ExpirationDays,
+			NoncurrentVersionExpirationDays: modelRule.NoncurrentVersionExpirationDays,
+			AbortIncompleteMultipartDays:   modelRule.AbortIncompleteMultipartDays,
+			CreatedAt:                      modelRule.CreatedAt,
+			UpdatedAt:                      modelRule.UpdatedAt,
+		})
+	}
+	return rules, nil
+}
+
 func (r *LifecycleRepo) GetLifecycleRule(ctx context.Context, bucketID, ruleID int64) (*do.LifecycleRuleDo, error) {
 	modelRule, err := query.Use(r.db).LifecycleRule.WithContext(ctx).Where(query.Use(r.db).LifecycleRule.BucketID.Eq(bucketID), query.Use(r.db).LifecycleRule.ID.Eq(ruleID)).First()
 	if err != nil {
