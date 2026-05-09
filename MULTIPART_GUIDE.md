@@ -14,11 +14,12 @@ This document describes the multipart upload implementation in the OSS service, 
 
 ### Virtual Merge Strategy
 
-Unlike traditional multipart implementations that physically combine files, this implementation uses **virtual merging**:
+Unlike traditional multipart implementations that physically combine files during complete, this implementation uses **virtual merging** for the API path while deferring physical merge to a background task:
 
 1. **Upload Phase**: Parts are stored individually with metadata
-2. **Complete Phase**: Creates object record without physical merge
-3. **Read Phase**: Dynamically streams parts on-demand
+2. **Complete Phase**: Creates object record and marks the upload as virtually merged
+3. **Background Merge**: Publishes a `PHYSICAL_MERGE` async task for offline physical merge
+4. **Read Phase**: Dynamically streams parts on-demand until physical merge completes
 
 #### Advantages
 
@@ -100,6 +101,13 @@ Content-Type: application/json
 }
 ```
 
+**实现说明**:
+- `CompleteMultipartUpload` 验证所有上传分片的 `etag` 是否一致
+- 创建最终 `objects` 记录，并将 multipart 会话标记为虚拟合并（`MergedVirtual`）
+- 发布异步任务 `PHYSICAL_MERGE` 到 Redis 队列，任务由 `timer/timer.go` 后台 worker 消费
+- 后台 worker 调用 `storage.MergeParts(ctx, bucket, objectKey, partPaths)` 完成物理合并，并在成功后更新对象元数据
+- 如果物理合并失败，异步任务会更新状态为失败，等待重试或人工补偿
+
 ## Database Schema
 
 ### multipart_uploads
@@ -159,9 +167,9 @@ MD5(part1-etag + part2-etag + ... + partN-etag + "-" + N)
 
 ### Cleanup Strategy
 
-- **Abort**: Deletes all parts and upload record
-- **Expiration**: Redis-based timeout monitoring
-- **Delete Object**: Soft delete with physical cleanup
+- **Abort**: 触发 `ABORT_MULTIPART` 异步任务，后台 worker 清理分片和 multipart 会话
+- **Expiration**: 使用 Redis 超时监控，定期扫描并取消超时 multipart 上传
+- **Delete Object**: 对象删除操作与物理文件清理解耦，删除时可以优先软删除元数据并异步清理存储
 
 ## Performance Considerations
 
@@ -182,7 +190,7 @@ MD5(part1-etag + part2-etag + ... + partN-etag + "-" + N)
 
 ## Future Enhancements
 
-1. **Physical Merge**: Optional background merge for frequently accessed files
+1. **Physical Merge Optimization**: Improve background merge worker throughput and retry behavior for hot multipart objects
 2. **Compression**: Part-level compression
 3. **Deduplication**: Content-based deduplication across parts
 4. **CDN Integration**: Direct part serving from CDN

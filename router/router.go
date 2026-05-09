@@ -4,7 +4,6 @@ import (
 	"oss/adaptor"
 	"oss/api/auth"
 	"oss/service/lifecycle"
-	"oss/service/multipart"
 	"oss/service/policy"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -20,8 +19,7 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 
 	meteringCtrl := auth.NewMeteringCtrl(adaptor)
 
-	multipartService := multipart.NewService(adaptor)
-	multipartCtrl := auth.NewmultipartCtrl(multipartService)
+	multipartCtrl := auth.NewMultipartCtrl(adaptor)
 	policyService := policy.NewService(adaptor)
 	policyCtrl := auth.NewPolicyCtrl(policyService)
 

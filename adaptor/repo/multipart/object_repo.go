@@ -55,12 +55,19 @@ func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.Creat
 	return modelUpload.ID, nil
 }
 
-func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userID int64, uploadID string) (*do.MultipartUploadDo, error) {
-	q := query.Use(r.db)
-	modelUpload, err := q.MultipartUpload.WithContext(ctx).Where(q.MultipartUpload.UploadID.Eq(uploadID), q.MultipartUpload.UserID.Eq(userID)).First()
+func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userId int64, uploadID string) (*do.MultipartUploadDo, error) {
+	q := query.Use(r.db).MultipartUpload
+
+	expr := q.WithContext(ctx).Where(q.UploadID.Eq(uploadID))
+	if userId != 0 {
+		expr = expr.Where(q.UserID.Eq(userId))
+	}
+
+	modelUpload, err := expr.First()
 	if err != nil {
 		return nil, err
 	}
+
 	return &do.MultipartUploadDo{
 		ID:            modelUpload.ID,
 		UploadID:      modelUpload.UploadID,

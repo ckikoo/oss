@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/dto"
@@ -15,8 +16,8 @@ type multipartCtrl struct {
 	object *multipart.Service
 }
 
-func NewmultipartCtrl(service *multipart.Service) *multipartCtrl {
-	return &multipartCtrl{object: service}
+func NewMultipartCtrl(adaptor adaptor.IAdaptor) *multipartCtrl {
+	return &multipartCtrl{object: multipart.NewService(adaptor)}
 }
 
 func (ctrl *multipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.RequestContext) {

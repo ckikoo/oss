@@ -6,6 +6,7 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
+	"oss/adaptor/repo/async"
 	"oss/adaptor/repo/bucket"
 	multipartRepo "oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
@@ -30,6 +31,8 @@ type Service struct {
 	bucketRepo    bucket.IBucketRepo
 	rdsmultipart  redis.IMultipart
 	storage       storage.IStorage
+	asyncRepo     async.IAsyncTaskRepo
+	asyncRedis    redis.ITask
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -40,6 +43,8 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
 		rdsmultipart:  redis.NewMultipart(adaptor),
 		storage:       adaptor.GetStorage(),
+		asyncRepo:     async.NewAsyncTaskRepo(adaptor),
+		asyncRedis:    redis.NewTask(adaptor),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -132,27 +137,33 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 // uploadID参数用于校验用户是否有权限上传这个文件
 
 func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
-	if uploadID == "" || partNumber <= 0 {
-		return nil, common.ParamErr.WithMsg("upload_id and part_number are required")
-	}
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return nil, common.ParamErr.WithErr(err)
 	}
 
+	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
+	if err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
-	if upload.Status != consts.MultipartUploadStatusUploading {
+	if upload.Status != consts.MultipartPartStatusUploading {
 		return nil, common.ParamErr.WithMsg("multipart upload is not in uploading state")
 	}
 
-	res, err := srv.storage.PutPart(upload.BucketName, uploadID, partNumber, bytes.NewReader(data))
+	res, err := srv.storage.PutPart(ctx, upload.BucketName, uploadID, partNumber, bytes.NewReader(data))
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
+	if uinfo.StorageQuota > 0 && uinfo.StorageUsed+res.Size > uinfo.StorageQuota {
+		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
+		return nil, common.StorageQuotaOver
+	}
+
 	if res.Etag != upload_etag {
-		srv.storage.DeletePart(upload.BucketName, uploadID, partNumber)
+		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
 		return nil, common.FileCheckErr
 	}
 
@@ -190,7 +201,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 	}, common.OK
 }
 
-// 不做真正的合并逻辑 做的是伪合并逻辑
+// 先做的是伪合并逻辑， 任务放入redis ，由后台工作线程异步执行真正的合并，合并完成后更新状态为已合并
 func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
 	if uploadID == "" {
 		return nil, common.ParamErr.WithMsg("upload_id are required")
@@ -286,7 +297,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		metadata = upload.Metadata
 	}
 
-	var statusMerged int32 = consts.MultipartUploadStatusMergedVirtual
+	var statusMerged int32 = consts.MultipartPartStatusVirtualMerge
 	lastActive := time.Now()
 	update := &do.UpdateMultipartUpload{
 		Status:       &statusMerged,
@@ -325,6 +336,10 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
+	if err := srv.publishTask(ctx, consts.TaskTypePhysicalMerge, uploadID, objectID); err != nil {
+		return nil, common.DatabaseErr.WithErr(err)
+	}
+
 	return &dto.CompleteMultipartUploadResp{
 		ObjectID:  objectID,
 		ObjectKey: upload.ObjectKey,
@@ -333,18 +348,36 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	}, common.OK
 }
 
-func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {
-	if uploadID == "" {
-		return common.ParamErr.WithMsg("bucket_name and upload_id are required")
+func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, uploadID string, objectID int64) error {
+	if !consts.ValidAsyncTaskType(taskType) {
+		return fmt.Errorf("invalid async task type: %s", taskType)
 	}
+
+	// 1. 先写 MySQL（持久化保证）
+	task := &do.CreateAsyncTask{
+		UserId:   ctx.UserID,
+		TaskID:   uuid.NewString(),
+		TaskType: taskType,
+		UploadID: uploadID,
+		ObjectID: objectID,
+		Status:   consts.TaskStatusPending,
+		MaxRetry: 3,
+	}
+	if _, err := srv.asyncRepo.CreateAsyncTask(ctx, task); err != nil {
+		return err
+	}
+
+	// 2. 再推 Redis（加速消费，失败不影响正确性）
+	_ = srv.asyncRedis.EnqueueTask(ctx, task.TaskID)
+	// 忽略 Redis 错误，兜底扫描会补偿
+	return nil
+}
+
+func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return common.ParamErr.WithErr(err)
-	}
-
-	if upload.UserID != ctx.UserID {
-		return common.AuthErr
+		return common.DatabaseErr.WithErr(err)
 	}
 
 	if upload.Status != consts.MultipartUploadStatusUploading {
@@ -360,16 +393,11 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 		return common.DatabaseErr.WithErr(err)
 	}
 
-	if err := srv.multipartRepo.DeleteMultipartParts(ctx, ctx.UserID, uploadID); err != nil {
+	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
+
+	if err = srv.publishTask(ctx, consts.TaskTypeAbortMultipart, uploadID, 0); err != nil {
 		return common.DatabaseErr.WithErr(err)
 	}
-
-	// TODO 需要通知存储服务删除分片数据
-	if err := srv.storage.DeleteParts(upload.BucketName, uploadID); err != nil {
-		return common.ServerErr.WithErr(err)
-	}
-
-	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	return common.OK
 }

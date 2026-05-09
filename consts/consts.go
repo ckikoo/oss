@@ -87,9 +87,9 @@ const (
 )
 
 const (
-	MultipartPartStatusUploading = 0
-	MultipartPartStatusConfirmed = 1
-	MultipartPartStatusMerged    = 2
+	MultipartPartStatusUploading    = 0
+	MultipartPartStatusConfirmed    = 1
+	MultipartPartStatusVirtualMerge = 2
 )
 
 const (
@@ -109,3 +109,26 @@ const (
 const (
 	HeaderToken = "X-OSS-Token"
 )
+
+const (
+	TaskTypePhysicalMerge  = "PHYSICAL_MERGE"
+	TaskTypeTranscode      = "TRANSCODE"
+	TaskTypeImageProcess   = "IMG_PROCESS"
+	TaskTypeAbortMultipart = "ABORT_MULTIPART"
+)
+
+const (
+	TaskStatusPending   int32 = 0 // 待执行
+	TaskStatusRunning   int32 = 1 // 执行中
+	TaskStatusCompleted int32 = 2 // 完成
+	TaskStatusFailed    int32 = 3 // 失败
+)
+
+func ValidAsyncTaskType(taskType string) bool {
+	switch taskType {
+	case TaskTypePhysicalMerge, TaskTypeTranscode, TaskTypeImageProcess, TaskTypeAbortMultipart:
+		return true
+	default:
+		return false
+	}
+}

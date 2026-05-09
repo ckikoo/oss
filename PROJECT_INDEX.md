@@ -60,7 +60,7 @@ adaptor/repo/
 ```
 adaptor/redis/
 ├── multipart.go     ✅ 分片上传超时管理 (ZSet存储)
-├── lifecycle.go    ⚠️ 生命周期事件存储 (待实现消息处理)
+├── lifecycle.go    ⚠️ 生命周期事件存储 / 事件消费者未完成
 └── file.go         ✅ 分布式文件锁 (基于bucket+object名称)
 ```
 
@@ -418,7 +418,7 @@ go build -o oss ./main.go
 | 问题 | 建议 |
 |------|------|
 | 版本控制 | PutObject中的TODO: Handle versioning |
-| 分片清理 | 后台任务定期清理超时的分片上传 |
+| 分片清理 | 已实现超时清理任务，建议补充监控、失败重试逻辑 |
 | 指标收集 | 完善 `metering_daily` 日统计，支持 PUT/GET/DELETE 请求类型和真实下行字节计数 |
 
 ### 🟢 低优先级 - 优化
@@ -458,6 +458,8 @@ go build -o oss ./main.go
 - ✅ 生命周期规则管理
 - ✅ 默认规则自动创建
 - ✅ 分布式文件锁
+- ✅ 后台任务框架初步实现（`timer/timer.go`）
+- ✅ 异步 multipart 合并与超时清理任务
 
 **待完成特性**:
 - ❌ 生命周期规则执行（后台任务）

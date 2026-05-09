@@ -28,6 +28,7 @@ type AsyncTask struct {
 	FinishedAt *time.Time `gorm:"column:finished_at;comment:完成时间" json:"finished_at"`                                      // 完成时间
 	CreatedAt  time.Time  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt  time.Time  `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	UserID     int64      `gorm:"column:user_id;not null" json:"user_id"`
 }
 
 // TableName AsyncTask's table name

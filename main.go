@@ -11,7 +11,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/samber/lo"
 )
 
 func main() {
@@ -41,8 +40,12 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 
 }
 func initMysql(conf *config.Mysql) (*sql.DB, error) {
-	conf.MaxIdle = lo.Max([]int{conf.MaxIdle + 1, 5})
-	conf.MaxOpen = lo.Max([]int{conf.MaxOpen + 1, 10})
+	conf.MaxIdle = max(conf.MaxIdle, 5)
+	conf.MaxOpen = max(conf.MaxOpen, 10)
+
+	if conf.MaxOpen < conf.MaxIdle {
+		conf.MaxOpen = conf.MaxIdle
+	}
 
 	dsn := conf.GetDsn()
 	sqlDB, err := sql.Open("mysql", dsn)
@@ -58,8 +61,11 @@ func initMysql(conf *config.Mysql) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, fmt.Errorf("database is empty, please run the SQL initialization script")
+	}
 
 	sqlDB.SetMaxIdleConns(conf.MaxIdle)
 	sqlDB.SetMaxOpenConns(conf.MaxOpen)

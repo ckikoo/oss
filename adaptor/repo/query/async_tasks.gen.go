@@ -43,6 +43,7 @@ func newAsyncTask(db *gorm.DB, opts ...gen.DOOption) asyncTask {
 	_asyncTask.FinishedAt = field.NewTime(tableName, "finished_at")
 	_asyncTask.CreatedAt = field.NewTime(tableName, "created_at")
 	_asyncTask.UpdatedAt = field.NewTime(tableName, "updated_at")
+	_asyncTask.UserID = field.NewInt64(tableName, "user_id")
 
 	_asyncTask.fillFieldMap()
 
@@ -70,6 +71,7 @@ type asyncTask struct {
 	FinishedAt field.Time   // 完成时间
 	CreatedAt  field.Time
 	UpdatedAt  field.Time
+	UserID     field.Int64
 
 	fieldMap map[string]field.Expr
 }
@@ -102,6 +104,7 @@ func (a *asyncTask) updateTableName(table string) *asyncTask {
 	a.FinishedAt = field.NewTime(table, "finished_at")
 	a.CreatedAt = field.NewTime(table, "created_at")
 	a.UpdatedAt = field.NewTime(table, "updated_at")
+	a.UserID = field.NewInt64(table, "user_id")
 
 	a.fillFieldMap()
 
@@ -128,7 +131,7 @@ func (a *asyncTask) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (a *asyncTask) fillFieldMap() {
-	a.fieldMap = make(map[string]field.Expr, 16)
+	a.fieldMap = make(map[string]field.Expr, 17)
 	a.fieldMap["id"] = a.ID
 	a.fieldMap["task_id"] = a.TaskID
 	a.fieldMap["task_type"] = a.TaskType
@@ -145,6 +148,7 @@ func (a *asyncTask) fillFieldMap() {
 	a.fieldMap["finished_at"] = a.FinishedAt
 	a.fieldMap["created_at"] = a.CreatedAt
 	a.fieldMap["updated_at"] = a.UpdatedAt
+	a.fieldMap["user_id"] = a.UserID
 }
 
 func (a asyncTask) clone(db *gorm.DB) asyncTask {

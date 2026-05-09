@@ -29,7 +29,7 @@
 
 ### ✅ 存储层架构：Adaptor 与 Service 集成
 
-**新增**: 统一的存储接口 `IStorage`，支持多种存储后端（本地、S3 等）
+**新增**: 统一的存储接口 `IStorage`，支持多种存储后端（本地、S3 等），并支持 `context.Context` 传递。
 
 **核心模块**:
 - [adaptor/storage/istorage.go](adaptor/storage/istorage.go) - 存储接口定义
@@ -37,10 +37,11 @@
 - [adaptor/adatpor.go](adaptor/adatpor.go) - Adaptor 整合存储
 
 **Service 层改造**:
-- `PutObject` 调用 `srv.storage.Put()` 替代直接文件操作
-- `GetObject` 调用 `srv.storage.Get()` 替代 `os.Open()`
-- `DeleteObject` 调用 `srv.storage.Delete()` 替代 `os.Remove()`
+- `PutObject` 调用 `srv.storage.Put(ctx, ...)` 替代直接文件操作
+- `GetObject` 调用 `srv.storage.Get(ctx, ...)` 替代 `os.Open()`
+- `DeleteObject` 调用 `srv.storage.Delete(ctx, ...)` 替代 `os.Remove()`
 - `streamMultipartObject` 使用存储接口获取分片
+- `UploadMultipartPart` / `DeletePart` / `DeleteParts` 也使用上下文传递
 
 **优势**:
 - 业务逻辑与存储实现完全解耦
@@ -76,7 +77,7 @@
 | **Policy** | `service/policy/` | 权限策略管理 | ✅ 完成 |
 | **Presigned** | `service/presigned/` | 预签名URL | ✅ 完成 |
 | **Lifecycle** | `service/lifecycle/` | 规则管理 | ✅ 完成 |
-| **执行器** | `timer/` | 后台执行规则 | ❌ 待做 |
+| **执行器** | `timer/` | 后台任务执行器（异步 multipart 合并、超时清理） | ✅ 完成 |
 
 ---
 
@@ -111,64 +112,35 @@
 
 ---
 
-## 📋 生命周期规则执行 - 实现指南
+## 📋 生命周期规则执行 - 当前状态
 
-### 当前状态
-✅ 规则存储在数据库  
-✅ 自动创建默认规则  
-❌ **缺少执行逻辑**
+### 已实现
+- ✅ 规则存储在数据库
+- ✅ 创建 Bucket 时自动生成默认生命周期规则
+- ✅ `timer/timer.go` 已实现后台任务框架，支持 Redis 任务队列消费
+- ✅ 当前后台任务已支持 `PHYSICAL_MERGE` 和 `ABORT_MULTIPART` 两类 multipart 任务
 
-### 需要实现的3个部分
+### 待完成
+- ❌ 生命周期规则扫描与实际执行逻辑
+- ❌ lifecycle 事件生产/消费机制
+- ❌ 基于 lifecycle 规则的对象转移/删除执行
 
-#### 1️⃣ 规则扫描器 (Timer)
-位置: `timer/lifecycle_scanner.go` (新建)
+### 说明
+- `timer/timer.go` 目前负责：
+  - 从 Redis 任务队列中批量消费异步任务
+  - 执行 multipart 物理合并
+  - 清理超时 multipart 上传
+- Lifecycle 规则管理本身已完成，但生命周期执行器仍需补充扫描和任务发布功能
 
-```go
-// 定期扫描满足转移/删除条件的对象
-func ScanAndProcessRules(ctx context.Context) {
-    // 1. 从lifecycle_rules表查询已启用的规则
-    // 2. 根据created_at vs rule.transition_days 判断是否应转移
-    // 3. 将需要处理的对象ID写入Redis Stream
-}
-```
-
-#### 2️⃣ 事件生产者 (Redis Publisher)
-位置: `adaptor/redis/lifecycle.go` (完善)
-
-```go
-// 将待处理的任务写入Redis Stream
-func PublishLifecycleEvent(uploadID, objectID, action string) {
-    // 如: action = "transition-to-ia" / "transition-to-archive" / "delete"
-    // 存储到 Redis Stream: oss:lifecycle:events
-}
-```
-
-#### 3️⃣ 事件消费者 (Background Worker)
-位置: `service/lifecycle/executor.go` (新建)
-
-```go
-// 从Redis Stream消费事件，执行转移/删除
-func ConsumeLifecycleEvents(ctx context.Context) {
-    // 1. 从Redis Stream读取事件
-    // 2. 根据action执行操作:
-    //    - transition-to-ia: 改变storage_class，可能涉及数据转移
-    //    - transition-to-archive: 压缩存储或转移到冷存储
-    //    - delete: 删除对象和物理文件
-    // 3. 更新object.storage_class
-    // 4. 删除消息
-}
-```
-
-### 建议实现顺序
-1. 在 `timer/lifecycle_scanner.go` 实现定期扫描 (使用Hertz的定时任务或独立goroutine)
-2. 在 `adaptor/redis/lifecycle.go` 完善 PublishLifecycleEvent
-3. 在 `service/lifecycle/executor.go` 实现消费者和执行逻辑
-4. 在 `main.go` 中启动后台任务
+### 后续建议
+1. 增加 lifecycle 规则扫描器，将满足条件的对象转成待处理任务
+2. 增加 lifecycle 事件生产者，将任务写入 Redis 或任务队列
+3. 增加事件消费者/执行器，处理转储、归档、过期删除等操作
 
 ### 性能考虑
-- 每次扫描限制批量大小 (如1000个对象)
-- 使用Redis Stream的消费者组(Consumer Group)支持并行消费
-- 考虑添加重试机制处理失败的转移
+- 扫描任务应限制批量大小（如 1000 条）
+- 事件执行应支持并行消费与重试
+- 对象迁移/删除任务需保持幂等性和失败回滚能力
 
 ---
 

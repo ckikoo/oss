@@ -19,3 +19,16 @@ var luaRefresh = redis.NewScript(`
 			return 0
 		end
 	`)
+
+// luaBatchPop 原子批量弹出，避免多次 RPop 的竞态
+// KEYS[1] = queue key, ARGV[1] = count
+var luaBatchPop = redis.NewScript(`
+	local result = {}
+	local count = tonumber(ARGV[1])
+	for i = 1, count do
+		local val = redis.call('RPOP', KEYS[1])
+		if not val then break end
+		result[#result + 1] = val
+	end
+	return result
+`)

@@ -54,7 +54,10 @@ func (s *Service) CreateUploadToken(ctx *common.UserInfoCtx, req *dto.CreateUplo
 
 	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.UploadMethod, consts.UploadAction, expireAtUnix, ctx.SecretKey)
 
-	s.rds.CreateUploadToken(ctx, token, gconv.String(req), time.Duration(req.ExpiresIn)*time.Second)
+	if err := s.rds.CreateUploadToken(ctx, token, (req), time.Duration(req.ExpiresIn)*time.Second); err != nil {
+		return nil, common.RedisErr.WithErr(err)
+	}
+
 	return &dto.CreateTokenResp{
 		Token:    token,
 		ExpireAt: expireAtUnix,
@@ -76,7 +79,9 @@ func (s *Service) CreateDownloadToken(ctx *common.UserInfoCtx, req *dto.CreateDo
 
 	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.DownloadMethod, consts.DownloadAction, expireAtUnix, ctx.SecretKey)
 
-	s.rds.CreateDownloadToken(ctx, token, gconv.String(req), time.Duration(req.ExpiresIn)*time.Second)
+	if err := s.rds.CreateDownloadToken(ctx, token, (req), time.Duration(req.ExpiresIn)*time.Second); err != nil {
+		return nil, common.RedisErr.WithErr(err)
+	}
 
 	return &dto.CreateTokenResp{
 		Token:    token,

@@ -115,25 +115,33 @@
 
 ```go
 type IStorage interface {
-    // 保存普通对象，返回存储路径和哈希信息
-    Put(bucket, objectKey string, src io.Reader) (*PutResult, error)
+    // Put 保存普通对象，返回存储路径和哈希信息
+    Put(ctx context.Context, bucket, objectKey string, src io.Reader) (*PutResult, error)
 
-    // 读取文件，调用方负责关闭返回的 ReadCloser
-    Get(storagePath string) (io.ReadCloser, error)
+    // Get 读取文件，调用方负责关闭返回的 ReadCloser
+    Get(ctx context.Context, storagePath string) (io.ReadCloser, error)
 
-    // 删除单个文件，文件不存在时不报错
-    Delete(storagePath string) error
+    // Delete 删除单个文件，文件不存在时不报错
+    Delete(ctx context.Context, storagePath string) error
 
-    // 保存分片，路径规则由实现层维护
-    PutPart(bucket, uploadID string, partNumber int32, src io.Reader) (*PutResult, error)
+    // PutPart 保存分片，路径规则由实现层维护
+    PutPart(ctx context.Context, bucket, uploadID string, partNumber int32, src io.Reader) (*PutResult, error)
 
-    // 删除某次分片上传的全部分片目录
-    DeleteParts(bucket, uploadID string) error
+    // DeletePart 删除某次分片上传的单个分片目录
+    DeletePart(ctx context.Context, bucket, uploadID string, partNum int32) error
 
-    // 给外部查询对象最终路径用
-    BuildObjectPath(bucket, objectKey string) string
+    // DeleteParts 删除某次分片上传的全部分片目录
+    DeleteParts(ctx context.Context, bucket, uploadID string) error
+
+    // MergeParts 将已保存的分片按顺序合并成一个完整对象文件
+    MergeParts(ctx context.Context, bucket, objectKey string, partPaths []string) (*PutResult, error)
+
+    // BuildObjectPath 给外部查询对象最终路径用
+    BuildObjectPath(ctx context.Context, bucket, objectKey string) string
 }
 ```
+
+> 所有存储接口方法均支持 `context.Context`，便于后端实现进行超时控制、trace 传播和请求取消。
 
 ### 本地存储实现
 
@@ -147,10 +155,12 @@ type IStorage interface {
 
 ### Service 层集成
 
-- `PutObject`: 调用 `srv.storage.Put()` 完成文件上传
-- `GetObject`: 调用 `srv.storage.Get()` 获取文件流
-- `DeleteObject`: 调用 `srv.storage.Delete()` 删除物理文件（在事务外进行）
-- `streamMultipartObject`: 调用 `srv.storage.Get()` 流式返回分片内容
+- `PutObject`: 调用 `srv.storage.Put(ctx, ...)` 完成文件上传
+- `GetObject`: 调用 `srv.storage.Get(ctx, ...)` 获取文件流
+- `DeleteObject`: 调用 `srv.storage.Delete(ctx, ...)` 删除物理文件（在事务外进行）
+- `streamMultipartObject`: 调用 `srv.storage.Get(ctx, ...)` 流式返回分片内容
+- Multipart 上传中的 `DeletePart` / `DeleteParts` 也通过 `ctx` 传递到存储层
+- 物理合并由后台任务执行，`storage.MergeParts(ctx, ...)` 可在 worker 中安全调用
 
 ### 扩展支持
 

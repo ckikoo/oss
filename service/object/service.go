@@ -19,9 +19,11 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/utils/logger"
 	"oss/utils/tools"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -139,6 +141,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	bucketID := bucket.ID
 
 	// Generate object key hash
+	// 需要优化
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 
 	// Check if object already exists
@@ -171,7 +174,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	}
 	defer f.Close()
 
-	putResult, err := srv.storage.Put(req.BucketName, req.ObjectKey, f)
+	putResult, err := srv.storage.Put(ctx, req.BucketName, req.ObjectKey, f)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
@@ -210,7 +213,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 	_, err = srv.objRepo.CreateObject(ctx, createObj)
 	if err != nil {
-		srv.storage.Delete(putResult.StoragePath)
+		srv.storage.Delete(ctx, putResult.StoragePath)
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
@@ -262,7 +265,7 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 		return common.ServerErr.WithMsg("storage path not found")
 	}
 
-	file, err := srv.storage.Get(*obj.StoragePath)
+	file, err := srv.storage.Get(ctx, *obj.StoragePath)
 	if err != nil {
 		return common.ServerErr.WithErr(err)
 	}
@@ -363,9 +366,11 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 
 	// 删除物理文件（在事务外进行，数据库更新已确保）
 	if deletedObj != nil && deletedObj.StoragePath != nil {
-		_ = srv.storage.Delete(*deletedObj.StoragePath)
+		if err := srv.storage.Delete(ctx, *deletedObj.StoragePath); err != nil {
+			logger.GetLogger().Error("failed to delete object storage file", zap.String("storage_path", *deletedObj.StoragePath), zap.Error(err))
+			// 可以选择是否返回错误给用户
+		}
 	}
-
 	return common.OK
 }
 
@@ -402,7 +407,7 @@ func (srv *Service) streamMultipartObject(ctx *common.UserInfoCtx, obj *do.Objec
 	c.Response.Header.Del("Content-Length") // 分块传输不能设置Content-Length
 
 	for _, part := range parts {
-		file, err := srv.storage.Get(part.StoragePath)
+		file, err := srv.storage.Get(ctx, part.StoragePath)
 		if err != nil {
 			return common.ServerErr.WithErr(err)
 		}
