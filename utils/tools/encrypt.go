@@ -6,9 +6,11 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"errors"
+	"io"
 )
 
 func Sha256Hash(text string) string {
@@ -40,19 +42,25 @@ func AESEncrypt(plaintext string, key []byte) (string, error) {
 	}
 
 	blockSize := block.BlockSize()
-	origData := PKCS7Padding([]byte(plaintext), blockSize)
+	padded := PKCS7Padding([]byte(plaintext), blockSize)
+
+	// 随机生成 IV（每次加密都不同）
 	iv := make([]byte, blockSize)
-	blockMode := cipher.NewCBCEncrypter(block, iv)
+	if _, err = io.ReadFull(rand.Reader, iv); err != nil {
+		return "", err
+	}
 
-	encrypted := make([]byte, len(origData))
-	blockMode.CryptBlocks(encrypted, origData)
+	// IV 前置 + 密文后置，拼成一个 slice
+	out := make([]byte, blockSize+len(padded))
+	copy(out[:blockSize], iv)
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out[blockSize:], padded)
 
-	return fmt.Sprintf("%x", encrypted), nil
+	return hex.EncodeToString(out), nil
 }
 
-// AESDecrypt 解密函数
+// AESDecrypt 解密：从头部读取 IV，再解密剩余密文
 func AESDecrypt(cryptotext string, key []byte) ([]byte, error) {
-	cryptoBytes, err := hex.DecodeString(cryptotext)
+	data, err := hex.DecodeString(cryptotext)
 	if err != nil {
 		return nil, err
 	}
@@ -63,13 +71,20 @@ func AESDecrypt(cryptotext string, key []byte) ([]byte, error) {
 	}
 
 	blockSize := block.BlockSize()
-	iv := make([]byte, blockSize)
-	blockMode := cipher.NewCBCDecrypter(block, iv)
+	if len(data) < blockSize*2 { // 至少要有 IV + 一个块的密文
+		return nil, errors.New("ciphertext too short")
+	}
 
-	origData := make([]byte, len(cryptoBytes))
-	blockMode.CryptBlocks(origData, cryptoBytes)
+	// 前 blockSize 字节是 IV，其余是密文
+	iv := data[:blockSize]
+	ciphertext := data[blockSize:]
 
-	return PKCS7UnPadding(origData), nil
+	if len(ciphertext)%blockSize != 0 {
+		return nil, errors.New("ciphertext is not a multiple of block size")
+	}
+
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(ciphertext, ciphertext)
+	return PKCS7UnPadding(ciphertext), nil
 }
 
 // PKCS7Padding 填充函数

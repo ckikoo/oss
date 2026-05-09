@@ -50,7 +50,7 @@ type CreateObject struct {
 	StoragePath   *string
 	Acl           int32
 	Metadata      *string
-	CallBack      func() error
+	CallBack      func(tx *gorm.DB) error
 }
 
 type UpdateObject struct {

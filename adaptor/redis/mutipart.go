@@ -13,7 +13,7 @@ import (
 
 type IMultipart interface {
 	// 上传分片超时取消
-	SetTimeoutMultipartCancel(ctx context.Context, uploadID string) error
+	SetTimeoutMultipartCancel(ctx context.Context, uploadID string, time time.Time) error
 	GetTimeWaitMultipartCancel(ctx context.Context) ([]string, error)
 	DelTimeoutMultipartCancel(ctx context.Context, uploadID string) error
 }
@@ -33,10 +33,10 @@ var _ IMultipart = (*Multipart)(nil)
 func fmtTimeoutOrderCancelZSetKey() string {
 	return fmt.Sprintf("%s:multipart:timeout:cancel", consts.ServerName)
 }
-func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID string) error {
+func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID string, time time.Time) error {
 	redisKey := fmtTimeoutOrderCancelZSetKey()
 	_, err := m.redis.ZAdd(redisKey, redis.Z{
-		Score:  float64(time.Now().UnixMilli()),
+		Score:  float64(time.UnixMilli()),
 		Member: uploadID,
 	}).Result()
 	if err != nil {

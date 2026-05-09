@@ -113,7 +113,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, uploadID)
+	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, uploadID, createUpload.ExpiresAt)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -286,6 +286,17 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		metadata = upload.Metadata
 	}
 
+	var statusMerged int32 = consts.MultipartUploadStatusMergedVirtual
+	lastActive := time.Now()
+	update := &do.UpdateMultipartUpload{
+		Status:       &statusMerged,
+		LastActiveAt: &lastActive,
+	}
+	if upload.TotalChunk > 0 {
+		totalChunk := upload.TotalChunk
+		update.TotalChunk = &totalChunk
+	}
+
 	objectID, err := srv.objRepo.CreateObject(ctx, &do.CreateObject{
 		BucketID:      upload.BucketID,
 		BucketName:    upload.BucketName,
@@ -300,23 +311,15 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		UploadID:      &uploadID,
 		Acl:           consts.ObjectAclInheritBucket,
 		Metadata:      metadata,
+		CallBack: func(tx *gorm.DB) error {
+			// TODO
+			if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+				return err
+			}
+			return srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, ctx.UserID, totalSize)
+		},
 	})
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
-	}
-
-	var statusMerged int32 = consts.MultipartUploadStatusMergedVirtual
-	lastActive := time.Now()
-	update := &do.UpdateMultipartUpload{
-		Status:       &statusMerged,
-		LastActiveAt: &lastActive,
-	}
-	if upload.TotalChunk > 0 {
-		totalChunk := upload.TotalChunk
-		update.TotalChunk = &totalChunk
-	}
-
-	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 

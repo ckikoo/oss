@@ -270,28 +270,6 @@ CREATE TABLE  IF NOT EXISTS  policy_conditions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略条件表';
 
 
--- ============================================================
--- 13. 预签名 URL 库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  presigned_urls (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    token           VARCHAR(128)    NOT NULL                COMMENT '签名Token',
-    bucket_id       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    object_key      VARCHAR(1024)   NOT NULL                COMMENT '目标对象路径',
-    object_key_hash CHAR(32)        NOT NULL                COMMENT 'MD5(object_key) 用于索引',
-    method          VARCHAR(8)      NOT NULL                COMMENT 'GET(下载)/PUT(上传)',
-    user_id         BIGINT          NOT NULL                COMMENT '签发用户',
-    single_use      TINYINT         NOT NULL DEFAULT 0      COMMENT '0=多次 1=单次使用',
-    used            TINYINT         NOT NULL DEFAULT 0      COMMENT '是否已使用',
-    expires_at      DATETIME        NOT NULL                COMMENT '过期时间',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_token      (token),
-    INDEX      idx_expires   (expires_at),
-    INDEX      idx_bucket_id (bucket_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='预签名URL表';
-
 
 -- ============================================================
 -- 14. 生命周期规则库

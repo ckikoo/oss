@@ -136,10 +136,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.ParamErr.WithMsg("bucket not found")
 	}
 
-	if bucket.UserID != ctx.UserID {
-		return nil, common.AuthErr
-	}
-
 	bucketID := bucket.ID
 
 	// Generate object key hash
@@ -164,7 +160,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	if uInfo.StorageUsed+file.Size > uInfo.StorageQuota {
+	if uInfo.StorageQuota != 0 && uInfo.StorageUsed+file.Size > uInfo.StorageQuota {
 		return nil, common.StorageQuotaOver
 	}
 
@@ -207,13 +203,14 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			}
 			return &req.Metadata
 		}(),
-		CallBack: func() error {
+		CallBack: func(tx *gorm.DB) error {
 			return srv.userRepo.UpdateStorageUsed(ctx, ctx.UserID, putResult.Size)
 		},
 	}
 
 	_, err = srv.objRepo.CreateObject(ctx, createObj)
 	if err != nil {
+		srv.storage.Delete(putResult.StoragePath)
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
@@ -347,7 +344,7 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 			return err
 		}
 
-		if obj.Status == consts.MultipartUploadStatusMergedVirtual {
+		if obj.IsMultipart == consts.ObjectIsMultipartMerged {
 			if err = srv.multipartRepo.DeleteMultipartPartsWithTx(tx, ctx, ctx.UserID, *obj.UploadID); err != nil {
 				return err
 			}

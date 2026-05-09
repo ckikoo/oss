@@ -127,9 +127,11 @@ func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
 
 	go func() {
 		for {
-			time.Sleep(time.Second)
+			time.Sleep(time.Second * 30)
 			if err := viper.WatchRemoteConfig(); err == nil {
-				_ = viper.Unmarshal(GlobalConfig)
+				viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
+					config.TagName = "yaml"
+				})
 			}
 		}
 

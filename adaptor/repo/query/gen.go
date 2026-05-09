@@ -34,7 +34,6 @@ func Use(db *gorm.DB, opts ...gen.DOOption) *Query {
 		PolicyCondition: newPolicyCondition(db, opts...),
 		PolicyPrincipal: newPolicyPrincipal(db, opts...),
 		PolicyResource:  newPolicyResource(db, opts...),
-		PresignedURL:    newPresignedURL(db, opts...),
 		User:            newUser(db, opts...),
 	}
 }
@@ -58,7 +57,6 @@ type Query struct {
 	PolicyCondition policyCondition
 	PolicyPrincipal policyPrincipal
 	PolicyResource  policyResource
-	PresignedURL    presignedURL
 	User            user
 }
 
@@ -83,7 +81,6 @@ func (q *Query) clone(db *gorm.DB) *Query {
 		PolicyCondition: q.PolicyCondition.clone(db),
 		PolicyPrincipal: q.PolicyPrincipal.clone(db),
 		PolicyResource:  q.PolicyResource.clone(db),
-		PresignedURL:    q.PresignedURL.clone(db),
 		User:            q.User.clone(db),
 	}
 }
@@ -115,7 +112,6 @@ func (q *Query) ReplaceDB(db *gorm.DB) *Query {
 		PolicyCondition: q.PolicyCondition.replaceDB(db),
 		PolicyPrincipal: q.PolicyPrincipal.replaceDB(db),
 		PolicyResource:  q.PolicyResource.replaceDB(db),
-		PresignedURL:    q.PresignedURL.replaceDB(db),
 		User:            q.User.replaceDB(db),
 	}
 }
@@ -137,7 +133,6 @@ type queryCtx struct {
 	PolicyCondition *policyConditionDo
 	PolicyPrincipal *policyPrincipalDo
 	PolicyResource  *policyResourceDo
-	PresignedURL    *presignedURLDo
 	User            *userDo
 }
 
@@ -159,7 +154,6 @@ func (q *Query) WithContext(ctx context.Context) *queryCtx {
 		PolicyCondition: q.PolicyCondition.WithContext(ctx),
 		PolicyPrincipal: q.PolicyPrincipal.WithContext(ctx),
 		PolicyResource:  q.PolicyResource.WithContext(ctx),
-		PresignedURL:    q.PresignedURL.WithContext(ctx),
 		User:            q.User.WithContext(ctx),
 	}
 }

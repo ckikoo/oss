@@ -38,7 +38,7 @@ func fmtUploadTokenKey(token string) string {
 }
 
 func fmtDownloadTokenKey(token string) string {
-	return fmt.Sprintf("%s:upload:%s", consts.ServerName, token)
+	return fmt.Sprintf("%s:download:%s", consts.ServerName, token)
 }
 
 func (t *Token) CreateUploadToken(ctx context.Context, token string, value string, expire time.Duration) error {

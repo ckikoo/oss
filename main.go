@@ -45,7 +45,6 @@ func initMysql(conf *config.Mysql) (*sql.DB, error) {
 	conf.MaxOpen = lo.Max([]int{conf.MaxOpen + 1, 10})
 
 	dsn := conf.GetDsn()
-	fmt.Printf("dsn: %v\n", dsn)
 	sqlDB, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
@@ -60,7 +59,7 @@ func initMysql(conf *config.Mysql) (*sql.DB, error) {
 		return nil, err
 	}
 
-	rows.Close()
+	defer rows.Close()
 
 	sqlDB.SetMaxIdleConns(conf.MaxIdle)
 	sqlDB.SetMaxOpenConns(conf.MaxOpen)

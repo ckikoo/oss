@@ -43,9 +43,8 @@ func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		// Check if user owns the bucket
-		if bucketDo.UserID != userID {
-			c.JSON(403, common.AuthErr.WithMsg("access denied: not bucket owner"))
+		if bucketDo == nil {
+			c.JSON(404, common.ResouceNotFoundErr)
 			c.Abort()
 			return
 		}

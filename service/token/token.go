@@ -123,11 +123,9 @@ func genToken(ak string, bucket, object, method, action string, ExpiresIn int64,
 	sb.WriteString(action)
 	sb.WriteString(":")
 
-	expire := time.Now().Add(time.Duration(ExpiresIn) * time.Second).UnixMilli()
-
-	sb.WriteString(gconv.String(expire))
+	sb.WriteString(gconv.String(ExpiresIn))
 
 	token := tools.HmacSHA256(sb.String(), secure)
 
-	return fmt.Sprintf("%s:%s:%d", ak, token, expire)
+	return fmt.Sprintf("%s:%s:%d", ak, token, ExpiresIn)
 }

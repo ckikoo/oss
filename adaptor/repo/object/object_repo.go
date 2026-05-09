@@ -85,7 +85,7 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 			return err
 		}
 
-		return object.CallBack()
+		return object.CallBack(tx)
 
 	})
 

@@ -7,7 +7,6 @@ import (
 	"oss/adaptor/repo/accesskey"
 	"oss/api/auth"
 	"oss/common"
-	"oss/config"
 	"oss/consts"
 	"oss/utils/tools"
 	"strconv"
@@ -161,7 +160,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		timestamp, _ := strconv.ParseInt(fields[1], 10, 64)
 		signature := fields[2]
 
-		// 2. 防重放：时间戳偏差不超过 5 分钟
+		// 2. 防重放：时间戳偏差不超过 30s
 		now := time.Now().Unix()
 		if math.Abs(float64(now-timestamp)) > 30 {
 			c.JSON(401, common.AuthErr.WithMsg("request expired"))
@@ -177,7 +176,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		sk, err := tools.AESDecrypt(akInfo.SecretKey, []byte(config.GlobalConfig.Security.AESKey))
+		sk, err := tools.AESDecrypt(akInfo.SecretKey, []byte(adaptor.GetConfig().Security.AESKey))
 		if err != nil {
 			c.JSON(500, common.ServerErr)
 			c.Abort()
