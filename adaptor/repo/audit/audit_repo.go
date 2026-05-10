@@ -3,12 +3,10 @@ package audit
 import (
 	"context"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -18,13 +16,8 @@ type OperationLogRepo struct {
 
 var _ IOperationLogRepo = (*OperationLogRepo)(nil)
 
-func NewOperationLogRepo(adaptor adaptor.IAdaptor) *OperationLogRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-	return &OperationLogRepo{db: ormDB}
+func NewOperationLogRepo(db *gorm.DB) *OperationLogRepo {
+	return &OperationLogRepo{db: db}
 }
 
 func (r *OperationLogRepo) ListByFilter(ctx context.Context, filter *do.OperationLogFilter) ([]*do.OperationLogDo, int64, error) {

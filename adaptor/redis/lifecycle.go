@@ -7,7 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	"github.com/gogf/gf/util/gconv"
 )
 
@@ -42,7 +42,7 @@ func NewLifecycle(adaptor adaptor.IAdaptor) *lifeCycle {
 func (l *lifeCycle) SetLifecycleEvent(ctx context.Context, bucketID int64, ruleID int64, prefix string, operation string, objectKey string, executeTime time.Time) error {
 	redisKey := getRedisKey(bucketID, ruleID, prefix, operation)
 
-	_, err := l.redis.ZAdd(redisKey, redis.Z{
+	_, err := l.redis.ZAdd(ctx, redisKey, &redis.Z{
 		Score:  float64(executeTime.UnixMilli()),
 		Member: objectKey,
 	}).Result()
@@ -54,7 +54,7 @@ func (l *lifeCycle) SetLifecycleEvent(ctx context.Context, bucketID int64, ruleI
 
 func (l *lifeCycle) GetPendingLifecycleEvents(ctx context.Context, bucketID int64, ruleID int64, prefix string, operation string) ([]string, error) {
 	redisKey := getRedisKey(bucketID, ruleID, prefix, operation)
-	strList, err := l.redis.ZRangeByScore(redisKey, redis.ZRangeBy{
+	strList, err := l.redis.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
 		Min:    gconv.String(0),
 		Max:    gconv.String(time.Now().UnixMilli()),
 		Offset: 0,
@@ -68,7 +68,7 @@ func (l *lifeCycle) GetPendingLifecycleEvents(ctx context.Context, bucketID int6
 
 func (l *lifeCycle) DelLifecycleEvent(ctx context.Context, bucketID int64, ruleID int64, prefix string, operation string, objectKey string) error {
 	redisKey := getRedisKey(bucketID, ruleID, prefix, operation)
-	_, err := l.redis.ZRem(redisKey, objectKey).Result()
+	_, err := l.redis.ZRem(ctx, redisKey, objectKey).Result()
 	if err != nil {
 		return err
 	}

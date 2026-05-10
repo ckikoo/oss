@@ -19,8 +19,8 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:       policyRepo.NewPolicyRepo(adaptor),
-		bucketRepo: bucketRepo.NewBucketRepo(adaptor),
+		repo:       policyRepo.NewPolicyRepo(adaptor.GetGORM()),
+		bucketRepo: bucketRepo.NewBucketRepo(adaptor.GetGORM()),
 	}
 }
 
@@ -49,7 +49,7 @@ func (srv *Service) CreateBucketPolicy(ctx *common.UserInfoCtx, bucketName strin
 
 	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	principals := make([]*do.PolicyPrincipalDo, 0, len(req.Principals))
@@ -99,7 +99,7 @@ func (srv *Service) ListBucketPolicies(ctx *common.UserInfoCtx, bucketName strin
 
 	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	policies, err := srv.repo.ListBucketPolicies(ctx, bucketDo.ID)

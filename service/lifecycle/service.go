@@ -21,16 +21,16 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:       lifecycleRepo.NewLifecycleRepo(adaptor),
-		bucketRepo: bucketRepo.NewBucketRepo(adaptor),
-		objectRepo: objectRepo.NewObjectRepo(adaptor),
+		repo:       lifecycleRepo.NewLifecycleRepo(adaptor.GetGORM()),
+		bucketRepo: bucketRepo.NewBucketRepo(adaptor.GetGORM()),
+		objectRepo: objectRepo.NewObjectRepo(adaptor.GetGORM()),
 	}
 }
 
 func (srv *Service) CreateLifecycleRule(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateLifecycleRuleReq) (*dto.CreateLifecycleRuleResp, common.Errno) {
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	status := int32(1)
@@ -76,7 +76,7 @@ func (srv *Service) ListLifecycleRules(ctx *common.UserInfoCtx, bucketName strin
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	rules, err := srv.repo.ListLifecycleRules(ctx, bucket.ID)
@@ -112,12 +112,12 @@ func (srv *Service) GetLifecycleRule(ctx *common.UserInfoCtx, bucketName string,
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	rule, err := srv.repo.GetLifecycleRule(ctx, bucket.ID, ruleID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	return &dto.LifecycleRuleItem{
@@ -143,7 +143,7 @@ func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	if req.RuleName == nil && req.Prefix == nil && req.TransitionDays == nil && req.TransitionStorageClass == nil && req.ExpirationDays == nil && req.Status == nil {
@@ -187,7 +187,7 @@ func (srv *Service) DeleteLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return common.ParamErr.WithErr(err)
+		return common.DatabaseErr.WithErr(err)
 	}
 
 	if err := srv.repo.DeleteLifecycleRule(ctx, bucket.ID, ruleID); err != nil {

@@ -13,7 +13,7 @@ import (
 
 // NewBucketACLMiddleware checks bucket ACL for operations
 func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	bucketRepo := bucket.NewBucketRepo(adaptor)
+	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		userID := c.GetInt64(consts.UserKeyContext)
 		if userID == 0 {
@@ -58,8 +58,8 @@ func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 
 // NewObjectACLMiddleware checks object ACL based on bucket ACL and object ACL
 func NewObjectACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	bucketRepo := bucket.NewBucketRepo(adaptor)
-	objectRepo := object.NewObjectRepo(adaptor)
+	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
+	objectRepo := object.NewObjectRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		userID := c.GetInt64(consts.UserKeyContext)
 		if userID == 0 {

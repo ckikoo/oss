@@ -23,7 +23,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:   repo.NewAccessKeyRepo(adaptor),
+		repo:   repo.NewAccessKeyRepo(adaptor.GetGORM()),
 		config: adaptor.GetConfig(),
 	}
 }
@@ -118,7 +118,7 @@ func (srv *Service) GetAccessKey(ctx context.Context, accessKey string) (*dto.Ac
 
 	ak, err := srv.repo.GetByAccessKey(ctx, accessKey)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	return &dto.AccessKeyItem{

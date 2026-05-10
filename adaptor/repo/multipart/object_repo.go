@@ -3,17 +3,15 @@ package multipart
 import (
 	"context"
 	"crypto/md5"
-	"errors"
 	"fmt"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ObjectRepo struct {
@@ -22,14 +20,8 @@ type ObjectRepo struct {
 
 var _ IMultipartRepo = (*ObjectRepo)(nil)
 
-func NewObjectRepo(adaptor adaptor.IAdaptor) *ObjectRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
-	return &ObjectRepo{db: ormDB}
+func NewObjectRepo(db *gorm.DB) *ObjectRepo {
+	return &ObjectRepo{db: db}
 }
 
 func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.CreateMultipartUpload) (int64, error) {
@@ -89,7 +81,19 @@ func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userId int64, u
 }
 
 func (r *ObjectRepo) UpdateMultipartUpload(ctx context.Context, userID int64, uploadID string, update *do.UpdateMultipartUpload) (*do.MultipartUploadDo, error) {
-	qs := query.Use(r.db).MultipartUpload
+	db := r.db.WithContext(ctx)
+	if err := r.updateMultipartUpload(ctx, db, userID, uploadID, update); err != nil {
+		return nil, err
+	}
+	return r.GetMultipartUploadByID(ctx, userID, uploadID)
+}
+
+func (r *ObjectRepo) UpdateMultipartUploadWithTx(tx *gorm.DB, ctx context.Context, userID int64, uploadID string, update *do.UpdateMultipartUpload) error {
+	return r.updateMultipartUpload(ctx, tx.WithContext(ctx), userID, uploadID, update)
+}
+
+func (r *ObjectRepo) updateMultipartUpload(ctx context.Context, db *gorm.DB, userID int64, uploadID string, update *do.UpdateMultipartUpload) error {
+	qs := query.Use(db).MultipartUpload
 
 	updates := map[string]interface{}{}
 	if update.TotalChunk != nil {
@@ -116,51 +120,42 @@ func (r *ObjectRepo) UpdateMultipartUpload(ctx context.Context, userID int64, up
 	}
 
 	if len(updates) == 0 {
-		return nil, gorm.ErrInvalidData
+		return gorm.ErrInvalidData
 	}
 
 	updates[qs.UpdatedAt.ColumnName().String()] = time.Now()
 
 	if _, err := qs.WithContext(ctx).Where(qs.UploadID.Eq(uploadID), qs.UserID.Eq(userID)).Updates(updates); err != nil {
-		return nil, err
+		return err
 	}
-	return r.GetMultipartUploadByID(ctx, userID, uploadID)
+	return nil
 }
 
 func (r *ObjectRepo) CreateOrUpdateMultipartPart(ctx context.Context, part *do.CreateMultipartPart) (bool, error) {
-	q := query.Use(r.db).MultipartPart
-	modelPart, err := q.WithContext(ctx).Where(q.UploadID.Eq(part.UploadID), q.PartNumber.Eq(part.PartNumber)).First()
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			modelPart = &model.MultipartPart{
-				UploadID:    part.UploadID,
-				PartNumber:  part.PartNumber,
-				Size:        part.Size,
-				Etag:        part.Etag,
-				StoragePath: part.StoragePath,
-				Status:      part.Status,
-			}
-
-			if err := r.db.WithContext(ctx).Create(modelPart).Error; err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-		return false, err
+	modelPart := &model.MultipartPart{
+		UploadID:    part.UploadID,
+		PartNumber:  part.PartNumber,
+		Size:        part.Size,
+		Etag:        part.Etag,
+		StoragePath: part.StoragePath,
+		Status:      part.Status,
 	}
 
-	updates := map[string]interface{}{
-		q.Size.ColumnName().String():        part.Size,
-		q.Etag.ColumnName().String():        part.Etag,
-		q.StoragePath.ColumnName().String(): part.StoragePath,
-		q.Status.ColumnName().String():      part.Status,
+	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "upload_id"}, {Name: "part_number"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"size":         part.Size,
+			"etag":         part.Etag,
+			"storage_path": part.StoragePath,
+			"status":       part.Status,
+		}),
+	}).Create(modelPart)
+	if result.Error != nil {
+		return false, result.Error
 	}
-	if err := r.db.WithContext(ctx).Model(&model.MultipartPart{}).
-		Where(q.UploadID.Eq(part.UploadID), q.PartNumber.Eq(part.PartNumber)).
-		Updates(updates).Error; err != nil {
-		return false, err
-	}
-	return false, nil
+
+	// RowsAffected == 1 表示插入；2 表示更新。
+	return result.RowsAffected == 1, nil
 }
 
 func (r *ObjectRepo) GetMultipartPart(ctx context.Context, userID int64, uploadID string, partNumber int32) (*do.MultipartPartDo, error) {

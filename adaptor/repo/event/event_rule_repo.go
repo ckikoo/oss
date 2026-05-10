@@ -2,12 +2,10 @@ package event
 
 import (
 	"context"
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -15,14 +13,8 @@ type eventRuleRepo struct {
 	db *gorm.DB
 }
 
-func NewEventRuleRepo(adaptor adaptor.IAdaptor) IEventRuleRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
-	return &eventRuleRepo{db: ormDB}
+func NewEventRuleRepo(db *gorm.DB) IEventRuleRepo {
+	return &eventRuleRepo{db: db}
 }
 
 func (r *eventRuleRepo) CreateEventRule(ctx context.Context, rule *do.EventRuleDo) (int64, error) {

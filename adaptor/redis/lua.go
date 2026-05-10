@@ -1,6 +1,6 @@
 package redis
 
-import "github.com/go-redis/redis"
+import "github.com/go-redis/redis/v8"
 
 // 释放锁脚本：只有当锁的值等于指定的 uuid 时才删除
 var luaUnlock = redis.NewScript(`

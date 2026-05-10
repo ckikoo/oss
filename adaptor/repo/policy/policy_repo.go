@@ -5,13 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 	"oss/utils/pool"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -21,13 +19,8 @@ type PolicyRepo struct {
 
 var _ IPolicyRepo = (*PolicyRepo)(nil)
 
-func NewPolicyRepo(adaptor adaptor.IAdaptor) *PolicyRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-	return &PolicyRepo{db: ormDB}
+func NewPolicyRepo(db *gorm.DB) *PolicyRepo {
+	return &PolicyRepo{db: db}
 }
 
 func (r *PolicyRepo) CreateBucketPolicy(ctx context.Context, bucketID int64, policy *do.CreateBucketPolicy) (int64, error) {
@@ -143,7 +136,7 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 	for idx, modelPolicy := range modelPolicies {
 		idx := idx
 		modelPolicy := modelPolicy
-		p.RunGo(func() {
+		if err := p.RunGo(func() {
 			localQ := query.Use(r.db)
 
 			principals, err := localQ.PolicyPrincipal.WithContext(ctx).Where(localQ.PolicyPrincipal.PolicyID.Eq(modelPolicy.ID)).Find()
@@ -208,7 +201,9 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 				Resources:  resourceItems,
 				Conditions: conditionItems,
 			}
-		})
+		}); err != nil {
+			setErr(err)
+		}
 	}
 
 	p.Wait()

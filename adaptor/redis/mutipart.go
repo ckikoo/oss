@@ -7,7 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	"github.com/gogf/gf/util/gconv"
 )
 
@@ -35,7 +35,7 @@ func fmtTimeoutOrderCancelZSetKey() string {
 }
 func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID string, time time.Time) error {
 	redisKey := fmtTimeoutOrderCancelZSetKey()
-	_, err := m.redis.ZAdd(redisKey, redis.Z{
+	_, err := m.redis.ZAdd(ctx, redisKey, &redis.Z{
 		Score:  float64(time.UnixMilli()),
 		Member: uploadID,
 	}).Result()
@@ -48,7 +48,7 @@ func (m *Multipart) SetTimeoutMultipartCancel(ctx context.Context, uploadID stri
 func (m *Multipart) GetTimeWaitMultipartCancel(ctx context.Context) ([]string, error) {
 	redisKey := fmtTimeoutOrderCancelZSetKey()
 
-	strList, err := m.redis.ZRangeByScore(redisKey, redis.ZRangeBy{
+	strList, err := m.redis.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
 		Min:    gconv.String(0),
 		Max:    gconv.String(time.Now().UnixMilli()),
 		Offset: 0,
@@ -63,7 +63,7 @@ func (m *Multipart) GetTimeWaitMultipartCancel(ctx context.Context) ([]string, e
 
 func (m *Multipart) DelTimeoutMultipartCancel(ctx context.Context, uploadID string) error {
 	redisKey := fmtTimeoutOrderCancelZSetKey()
-	_, err := m.redis.ZRem(redisKey, uploadID).Result()
+	_, err := m.redis.ZRem(ctx, redisKey, uploadID).Result()
 	if err != nil {
 		return err
 	}

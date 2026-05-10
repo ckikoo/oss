@@ -7,7 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 // ILock 锁接口
@@ -45,13 +45,13 @@ func (fl *lock) generateLockKey(key string) string {
 }
 func (fl *lock) AcquireLock(ctx context.Context, key string, uuid string, ttl time.Duration) (bool, error) {
 	lockKey := fl.generateLockKey(key)
-	return fl.redis.SetNX(lockKey, uuid, ttl).Result()
+	return fl.redis.SetNX(ctx, lockKey, uuid, ttl).Result()
 }
 
 // 释放锁
 func (fl *lock) ReleaseLock(ctx context.Context, key string, uuid string) error {
 	lockKey := fl.generateLockKey(key)
-	result, err := luaUnlock.Run(fl.redis, []string{lockKey}, uuid).Result()
+	result, err := luaUnlock.Run(ctx, fl.redis, []string{lockKey}, uuid).Result()
 	if err != nil {
 		return fmt.Errorf("failed to release lock: %w", err)
 	}
@@ -67,7 +67,7 @@ func (fl *lock) ReleaseLock(ctx context.Context, key string, uuid string) error 
 // 刷新锁
 func (fl *lock) RefreshLock(ctx context.Context, key string, uuid string, ttl time.Duration) error {
 	lockKey := fl.generateLockKey(key)
-	result, err := luaRefresh.Run(fl.redis, []string{lockKey}, uuid, ttl.Seconds()).Result()
+	result, err := luaRefresh.Run(ctx, fl.redis, []string{lockKey}, uuid, ttl.Seconds()).Result()
 	if err != nil {
 		return fmt.Errorf("failed to refresh lock: %w", err)
 	}
@@ -83,7 +83,7 @@ func (fl *lock) RefreshLock(ctx context.Context, key string, uuid string, ttl ti
 // 检查锁状态
 func (fl *lock) CheckLock(ctx context.Context, key string, uuid string) (bool, error) {
 	lockKey := fl.generateLockKey(key)
-	val, err := fl.redis.Get(lockKey).Result()
+	val, err := fl.redis.Get(ctx, lockKey).Result()
 	if err == redis.Nil {
 		return false, nil // 锁不存在
 	}
@@ -97,7 +97,7 @@ func (fl *lock) CheckLock(ctx context.Context, key string, uuid string) (bool, e
 // 强制释放锁（管理员操作）
 func (fl *lock) ForceReleaseLock(ctx context.Context, key string) error {
 	lockKey := fl.generateLockKey(key)
-	err := fl.redis.Del(lockKey).Err()
+	err := fl.redis.Del(ctx, lockKey).Err()
 	if err != nil {
 		return fmt.Errorf("failed to force release lock: %w", err)
 	}

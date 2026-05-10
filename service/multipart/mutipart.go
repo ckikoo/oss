@@ -18,6 +18,7 @@ import (
 	"oss/service/event"
 	"oss/utils/tools"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,19 +36,21 @@ type Service struct {
 	asyncRepo     async.IAsyncTaskRepo
 	asyncRedis    redis.ITask
 	eventService  *event.Service
+	tokenRedis    redis.IToken
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		userRepo:      admin.NewUserRepo(adaptor),
-		objRepo:       object.NewObjectRepo(adaptor),
-		bucketRepo:    bucket.NewBucketRepo(adaptor),
-		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
+		userRepo:      admin.NewUserRepo(adaptor.GetGORM()),
+		objRepo:       object.NewObjectRepo(adaptor.GetGORM()),
+		bucketRepo:    bucket.NewBucketRepo(adaptor.GetGORM()),
+		multipartRepo: multipartRepo.NewObjectRepo(adaptor.GetGORM()),
 		rdsmultipart:  redis.NewMultipart(adaptor),
 		storage:       adaptor.GetStorage(),
-		asyncRepo:     async.NewAsyncTaskRepo(adaptor),
+		asyncRepo:     async.NewAsyncTaskRepo(adaptor.GetGORM()),
 		asyncRedis:    redis.NewTask(adaptor),
 		eventService:  event.NewService(adaptor),
+		tokenRedis:    redis.NewToken(adaptor),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -69,7 +72,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
-	if temp != nil {
+	if temp != nil && req.Overwrite == false {
 		return nil, common.FileNameExists
 	}
 
@@ -139,11 +142,27 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 // upload_etag 参数用于校验文件是否和用户传递的一致，防止用户上传了错误的文件
 // uploadID参数用于校验用户是否有权限上传这个文件
 
-func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
+func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
+
+	limitStr, err := srv.tokenRedis.GetUploadTokenFields(ctx, token, redis.FieldSizeLimit)
+	if err != nil {
+		return nil, common.RedisErr.WithErr(err)
+	}
+
+	if limitStr[redis.FieldSizeLimit] != "" {
+		limit, err := strconv.ParseInt(limitStr[redis.FieldSizeLimit], 10, 64)
+		if err != nil {
+			return nil, common.ErrInternalServer.WithErr(err)
+		}
+
+		if int64(len(data)) > limit {
+			return nil, common.ParamErr.WithMsg(fmt.Sprintf("part size exceeds limit of %d bytes", limit))
+		}
+	}
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
@@ -155,14 +174,18 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 		return nil, common.ParamErr.WithMsg("multipart upload is not in uploading state")
 	}
 
+	if partNumber <= 0 || partNumber > upload.TotalChunk {
+		return nil, common.ParamErr.WithMsg("part_number exceeds total_chunk")
+	}
+
+	dataSize := int64(len(data))
+	if uinfo.StorageQuota > 0 && uinfo.StorageUsed+dataSize > uinfo.StorageQuota {
+		return nil, common.StorageQuotaOver
+	}
+
 	res, err := srv.storage.PutPart(ctx, upload.BucketName, uploadID, partNumber, bytes.NewReader(data))
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
-	}
-
-	if uinfo.StorageQuota > 0 && uinfo.StorageUsed+res.Size > uinfo.StorageQuota {
-		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
-		return nil, common.StorageQuotaOver
 	}
 
 	if res.Etag != upload_etag {
@@ -187,11 +210,6 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 	lastActive := time.Now()
 	update := &do.UpdateMultipartUpload{LastActiveAt: &lastActive}
 
-	if upload.TotalChunk < partNumber {
-		totalChunk := partNumber
-		update.TotalChunk = &totalChunk
-	}
-
 	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
@@ -203,6 +221,8 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, upload_etag str
 		Status:     consts.MultipartPartStatusConfirmed,
 	}, common.OK
 }
+
+// TODO 回调机制，以及 允许覆盖策略
 
 // 先做的是伪合并逻辑， 任务放入redis ，由后台工作线程异步执行真正的合并，合并完成后更新状态为已合并
 func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
@@ -216,16 +236,12 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
-	}
-
-	if upload.UserID != ctx.UserID {
-		return nil, common.AuthErr
 	}
 
 	if upload.Status != consts.MultipartUploadStatusUploading {
@@ -326,8 +342,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		Acl:           consts.ObjectAclInheritBucket,
 		Metadata:      metadata,
 		CallBack: func(tx *gorm.DB) error {
-			// TODO
-			if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+			if err := srv.multipartRepo.UpdateMultipartUploadWithTx(tx, ctx, ctx.UserID, uploadID, update); err != nil {
 				return err
 			}
 			return srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, ctx.UserID, totalSize)

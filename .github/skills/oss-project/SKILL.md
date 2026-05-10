@@ -2,14 +2,19 @@
 name: oss-project-structure
 user-invocable: true
 description: >
-  OSS 项目的架构规范和开发指南。
-  当需要新增功能模块、理解项目分层结构、遵循命名规范时，使用此 skill。
-  场景："如何添加新的存储类型"、"Object 模块如何扩展"、"项目架构是什么"。
+  OSS 项目的架构规范和开发指南，强调高性能 Go 代码、全层接口抽象和错误最小化。
+  当需要新增功能模块、理解项目分层结构、遵循命名规范、设计接口、审查性能问题时，使用此 skill。
+  场景："如何添加新的存储类型"、"Object 模块如何扩展"、"项目架构是什么"、"如何优化接口设计"、"减少内存分配"。
+  每次涉及 Go 代码生成、接口定义、Service/Repo/Handler 任何一层的实现时，必须使用此 skill。
 applyTo:
   - "**/*.go"
 ---
 
 # OSS 项目架构与规范 Skill
+
+> **核心原则**：每一层都必须面向接口编程，不依赖具体实现。高性能优先：减少分配、避免锁竞争、善用 pool 和流式处理。防御性编程：所有错误显式处理，绝不 panic。
+
+---
 
 ## 📐 项目整体架构
 
@@ -22,13 +27,13 @@ applyTo:
 ┌──────────────▼──────────────────────────────────────┐
 │         API Controllers (HTTP Layer)                 │
 │       api/auth/*.go                                  │
-│   (Handlers: CreateBucket, PutObject, etc.)         │
+│    interface IXxxHandler (每个模块定义)              │
 └──────────────┬──────────────────────────────────────┘
                │
 ┌──────────────▼──────────────────────────────────────┐
 │       Service Layer (Business Logic)                 │
-│    service/{module}/service.go                       │
-│ (Orchestrate: repo, storage, error handling)        │
+│    service/{module}/iservice.go  ← 接口              │
+│    service/{module}/service.go   ← 实现              │
 └──────────────┬──────────────────────────────────────┘
                │
        ┌───────┴────────┬─────────────┐
@@ -36,371 +41,675 @@ applyTo:
 ┌──────▼────┐   ┌─────▼─────┐  ┌────▼──────┐
 │Repository │   │  Storage  │  │   Redis   │
 │  Layer    │   │   Layer   │  │   Cache   │
-│           │   │           │  │           │
-│ adaptor/  │   │ adaptor/  │  │ adaptor/  │
-│ repo/     │   │ storage/  │  │ redis/    │
+│ iXxx.go   │   │istoarge.go│  │ itoken.go │
+│ impl.go   │   │ impl.go   │  │ impl.go   │
 └───────────┘   └───────────┘  └───────────┘
-
-       ├─ MySQL (via GORM)
-       ├─ Local Disk / S3 / MinIO
-       └─ Redis (locks, tokens, cache)
 ```
+
+**全层接口规则**：
+- **Handler 层** → `IXxxHandler` 接口，Router 仅依赖接口注册路由
+- **Service 层** → `IXxxService` 接口，Handler 仅依赖接口
+- **Repo 层** → `IXxxRepo` 接口，Service 仅依赖接口；`WithTx(Tx)` 返回 tx 绑定的新实例，**无任何 `XxxWithTx(*gorm.DB)` 变体**
+- **事务层** → `ITxManager` 接口，Service 通过它开启事务，**零 gorm 依赖**；`Tx` 为不透明 interface{}，gorm 细节封装在 adaptor
+- **Storage 层** → `IStorage` 接口，Service 仅依赖接口
+- **Redis 层** → `IToken`, `ILocker`, `IMultipart` 接口，Service 仅依赖接口
 
 ---
 
-## 📦 分层说明
+## 🚀 高性能 Go 编码规范
 
-### 1️⃣ **Router 层** (`router/`)
+### 内存与分配
 
-**职责**: HTTP 路由注册、中间件链接
-
-**关键文件**:
-- `router.go` — 所有路由的统一注册点
-- `auth.go` — 认证中间件（AK/SK）
-- `acl.go` — 访问控制中间件
-- `audit.go` — 操作日志中间件
-
-**规范**:
 ```go
-// 分组路由，逐级应用中间件
-authGroup := h.Group("/api/v1", 
-  NewAccessKeyMiddleware(adaptor),
-  NewOperationLogMiddleware(adaptor))
+// ✅ 预分配已知容量的 slice
+objects := make([]*dto.ObjectResp, 0, len(rows))
 
-bucketGroup := authGroup.Group("", 
-  NewBucketACLMiddleware(adaptor))
+// ✅ 复用 buffer，避免频繁分配
+var bufPool = sync.Pool{
+  New: func() any { return new(bytes.Buffer) },
+}
+buf := bufPool.Get().(*bytes.Buffer)
+buf.Reset()
+defer bufPool.Put(buf)
 
-bucketGroup.POST("/buckets", bucketCtrl.CreateBucket)
-```
-
-**要点**:
-- 所有受保护端点都要通过 `NewAccessKeyMiddleware`
-- 特定资源的 ACL 检查放在次级中间件
-- 路由版本化（`/api/v1`）
-
----
-
-### 2️⃣ **API 层** (`api/auth/`)
-
-**职责**: HTTP 请求解析、响应序列化、参数校验
-
-**关键文件**:
-- `auth.go` — AccessKey 相关接口
-- `bucket.go` — Bucket 操作接口
-- `object.go` — Object 存储接口
-- `multipart.go` — Multipart 上传接口
-- `policy.go` — 权限策略接口
-- `lifecycle.go` — 生命周期规则接口
-
-**规范**:
-```go
-type CreateBucketReq struct {
-  BucketName string `json:"bucket_name"` // 必填，小写下划线
-  Acl        string `json:"acl"`         // 可选
+// ✅ 流式处理大文件，不要 ReadAll
+func (srv *objectService) PutObject(ctx context.Context, r io.Reader) error {
+  // 直接 stream 到 storage，不在内存中 buffer
+  return srv.storage.Put(ctx, bucket, key, r)
 }
 
-func (ctrl *BucketCtrl) CreateBucket(ctx context.Context, c *app.RequestContext) {
+// ❌ 禁止：对大对象使用 io.ReadAll
+data, _ := io.ReadAll(r)  // 危险！可能 OOM
+```
+
+### 并发与锁
+
+```go
+// ✅ 读多写少场景用 sync.RWMutex
+type cache struct {
+  mu    sync.RWMutex
+  items map[string]*entry
+}
+func (c *cache) get(key string) (*entry, bool) {
+  c.mu.RLock()
+  defer c.mu.RUnlock()
+  v, ok := c.items[key]
+  return v, ok
+}
+
+// ✅ 无锁计数用 atomic
+var reqCount atomic.Int64
+reqCount.Add(1)
+
+// ✅ 并行独立操作用 errgroup
+g, gctx := errgroup.WithContext(ctx)
+g.Go(func() error { return srv.repoA.Do(gctx) })
+g.Go(func() error { return srv.repoB.Do(gctx) })
+if err := g.Wait(); err != nil { ... }
+
+// ❌ 禁止：持锁做 I/O 或调用外部服务
+```
+
+### Context 与超时
+
+```go
+// ✅ 所有 I/O 必须带 context，并设置合理超时
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+
+// ✅ 从 context 中检测取消
+select {
+case <-ctx.Done():
+  return ctx.Err()
+default:
+}
+
+// ❌ 禁止：忽略 context.Done() 的长循环
+```
+
+### 错误处理
+
+```go
+// ✅ 错误包装保留调用链（模块.方法: 动作）
+if err := srv.repo.Create(ctx, obj); err != nil {
+  return fmt.Errorf("objectService.PutObject: create record: %w", err)
+}
+
+// ✅ Service boundary：只用 repoerr 哨兵，不碰任何 ORM 类型
+// repoerr 是 repo 层对外的错误契约，切库时只改 repo 实现，service 不动
+func toErrno(err error) common.Errno {
+  switch {
+  case errors.Is(err, repoerr.ErrNotFound):   return common.NotFoundErr
+  case errors.Is(err, repoerr.ErrDuplicate):  return common.ConflictErr
+  case errors.Is(err, repoerr.ErrFKViolated): return common.ConflictErr.WithMsg("related resource not found")
+  default:                                     return common.DatabaseErr.WithErr(err)
+  }
+}
+
+// ❌ 禁止：在 service 层 import gorm 并检查 gorm.ErrRecordNotFound
+// ❌ 禁止：_ = err 或吞掉错误
+// ❌ 禁止：panic（除非 main 初始化阶段）
+```
+
+---
+
+## 📦 分层说明与接口规范
+
+### 1️⃣ Router 层 (`router/`)
+
+Router 只依赖 Handler 接口，**不 import 任何具体实现**：
+
+```go
+// router/router.go
+type RouterDeps struct {
+  BucketHandler api.IBucketHandler
+  ObjectHandler api.IObjectHandler
+  AuthHandler   api.IAuthHandler
+}
+
+func Register(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) {
+  authGroup := h.Group("/api/v1",
+    middleware.NewAccessKey(adaptor),
+    middleware.NewOperationLog(adaptor))
+
+  bucketGroup := authGroup.Group("", middleware.NewBucketACL(adaptor))
+  bucketGroup.POST("/buckets", deps.BucketHandler.CreateBucket)
+  bucketGroup.GET("/buckets",  deps.BucketHandler.ListBuckets)
+
+  objectGroup := bucketGroup.Group("/buckets/:bucket_name")
+  objectGroup.PUT("/objects/*key", deps.ObjectHandler.PutObject)
+  objectGroup.GET("/objects/*key", deps.ObjectHandler.GetObject)
+}
+```
+
+---
+
+### 2️⃣ API Handler 层 (`api/auth/`)
+
+**每个模块都要定义接口**，Router 和测试都面向接口：
+
+```go
+// api/auth/ibucket.go
+type IBucketHandler interface {
+  CreateBucket(ctx context.Context, c *app.RequestContext)
+  ListBuckets(ctx context.Context, c *app.RequestContext)
+  DeleteBucket(ctx context.Context, c *app.RequestContext)
+}
+
+// api/auth/bucket.go
+type BucketHandler struct {
+  svc service.IBucketService  // ← 依赖接口，不依赖具体实现
+}
+
+func NewBucketHandler(svc service.IBucketService) IBucketHandler {
+  return &BucketHandler{svc: svc}
+}
+
+func (h *BucketHandler) CreateBucket(ctx context.Context, c *app.RequestContext) {
   var req dto.CreateBucketReq
   if err := c.BindJSON(&req); err != nil {
-    c.JSON(400, resp.NewErrResp(common.ParamErr))
+    c.JSON(400, resp.NewErrResp(common.ParamErr.WithErr(err)))
     return
   }
-  
-  result, errno := ctrl.bucketService.CreateBucket(ctx, &req)
+  // 从中间件获取用户信息
+  userCtx := middleware.MustUserInfo(c)
+
+  result, errno := h.svc.CreateBucket(ctx, userCtx, &req)
   if errno.NotOk() {
-    c.JSON(errno.Code, resp.NewErrResp(errno))
+    c.JSON(errno.HTTPCode(), resp.NewErrResp(errno))
     return
   }
-  
   c.JSON(200, resp.NewSuccessResp(result))
 }
 ```
 
-**要点**:
-- `UserInfoCtx` 从中间件注入，包含 `UserID`、`AccessKey` 等
-- 参数校验在 handler 中进行
-- 错误返回统一用 `common.Errno`
-- Response 统一用 `resp.NewErrResp()`、`resp.NewSuccessResp()`
+**Handler 规范**：
+- 只做：参数绑定 → 调用 service → 序列化响应
+- 不包含任何业务逻辑
+- 参数校验失败立即返回，不往下传递
 
 ---
 
-### 3️⃣ **Service 层** (`service/{module}/`)
+### 3️⃣ Service 层 (`service/{module}/`)
 
-**职责**: 业务逻辑编排、事务控制、多层交互
+**接口与实现分离，这是最关键的一层**：
 
-**关键模块**:
-- `service/bucket/` — Bucket 生命周期管理
-- `service/object/` — Object 存储和检索
-- `service/multipart/` — Multipart 上传编排
-- `service/policy/` — 权限策略应用
-- `service/lifecycle/` — 生命周期规则执行
-- `service/token/` — Token 生成和验证
-
-**规范**:
 ```go
-type Service struct {
-  userRepo      admin.IUser           // 接口依赖注入
-  objRepo       objectRepo.IObjectRepo
-  bucketRepo    bucket.IBucketRepo
-  storage       storage.IStorage      // 存储抽象
-  db            *gorm.DB              // 事务用
+// service/bucket/iservice.go
+type IBucketService interface {
+  CreateBucket(ctx context.Context, userCtx *common.UserInfoCtx, req *dto.CreateBucketReq) (*dto.BucketResp, common.Errno)
+  ListBuckets(ctx context.Context, userCtx *common.UserInfoCtx) ([]*dto.BucketResp, common.Errno)
+  DeleteBucket(ctx context.Context, userCtx *common.UserInfoCtx, bucketName string) common.Errno
 }
 
-// 构造函数：依赖从 Adaptor 获取
-func NewService(adaptor adaptor.IAdaptor) *Service {
-  return &Service{
-    userRepo:   admin.NewUserRepo(adaptor),
-    objRepo:    objectRepo.NewObjectRepo(adaptor),
-    bucketRepo: bucket.NewBucketRepo(adaptor),
-    storage:    adaptor.GetStorage(),
-    db:         adaptor.GetDB(),
+// service/bucket/service.go
+type bucketService struct {
+  bucketRepo bucketRepo.IBucketRepo  // ← 接口，零 gorm 依赖
+  userRepo   adminRepo.IUserRepo     // ← 接口
+  storage    storage.IStorage        // ← 接口
+  locker     redis.ILocker           // ← 接口
+  txManager  adaptor.ITxManager      // ← 接口，不持有 *gorm.DB
+  logger     *zap.Logger
+}
+
+func NewService(a adaptor.IAdaptor) IBucketService {
+  return &bucketService{
+    bucketRepo: bucketRepo.New(a),
+    userRepo:   adminRepo.New(a),
+    storage:    a.GetStorage(),
+    locker:     a.GetLocker(),
+    txManager:  a.GetTxManager(),   // ← 不再 GetDB()
+    logger:     a.GetLogger().With(zap.String("module", "bucket")),
   }
 }
 
-// 业务方法：返回 (result, error) 或 common.Errno
-func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
-  // 1. 参数校验
-  if req.BucketName == "" {
-    return nil, common.ParamErr.WithMsg("bucket_name required")
+func (s *bucketService) CreateBucket(ctx context.Context, userCtx *common.UserInfoCtx, req *dto.CreateBucketReq) (*dto.BucketResp, common.Errno) {
+  // 1. 幂等锁：防止并发创建同名 bucket
+  locked, err := s.locker.Lock(ctx, "bucket:create:"+req.BucketName, 5*time.Second)
+  if err != nil || !locked {
+    return nil, common.ConflictErr.WithMsg("bucket is being created")
   }
-  
-  // 2. 业务逻辑
-  bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
+  defer s.locker.Unlock(ctx, "bucket:create:"+req.BucketName)
+
+  // 2. 业务校验
+  exists, err := s.bucketRepo.ExistsByName(ctx, userCtx.UserID, req.BucketName)
   if err != nil {
+    s.logger.Error("check bucket exists", zap.String("name", req.BucketName), zap.Error(err))
     return nil, common.DatabaseErr.WithErr(err)
   }
-  
-  // 3. 存储操作（使用接口，支持多种后端）
-  f, err := file.Open()
-  defer f.Close()
-  putResult, err := srv.storage.Put(ctx, req.BucketName, req.ObjectKey, f)
-  
-  // 4. 数据库持久化 + 计量更新（事务）
-  err = srv.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-    if err := srv.objRepo.CreateObjectWithTx(tx, createObj); err != nil {
-      return err
-    }
-    return srv.userRepo.UpdateStorageUsedWithTx(tx, ctx.UserID, putResult.Size)
+  if exists {
+    return nil, common.ConflictErr.WithMsg("bucket already exists")
+  }
+
+  // 3. 持久化（Pattern C 事务：service 零 gorm 感知）
+  var bucketDo *do.BucketDo
+  txErr := s.txManager.RunInTx(ctx, func(tx adaptor.Tx) error {
+    // WithTx 返回 tx 绑定的新 repo 实例，方法名与普通调用完全相同
+    txBucket := s.bucketRepo.WithTx(tx)
+    var e error
+    bucketDo, e = txBucket.Create(ctx, &do.CreateBucket{
+      UserID:     userCtx.UserID,
+      BucketName: req.BucketName,
+      Acl:        req.Acl,
+    })
+    return e
   })
-  
-  // 5. 错误转换和响应
+  if txErr != nil {
+    s.logger.Error("create bucket tx", zap.Error(txErr))
+    return nil, toErrno(txErr)
+  }
+
+  s.logger.Info("bucket created", zap.String("name", req.BucketName), zap.Int64("user", userCtx.UserID))
+  return toBucketResp(bucketDo), common.OK
+}
+
+// 多 repo 联动示例（如 PutObject：同时写 object 记录 + 更新 bucket 统计）
+func (s *objectService) PutObject(ctx context.Context, userCtx *common.UserInfoCtx, req *dto.PutObjectReq, r io.Reader) (*dto.PutObjectResp, common.Errno) {
+  // 1. 先写存储（不在事务内，避免持锁做 I/O）
+  putResult, err := s.storage.Put(ctx, req.BucketName, req.ObjectKey, r)
   if err != nil {
-    if errors.As(err, &errno) {
-      return nil, errno
-    }
-    return nil, common.DatabaseErr.WithErr(err)
+    return nil, common.ServerErr.WithErr(err)
   }
-  
-  return &dto.PutObjectResp{...}, common.OK
+
+  // 2. 事务：object 记录 + bucket 统计原子写入
+  var objDo *do.ObjectDo
+  txErr := s.txManager.RunInTx(ctx, func(tx adaptor.Tx) error {
+    txObj    := s.objectRepo.WithTx(tx)   // tx 绑定，方法名不变
+    txBucket := s.bucketRepo.WithTx(tx)
+
+    var e error
+    objDo, e = txObj.Create(ctx, &do.CreateObject{...})
+    if e != nil { return e }
+
+    return txBucket.UpdateStats(ctx, userCtx.UserID, req.BucketName, 1, putResult.Size)
+  })
+  if txErr != nil {
+    // 存储已写入，记录孤儿对象日志，由后台 GC 清理
+    s.logger.Error("put object tx failed, orphan storage", zap.String("path", putResult.StoragePath), zap.Error(txErr))
+    return nil, toErrno(txErr)
+  }
+  return toObjectResp(objDo), common.OK
 }
 ```
-
-**关键设计**:
-- 依赖从 `Adaptor` 获取（便于测试和扩展）
-- 所有 repo 操作用接口，支持多实现
-- 事务管理在 service 层
-- 错误处理使用 `common.Errno`
-- 复杂操作要添加日志（zap.logger）
 
 ---
 
-### 4️⃣ **Repository 层** (`adaptor/repo/`)
+### 4️⃣ Repository 层 (`adaptor/repo/{module}/`)
 
-**职责**: 数据库 CRUD，隐藏 ORM 细节
-
-**核心规范**:
-```
-每个模块（module）= {
-  - i{module}.go         ← 接口定义
-  - {module}_repo.go    ← 实现代码
-}
-
-示例：
-  bucket/
-  ├── ibucket.go        ← interface IBucketRepo
-  └── bucket_repo.go    ← type BucketRepo struct
-  
-  object/
-  ├── iobject.go        ← interface IObjectRepo
-  └── object_repo.go    ← type ObjectRepo struct
-```
-
-**规范**:
 ```go
-// ─ 接口定义 (ibucket.go) ─
+// adaptor/repo/bucket/ibucket.go
 type IBucketRepo interface {
-  CreateBucket(ctx context.Context, bucket *do.CreateBucket) (*do.BucketDo, error)
-  GetByName(ctx context.Context, userID int64, bucketName string) (*do.BucketDo, error)
+  // ── 事务工厂 ──────────────────────────────────────────
+  // WithTx 返回绑定到 tx 的新 repo 实例；原有方法名不变，无任何 XxxWithTx 变体
+  WithTx(tx adaptor.Tx) IBucketRepo
+
+  // ── 普通方法（事务内外调用方式完全相同）────────────────
+  Create(ctx context.Context, b *do.CreateBucket) (*do.BucketDo, error)
+  GetByName(ctx context.Context, userID int64, name string) (*do.BucketDo, error)
+  ExistsByName(ctx context.Context, userID int64, name string) (bool, error)
   ListByUser(ctx context.Context, userID int64) ([]*do.BucketDo, error)
-  UpdateBucketStatsWithTx(tx *gorm.DB, ctx context.Context, userID int64, bucketName string, objCount, size int64) error
+  UpdateStats(ctx context.Context, userID int64, name string, objDelta, sizeDelta int64) error
+  Delete(ctx context.Context, userID int64, name string) error
 }
 
-// ─ 实现 (bucket_repo.go) ─
-type BucketRepo struct {
-  db    *gorm.DB
-  cache redis.Client  // 可选
+// adaptor/repo/bucket/bucket_repo.go
+type bucketRepo struct {
+  db  *gorm.DB           // 持有 db 或 tx，外部无感知
+  rds redis.UniversalClient
 }
 
-func (r *BucketRepo) GetByName(ctx context.Context, userID int64, bucketName string) (*do.BucketDo, error) {
-  var bucket model.Bucket
-  if err := r.db.WithContext(ctx).
-    Where("user_id = ? AND bucket_name = ?", userID, bucketName).
-    First(&bucket).Error; err != nil {
-    return nil, err
+func New(a adaptor.IAdaptor) IBucketRepo {
+  return &bucketRepo{db: a.GetDB(), rds: a.GetRedis()}
+}
+
+// WithTx：唯一知道 Tx 底层是 *gorm.DB 的地方
+func (r *bucketRepo) WithTx(tx adaptor.Tx) IBucketRepo {
+  return &bucketRepo{
+    db:  tx.(*gorm.DB), // 类型断言仅在 repo 实现层出现
+    rds: r.rds,
   }
-  return r.toDo(&bucket), nil
+}
+
+// 方法签名对事务透明，r.db 可能是 *gorm.DB 也可能是事务 tx
+func (r *bucketRepo) Create(ctx context.Context, b *do.CreateBucket) (*do.BucketDo, error) {
+  row := model.Bucket{UserID: b.UserID, BucketName: b.BucketName, Acl: b.Acl}
+  if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+    return nil, wrapErr(err) // ← 所有出口统一经过 wrapErr
+  }
+  return r.toDo(&row), nil
+}
+
+func (r *bucketRepo) ExistsByName(ctx context.Context, userID int64, name string) (bool, error) {
+  var count int64
+  err := r.db.WithContext(ctx).Model(&model.Bucket{}).
+    Where("user_id = ? AND bucket_name = ?", userID, name).
+    Count(&count).Error
+  if err != nil {
+    return false, wrapErr(err)
+  }
+  return count > 0, nil
+}
+
+func (r *bucketRepo) ListByUser(ctx context.Context, userID int64) ([]*do.BucketDo, error) {
+  var rows []model.Bucket
+  if err := r.db.WithContext(ctx).
+    Where("user_id = ?", userID).
+    Order("created_at DESC").
+    Find(&rows).Error; err != nil {
+    return nil, wrapErr(err)
+  }
+  result := make([]*do.BucketDo, 0, len(rows)) // 预分配
+  for i := range rows {
+    result = append(result, r.toDo(&rows[i]))
+  }
+  return result, nil
+}
+
+// wrapErr：GORM 实现的错误映射，切库时只改这一个函数
+// 对应文件：adaptor/repo/bucket/errors.go（每个 repo 包一份，或共用 internal/repoerr）
+func wrapErr(err error) error {
+  if err == nil {
+    return nil
+  }
+  if errors.Is(err, gorm.ErrRecordNotFound) {
+    return repoerr.ErrNotFound
+  }
+  var mysqlErr *mysql.MySQLError
+  if errors.As(err, &mysqlErr) {
+    switch mysqlErr.Number {
+    case 1062:       return repoerr.ErrDuplicate
+    case 1451, 1452: return repoerr.ErrFKViolated
+    }
+  }
+  // 未知错误：原样透传，service 会归类为 DatabaseErr
+  return err
 }
 ```
 
-**要点**:
-- 方法名统一：Create, Get, List, Update, Delete, DeleteXxxWithTx
-- 使用 `context.Context` 传递用户信息和超时
-- 分离接口和实现，便于 mock 测试
-- 转换层（`toDo()`, `fromDo()`）隐藏模型细节
+**Repo 规范**：
+- 接口必须有 `WithTx(tx adaptor.Tx) IXxxRepo`，位于接口第一行
+- **禁止** `CreateWithTx(tx *gorm.DB, ...)` 等 `XxxWithTx` 变体——方法名在事务内外完全一致
+- 类型断言 `tx.(*gorm.DB)` 只出现在 `WithTx` 实现中，其他地方禁止
+- **所有 error 出口必须经过 `wrapErr`**，将底层 ORM 错误映射为 `repoerr` 哨兵
+- 普通方法统一：`Create`, `GetByXxx`, `ListByXxx`, `UpdateXxx`, `Delete`
+- 循环用 `for i := range rows` 避免复制大结构体
 
 ---
 
-### 5️⃣ **Storage 层** (`adaptor/storage/`)
+### 4½️ Repo 错误规范 (`adaptor/repo/repoerr/`)
 
-**职责**: 抽象物理存储，支持多种后端
+> **核心目标**：repo 层是切换底层依赖（GORM → SQLC → 原生 SQL）的隔离墙。  
+> service 层只认 `repoerr` 哨兵，永远不 import 任何 ORM 包。
 
-**接口设计**:
 ```go
+// adaptor/repo/repoerr/errors.go
+// 这是 repo 接口契约的一部分——与底层实现无关
+// 新增错误类型在这里定义，所有实现负责映射，service 层只消费这里的值
+
+package repoerr
+
+import "errors"
+
+var (
+  // ErrNotFound 查询无结果（对应 gorm.ErrRecordNotFound / sql.ErrNoRows）
+  ErrNotFound = errors.New("repo: record not found")
+
+  // ErrDuplicate 唯一键冲突（对应 MySQL 1062 / PG 23505）
+  ErrDuplicate = errors.New("repo: duplicate key")
+
+  // ErrFKViolated 外键约束失败（对应 MySQL 1451/1452 / PG 23503）
+  ErrFKViolated = errors.New("repo: foreign key violated")
+)
+```
+
+**切库时各实现的 `wrapErr` 对照表**：
+
+| 错误场景 | GORM + MySQL | SQLC + MySQL | 原生 `database/sql` |
+|---|---|---|---|
+| 记录不存在 | `gorm.ErrRecordNotFound` | `sql.ErrNoRows` | `sql.ErrNoRows` |
+| 唯一键冲突 | `MySQLError.Number == 1062` | `MySQLError.Number == 1062` | 同左 |
+| 外键冲突 | `MySQLError.Number 1451/1452` | 同左 | 同左 |
+
+**切到 SQLC 时只需替换 `wrapErr`**：
+```go
+// adaptor/repo/bucket/errors.go  ← SQLC 版本
+func wrapErr(err error) error {
+  if err == nil { return nil }
+  if errors.Is(err, sql.ErrNoRows) {
+    return repoerr.ErrNotFound
+  }
+  var mysqlErr *mysql.MySQLError
+  if errors.As(err, &mysqlErr) {
+    switch mysqlErr.Number {
+    case 1062:       return repoerr.ErrDuplicate
+    case 1451, 1452: return repoerr.ErrFKViolated
+    }
+  }
+  return err
+}
+// service 层、接口定义、repoerr 包：一行不动
+```
+
+**三层错误边界**（全局规则）：
+```
+Repo 实现层    →  wrapErr() 映射为 repoerr 哨兵，不允许 ORM 错误外泄
+Service 层     →  toErrno() 映射为 common.Errno，不允许 repoerr 外泄到 Handler
+Handler 层     →  统一序列化为 JSON 响应，不允许内部错误暴露给客户端
+```
+
+---
+
+### 5️⃣ Storage 层 (`adaptor/storage/`)
+
+```go
+// adaptor/storage/istorage.go
 type IStorage interface {
-  Put(ctx context.Context, bucket, key string, reader io.Reader) (*PutResult, error)
-  Get(ctx context.Context, path string) (io.ReadCloser, error)
+  // Put 流式写入，不缓冲到内存
+  Put(ctx context.Context, bucket, key string, r io.Reader) (*PutResult, error)
+  // Get 返回流，调用方负责 Close
+  Get(ctx context.Context, path string) (io.ReadCloser, int64, error)
   Delete(ctx context.Context, path string) error
+  // Exists 仅检查存在性，不传输数据
+  Exists(ctx context.Context, path string) (bool, error)
 }
 
 type PutResult struct {
   Size        int64
-  Etag        string      // MD5 hash
-  StoragePath string      // 物理路径（本地）或 key（S3）
-}
-```
-
-**实现**:
-- `adaptor/storage/local/` — 本地磁盘
-- （可扩展）S3, MinIO 等
-
-**使用**:
-```go
-// Service 中调用
-putResult, err := srv.storage.Put(ctx, bucketName, objectKey, fileBody)
-if err != nil {
-  return nil, common.ServerErr.WithErr(err)
+  Etag        string
+  StoragePath string
 }
 
-// 读取
-reader, err := srv.storage.Get(ctx, storagePath)
-defer reader.Close()
-io.Copy(responseWriter, reader)
+// adaptor/storage/local/local.go
+type localStorage struct {
+  basePath string
+  bufPool  sync.Pool // ✅ 复用 copy buffer
+}
+
+func New(basePath string) storage.IStorage {
+  return &localStorage{
+    basePath: basePath,
+    bufPool: sync.Pool{
+      New: func() any { return make([]byte, 32*1024) }, // 32KB copy buffer
+    },
+  }
+}
+
+func (s *localStorage) Put(ctx context.Context, bucket, key string, r io.Reader) (*storage.PutResult, error) {
+  path := filepath.Join(s.basePath, bucket, key)
+  if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+    return nil, fmt.Errorf("localStorage.Put mkdir: %w", err)
+  }
+  f, err := os.Create(path)
+  if err != nil {
+    return nil, fmt.Errorf("localStorage.Put create: %w", err)
+  }
+  defer f.Close()
+
+  buf := s.bufPool.Get().([]byte)
+  defer s.bufPool.Put(buf)
+
+  h := md5.New()
+  written, err := io.CopyBuffer(io.MultiWriter(f, h), r, buf) // ✅ 边写边算 MD5
+  if err != nil {
+    return nil, fmt.Errorf("localStorage.Put copy: %w", err)
+  }
+  return &storage.PutResult{
+    Size:        written,
+    Etag:        hex.EncodeToString(h.Sum(nil)),
+    StoragePath: path,
+  }, nil
+}
 ```
 
 ---
 
-### 6️⃣ **Redis 层** (`adaptor/redis/`)
+### 6️⃣ Redis 层 (`adaptor/redis/`)
 
-**职责**: 缓存、分布式锁、Token 存储
+**全部抽象为接口**：
 
-**关键模块**:
-- `token.go` — Upload/Download Token 的生命周期管理
-- `file.go` — 分布式文件锁（基于 bucket+object）
-- `commonLocker.go` — 通用锁机制
-- `multipart.go` — Multipart 超时管理（ZSet）
-
-**规范**:
 ```go
-// Token 管理（Hash 存储）
-func (t *Token) CreateUploadToken(ctx context.Context, token string, req *dto.CreateUploadTokenReq, expire time.Duration) error {
-  key := fmt.Sprintf("%s:upload:%s", consts.ServerName, token)
-  _, err := t.rds.Pipelined(func(pipe redis.Pipeliner) error {
-    pipe.HMSet(key, uploadTokenFields(req))
-    pipe.Expire(key, expire)
-    return nil
-  })
-  return err
+// adaptor/redis/ilocker.go
+type ILocker interface {
+  Lock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+  Unlock(ctx context.Context, key string) error
 }
 
-// 文件锁（SET NX 原子操作）
-func (l *FileLock) Lock(ctx context.Context, bucketName, objectKey string, expire time.Duration) (bool, error) {
-  key := fmt.Sprintf("lock:%s:%s", bucketName, objectKey)
-  ok, err := l.rds.SetNX(key, "1", expire).Result()
+// adaptor/redis/itoken.go
+type IToken interface {
+  CreateUploadToken(ctx context.Context, token string, req *dto.CreateUploadTokenReq, ttl time.Duration) error
+  GetUploadToken(ctx context.Context, token string) (*dto.UploadTokenInfo, error)
+  RevokeUploadToken(ctx context.Context, token string) error
+}
+
+// adaptor/redis/imultipart.go
+type IMultipart interface {
+  RegisterUpload(ctx context.Context, uploadID string, ttl time.Duration) error
+  RefreshTTL(ctx context.Context, uploadID string, ttl time.Duration) error
+  Expire(ctx context.Context, uploadID string) error
+}
+
+// 实现：adaptor/redis/locker.go
+type locker struct{ rds redis.UniversalClient }
+
+func (l *locker) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+  ok, err := l.rds.SetNX(ctx, key, "1", ttl).Result()
   return ok, err
 }
+
+func (l *locker) Unlock(ctx context.Context, key string) error {
+  return l.rds.Del(ctx, key).Err()
+}
 ```
+
+---
+
+### 7️⃣ Adaptor 层 (`adaptor/`)
+
+**统一的依赖容器，本身也面向接口**：
+
+```go
+// adaptor/tx.go  ← 事务抽象，放在 adaptor 包，被 repo 和 service 共同引用
+//
+// Tx 是不透明类型——service 和接口定义层完全不知道底层是 gorm 还是别的 ORM
+type Tx interface{}
+
+// ITxManager 是 service 开启事务的唯一入口
+type ITxManager interface {
+  RunInTx(ctx context.Context, fn func(tx Tx) error) error
+}
+
+// ── 实现（adaptor/tx_manager.go）────────────────────────
+type gormTxManager struct{ db *gorm.DB }
+
+func NewTxManager(db *gorm.DB) ITxManager {
+  return &gormTxManager{db: db}
+}
+
+func (m *gormTxManager) RunInTx(ctx context.Context, fn func(Tx) error) error {
+  return m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+    return fn(tx) // *gorm.DB 满足 Tx interface{}，类型断言由 repo.WithTx 处理
+  })
+}
+
+// adaptor/iadaptor.go
+type IAdaptor interface {
+  // GetDB 仅供 repo 构造时使用，不允许在 service 层调用
+  GetDB()         *gorm.DB
+  GetRedis()      redis.UniversalClient
+  GetTxManager()  ITxManager      // service 使用这个开事务，而非 GetDB
+  GetStorage()    storage.IStorage
+  GetLocker()     redis.ILocker
+  GetToken()      redis.IToken
+  GetMultipart()  redis.IMultipart
+  GetLogger()     *zap.Logger
+}
+
+// adaptor/adaptor.go
+type Adaptor struct {
+  db        *gorm.DB
+  rds       redis.UniversalClient
+  txManager ITxManager
+  storage   storage.IStorage
+  locker    redis.ILocker
+  token     redis.IToken
+  multipart redis.IMultipart
+  logger    *zap.Logger
+}
+
+func New(cfg *config.Config) (IAdaptor, error) {
+  db, err := initDB(cfg.MySQL)
+  if err != nil { return nil, fmt.Errorf("adaptor: init db: %w", err) }
+
+  rds, err := initRedis(cfg.Redis)
+  if err != nil { return nil, fmt.Errorf("adaptor: init redis: %w", err) }
+
+  var stor storage.IStorage
+  switch cfg.Storage.Type {
+  case "local":
+    stor = localStorage.New(cfg.Storage.Local.BasePath)
+  case "s3":
+    stor, err = s3Storage.New(cfg.Storage.S3)
+    if err != nil { return nil, fmt.Errorf("adaptor: init s3: %w", err) }
+  default:
+    return nil, fmt.Errorf("adaptor: unknown storage type: %s", cfg.Storage.Type)
+  }
+
+  return &Adaptor{
+    db:        db,
+    rds:       rds,
+    txManager: NewTxManager(db),          // ← 封装，service 不持有 db
+    storage:   stor,
+    locker:    redisImpl.NewLocker(rds),
+    token:     redisImpl.NewToken(rds),
+    multipart: redisImpl.NewMultipart(rds),
+    logger:    initLogger(cfg.Log),
+  }, nil
+}
+
+func (a *Adaptor) GetTxManager() ITxManager { return a.txManager }
+```
+
+**`GetDB()` 使用规则**：
+- ✅ 允许：`repo.New(adaptor)` 内部调用 `adaptor.GetDB()` 初始化 repo
+- ❌ 禁止：service 层调用 `adaptor.GetDB()` 然后手动 `.Transaction(...)`
 
 ---
 
 ## 🏗️ 数据模型分层
 
-### DO (Domain Object) — `service/do/`
+| 层级 | 位置 | 用途 | 特点 |
+|------|------|------|------|
+| **Model** | `adaptor/repo/model/*.gen.go` | GORM ORM 映射 | 自动生成，勿手改 |
+| **DO** | `service/do/{module}.go` | Service 内部数据 | 完整字段，无序列化注解 |
+| **DTO** | `service/dto/{module}.go` | HTTP 请求/响应 | JSON 注解，只含外部字段 |
 
-**用途**: Service 层内部使用，对应数据库表
-
-**特点**:
-- 字段完整，包含所有数据库列
-- 使用指针类型处理 NULL（如 `*string`）
-- 无序列化注解
-
+**转换函数**（放在 repo 和 service 的私有方法中）：
 ```go
-type CreateBucket struct {
-  UserID    int64
-  BucketName string
-  Acl        string
-  // ...
-}
+// repo 层：model → do
+func (r *bucketRepo) toDo(m *model.Bucket) *do.BucketDo { ... }
 
-type BucketDo struct {
-  ID          int64
-  UserID      int64
-  BucketName  string
-  Acl         string
-  CreatedAt   time.Time
-  UpdatedAt   time.Time
-}
-```
-
-### DTO (Data Transfer Object) — `service/dto/`
-
-**用途**: HTTP API 的请求/响应序列化
-
-**特点**:
-- 只包含外部关心的字段
-- 有 JSON/XML 序列化注解
-- 可能包含验证标签（`validate:""`)
-
-```go
-type CreateBucketReq struct {
-  BucketName string `json:"bucket_name" binding:"required"`
-  Acl        string `json:"acl"`
-}
-
-type BucketResp struct {
-  BucketName  string `json:"bucket_name"`
-  Acl         string `json:"acl"`
-  CreatedAt   int64  `json:"created_at"`  // Unix timestamp
-  UpdatedAt   int64  `json:"updated_at"`
-}
-```
-
-### Model — `adaptor/repo/model/` (自动生成)
-
-**用途**: GORM 模型，由 `gorm/gen` 自动生成
-
-**特点**:
-- 对应数据库表结构
-- 包含 GORM 标签（`gorm:"column:xxx"`)
-- 不应手动修改，使用 `gentool` 重新生成
-
-```go
-type Bucket struct {
-  ID         int64     `gorm:"primaryKey"`
-  UserID     int64     `gorm:"column:user_id"`
-  BucketName string    `gorm:"column:bucket_name"`
-  Acl        string    `gorm:"column:acl"`
-  CreatedAt  time.Time `gorm:"column:created_at"`
-}
+// service 层：do → dto（私有函数，包级别）
+func toBucketResp(d *do.BucketDo) *dto.BucketResp { ... }
 ```
 
 ---
@@ -409,191 +718,111 @@ type Bucket struct {
 
 | 元素 | 规范 | 示例 |
 |------|------|------|
-| **Interface** | 首字母大写，`I` 前缀 | `IBucketRepo`, `IStorage`, `IToken` |
-| **Struct** | 首字母大写，名词性 | `BucketRepo`, `Service`, `Token` |
-| **Function** | 首字母大写（exported），动词性 | `CreateBucket`, `GetByName`, `ListByUser` |
-| **Constant** | 全大写下划线 | `StorageClassStandard`, `ACLPrivate`, `MaxUploadSize` |
-| **Package** | 小写（无下划线） | `bucket`, `object`, `admin` |
-| **Variables** | 驼峰命名 | `bucketRepo`, `userID`, `errorCode` |
-| **JSON Field** | 小写下划线 | `bucket_name`, `storage_class`, `upload_id` |
+| **Handler 接口** | `I` + 模块 + `Handler` | `IBucketHandler`, `IObjectHandler` |
+| **Service 接口** | `I` + 模块 + `Service` | `IBucketService`, `IObjectService` |
+| **Repo 接口** | `I` + 模块 + `Repo` | `IBucketRepo`, `IObjectRepo` |
+| **Infrastructure 接口** | `I` + 职责 | `IStorage`, `ILocker`, `IToken`, `ITxManager` |
+| **实现 struct** | 小写（包私有） | `bucketService`, `bucketRepo`, `localStorage` |
+| **构造函数** | `New(a IAdaptor)` | 返回接口类型，不返回 struct |
+| **Repo 事务工厂** | `WithTx(tx Tx) IXxxRepo` | 接口第一个方法，必须声明 |
+| **Repo 普通方法** | 动词 + 名词（无 Tx 后缀） | `Create`, `GetByName`, `UpdateStats`, `Delete` |
+| **❌ 禁止** | `XxxWithTx(tx *gorm.DB, ...)` | 此模式已废弃，改用 `WithTx` 工厂 |
+| **JSON 字段** | 小写下划线 | `bucket_name`, `upload_id` |
 
 ---
 
-## 🔄 常见开发流程
+## 🔄 新增功能模块标准流程
 
-### ➕ 新增功能模块
-
-以"审计日志"为例：
+以"审计日志"为例，**严格按顺序**：
 
 ```
-1. 数据库模型 (init.sql)
-   CREATE TABLE audits (
-     id BIGINT PRIMARY KEY,
-     user_id BIGINT,
-     action VARCHAR(255),
-     ...
-   );
+1. 数据库 (init.sql)
+   CREATE TABLE audit_logs (...);
 
-2. 生成 ORM 代码
+2. 生成 ORM 模型
    cd adaptor/repo && gentool -c gen.yaml
 
-3. 创建 Repository 层
-   adaptor/repo/audit/
-   ├── iaudit.go          ← interface IAuditRepo
-   └── audit_repo.go      ← implement CreateAudit, ListByUser, etc.
+3. 定义 DO/DTO
+   service/do/audit.go    ← CreateAuditLog, AuditLogDo
+   service/dto/audit.go   ← AuditLogResp
 
-4. 创建数据对象
-   service/do/audit.go    ← CreateAudit struct, AuditDo struct
-   service/dto/audit.go   ← AuditResp struct
+4. Repo 层（接口+实现）
+   adaptor/repo/audit/iaudit.go         ← IAuditRepo interface
+   adaptor/repo/audit/audit_repo.go     ← auditRepo struct，New() IAuditRepo
 
-5. 创建 Service
-   service/audit/service.go
-   └── ListAudits(ctx, userID, filter) → []*dto.AuditResp
+5. Service 层（接口+实现）
+   service/audit/iservice.go   ← IAuditService interface
+   service/audit/service.go    ← auditService struct，New(IAdaptor) IAuditService
 
-6. 创建 Controller/Handler
-   api/auth/audit.go
-   └── ListAudits handler → GET /api/v1/logs
+6. Handler 层（接口+实现）
+   api/auth/iaudit.go   ← IAuditHandler interface
+   api/auth/audit.go    ← auditHandler struct，NewAuditHandler(IAuditService) IAuditHandler
 
-7. 注册路由
-   router/router.go
-   └── authGroup.GET("/logs", auditCtrl.ListAudits)
-```
+7. Adaptor 扩展
+   adaptor/iadaptor.go  ← 如需暴露新基础设施则添加方法
 
-### 🔧 扩展存储后端
-
-现有存储接口：`adaptor/storage/istorage.go`
-
-```go
-type IStorage interface {
-  Put(ctx context.Context, bucket, key string, reader io.Reader) (*PutResult, error)
-  Get(ctx context.Context, path string) (io.ReadCloser, error)
-  Delete(ctx context.Context, path string) error
-}
-```
-
-**新增 S3 支持**:
-```
-1. 创建实现
-   adaptor/storage/s3/
-   └── s3.go        ← type S3Storage struct, 实现 IStorage
-
-2. 在 Adaptor 中配置选择
-   adaptor/adaptor.go
-   └── func (a *Adaptor) GetStorage() → 根据配置选择 local 或 s3
-
-3. Service 无需修改，自动使用新实现
-```
-
-### ✅ 添加校验和错误处理
-
-```go
-// 1. 定义新的 Errno（common/errno.go）
-var (
-  CustomErr = Errno{Code: 12000, Msg: "Custom Error"}
-)
-
-// 2. 在 Service 中使用
-func (srv *Service) DoSomething(ctx context.Context) (result, common.Errno) {
-  if condition {
-    return nil, CustomErr.WithMsg("additional info")
-  }
-  return result, common.OK
-}
-
-// 3. Handler 自动处理
-if errno.NotOk() {
-  c.JSON(errno.Code, resp.NewErrResp(errno))
-  return
-}
+8. 注册路由
+   router/router.go     ← RouterDeps 加入 AuditHandler IAuditHandler
 ```
 
 ---
 
-## 🎯 关键约定
+## ✅ 高性能检查清单
 
-### 事务管理
-- **创建/删除**: 必须使用事务确保原子性
-- **查询**: 单表查询无需事务，多表 JOIN 按需添加事务
+代码生成前必须确认：
 
-```go
-err := srv.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-  if err := step1(tx); err != nil {
-    return err
-  }
-  return step2(tx)
-})
-```
+**接口设计**
+- [ ] Handler/Service/Repo/Storage/Redis 每层都定义了接口？
+- [ ] 构造函数返回接口类型（非 struct 指针）？
+- [ ] 上层只 import 接口包，不 import 实现包？
 
-### 错误处理
-- 所有方法返回 `common.Errno` 或 `error`
-- Service 返回 `(result, common.Errno)`
-- Repo 返回 `error`（数据库错误由 Service 转化）
+**性能**
+- [ ] 大文件用流式处理（`io.Reader`），未用 `io.ReadAll`？
+- [ ] 批量结果用 `make(slice, 0, cap)` 预分配？
+- [ ] 高频 copy 操作用 `sync.Pool` 复用 buffer？
+- [ ] 并行独立操作用 `errgroup`？
+- [ ] 热点路径避免了 map/slice 频繁扩容？
 
-```go
-// Repo 返回原始错误
-obj, err := r.objRepo.GetByKey(ctx, bucketName, objectKey)
-if err != nil {
-  return nil, common.DatabaseErr.WithErr(err)  // ← 转化
-}
-```
+**错误处理**
+- [ ] 所有 `error` 都被处理（无 `_ = err`）？
+- [ ] 错误用 `fmt.Errorf("模块.方法: %w", err)` 包装？
+- [ ] Service boundary 用 `errors.As` 转换为 `common.Errno`？
+- [ ] 无 `panic`（除 main 初始化）？
 
-### 上下文传递
-- 所有 I/O 操作必须传递 `context.Context`
-- Service 层使用 `*common.UserInfoCtx`（包含 UserID）
-- Repo 和 Storage 使用 `context.Context`
+**并发安全**
+- [ ] 共享状态有锁保护或用 atomic？
+- [ ] 没有在持锁状态下做 I/O？
+- [ ] goroutine 泄漏：所有 goroutine 有退出机制？
 
-```go
-func (srv *Service) ListObjects(ctx *common.UserInfoCtx, req *dto.ListObjectsReq) (..., common.Errno) {
-  // ctx 包含 ctx.UserID, ctx.AccessKey 等
-  objects, err := srv.objRepo.ListByUser(ctx, ctx.UserID)
-}
-```
+**事务（Pattern C）**
+- [ ] Service 持有 `ITxManager`，不持有 `*gorm.DB`？
+- [ ] 多步写操作通过 `txManager.RunInTx(ctx, func(tx Tx) error {...})` 包裹？
+- [ ] 事务内通过 `repo.WithTx(tx)` 获取 tx 绑定实例，方法名与普通调用一致？
+- [ ] Repo 接口第一个方法是 `WithTx(tx adaptor.Tx) IXxxRepo`？
+- [ ] 代码中无 `XxxWithTx(tx *gorm.DB, ...)` 变体方法？
+- [ ] 类型断言 `tx.(*gorm.DB)` 只出现在 repo `WithTx` 实现中？
+- [ ] 存储 I/O（`storage.Put`）在事务外执行，事务只做 DB 写入？
+- [ ] `defer cancel()` 配合 context？
 
-### 日志记录
-- 使用 `zap` logger
-- ERROR 级别记录异常情况
-- DEBUG 级别记录关键业务步骤
-
-```go
-import "go.uber.org/zap"
-
-logger.Error("failed to delete object", zap.String("key", key), zap.Error(err))
-logger.Debug("object deleted successfully", zap.String("key", key))
-```
+**可观测性**
+- [ ] 关键路径有 `zap.Logger` 日志（Error/Info 级别）？
+- [ ] 日志字段用结构化 `zap.String`, `zap.Int64`, `zap.Error`？
 
 ---
 
-## 📋 文件位置速查表
+## 📋 文件位置速查
 
-| 功能 | 文件 | 职责 |
-|------|------|------|
-| 路由注册 | `router/router.go` | 所有路由的统一入口 |
-| HTTP 处理 | `api/auth/{module}.go` | 请求解析、响应序列化 |
-| 业务逻辑 | `service/{module}/service.go` | 编排、事务、计量 |
-| 数据访问 | `adaptor/repo/{module}/{module}_repo.go` | CRUD 操作 |
-| 接口定义 | `adaptor/repo/{module}/i{module}.go` | 约定 |
-| 模型定义 | `adaptor/repo/model/*.gen.go` | ORM 模型（自动生成） |
-| 数据对象 | `service/do/{module}.go` | 内部数据结构 |
-| 数据传输 | `service/dto/{module}.go` | API 请求/响应 |
-| 存储抽象 | `adaptor/storage/` | 物理存储 |
-| Redis 操作 | `adaptor/redis/{module}.go` | 缓存和锁 |
-| 配置管理 | `config/config.go` | 环境变量和配置文件 |
-| 常量定义 | `consts/consts.go` | 系统常量 |
-| 错误定义 | `common/errno.go` | 错误码和消息 |
-
----
-
-## 🚀 快速检查清单
-
-新增功能时：
-- [ ] 数据库表和初始化 SQL 已添加？
-- [ ] 运行 `gentool -c gen.yaml` 生成模型和查询代码？
-- [ ] Repository interface 和实现分离？
-- [ ] Service 使用接口依赖注入？
-- [ ] Handler 和路由已注册？
-- [ ] 错误处理使用 `common.Errno`？
-- [ ] 涉及多步操作的使用了事务？
-- [ ] 所有 I/O 操作传递了 `context`？
-- [ ] 关键业务逻辑添加了日志？
-- [ ] API 的请求/响应用了 DTO？
-
+| 层级 | 接口文件 | 实现文件 |
+|------|----------|----------|
+| Handler | `api/auth/i{module}.go` | `api/auth/{module}.go` |
+| Service | `service/{module}/iservice.go` | `service/{module}/service.go` |
+| Repo | `adaptor/repo/{module}/i{module}.go` | `adaptor/repo/{module}/{module}_repo.go` |
+| **事务** | `adaptor/tx.go`（`Tx`, `ITxManager`） | `adaptor/tx_manager.go`（`gormTxManager`） |
+| Storage | `adaptor/storage/istorage.go` | `adaptor/storage/{type}/{type}.go` |
+| Locker | `adaptor/redis/ilocker.go` | `adaptor/redis/locker.go` |
+| Token | `adaptor/redis/itoken.go` | `adaptor/redis/token.go` |
+| Adaptor | `adaptor/iadaptor.go` | `adaptor/adaptor.go` |
+| 路由 | `router/router.go` | — |
+| 错误码 | `common/errno.go` | — |
+| DO | `service/do/{module}.go` | — |
+| DTO | `service/dto/{module}.go` | — |

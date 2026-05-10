@@ -7,7 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 // IFileLock 文件锁接口
@@ -45,13 +45,13 @@ func (fl *fileLock) generateLockKey(bucketName string, objectName string) string
 }
 func (fl *fileLock) AcquireLock(ctx context.Context, bucketName string, objectName string, uuid string, ttl time.Duration) (bool, error) {
 	lockKey := fl.generateLockKey(bucketName, objectName)
-	return fl.redis.SetNX(lockKey, uuid, ttl).Result()
+	return fl.redis.SetNX(ctx, lockKey, uuid, ttl).Result()
 }
 
 // 释放锁
 func (fl *fileLock) ReleaseLock(ctx context.Context, bucketName string, objectName string, uuid string) error {
 	lockKey := fl.generateLockKey(bucketName, objectName)
-	result, err := luaUnlock.Run(fl.redis, []string{lockKey}, uuid).Result()
+	result, err := luaUnlock.Run(ctx, fl.redis, []string{lockKey}, uuid).Result()
 	if err != nil {
 		return fmt.Errorf("failed to release lock: %w", err)
 	}
@@ -67,7 +67,7 @@ func (fl *fileLock) ReleaseLock(ctx context.Context, bucketName string, objectNa
 // 刷新锁
 func (fl *fileLock) RefreshLock(ctx context.Context, bucketName string, objectName string, uuid string, ttl time.Duration) (bool, error) {
 	lockKey := fl.generateLockKey(bucketName, objectName)
-	result, err := luaRefresh.Run(fl.redis, []string{lockKey}, uuid, ttl.Seconds()).Result()
+	result, err := luaRefresh.Run(ctx, fl.redis, []string{lockKey}, uuid, ttl.Seconds()).Result()
 	if err != nil {
 		return false, fmt.Errorf("failed to refresh lock: %w", err)
 	}
@@ -83,7 +83,7 @@ func (fl *fileLock) RefreshLock(ctx context.Context, bucketName string, objectNa
 // 检查锁状态
 func (fl *fileLock) CheckLock(ctx context.Context, bucketName string, objectName string, uuid string) (bool, error) {
 	lockKey := fl.generateLockKey(bucketName, objectName)
-	val, err := fl.redis.Get(lockKey).Result()
+	val, err := fl.redis.Get(ctx, lockKey).Result()
 	if err == redis.Nil {
 		return false, nil // 锁不存在
 	}
@@ -97,7 +97,7 @@ func (fl *fileLock) CheckLock(ctx context.Context, bucketName string, objectName
 // 强制释放锁（管理员操作）
 func (fl *fileLock) ForceReleaseLock(ctx context.Context, bucketName string, objectName string) error {
 	lockKey := fl.generateLockKey(bucketName, objectName)
-	err := fl.redis.Del(lockKey).Err()
+	err := fl.redis.Del(ctx, lockKey).Err()
 	if err != nil {
 		return fmt.Errorf("failed to force release lock: %w", err)
 	}

@@ -32,7 +32,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -49,12 +48,12 @@ func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID
 func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	// 从 Redis 队列中取出任务 ID
 	redisTask := redis.NewTask(adaptor)
-	taskRepo := async.NewAsyncTaskRepo(adaptor)
+	taskRepo := async.NewAsyncTaskRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	multipart := multipart.NewObjectRepo(adaptor)
-	fileRepo := object.NewObjectRepo(adaptor)
+	multipart := multipart.NewObjectRepo(adaptor.GetGORM())
+	fileRepo := object.NewObjectRepo(adaptor.GetGORM())
 	taskLocker := redis.NewLock(adaptor)
-	uinfoRepo := admin.NewUserRepo(adaptor)
+	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
 
 	if err != nil {
@@ -67,7 +66,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	for _, taskID := range taskIDs {
 		taskID := taskID // 每次迭代创建新变量
 
-		p.RunGo(func() {
+		if err := p.RunGo(func() {
 			currentUUid := uuid.NewString()
 
 			ok, err := taskLocker.AcquireLock(ctx, taskID, currentUUid, time.Second*30)
@@ -175,7 +174,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				// 处理未知任务类型
 			}
 
-		})
+		}); err != nil {
+			log.Error("failed to submit task to pool", zap.Error(err))
+		}
 	}
 
 	p.Wait()
@@ -185,9 +186,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	// 处理上传超时的任务
 	multipartRedis := redis.NewMultipart(adaptor)
-	multipartRepo := multipart.NewObjectRepo(adaptor)
+	multipartRepo := multipart.NewObjectRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	uinfoRepo := admin.NewUserRepo(adaptor)
+	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
 
 	list, err := multipartRedis.GetTimeWaitMultipartCancel(ctx)
 	if err != nil {
@@ -198,8 +199,8 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	pool := pool.NewPoolWithSize(2)
 
 	for _, item := range list {
-		_ = item // 每次迭代创建新变量，避免闭包捕获问题
-		pool.RunGo(func() {
+		item := item // 每次迭代创建新变量，避免闭包捕获问题
+		if err := pool.RunGo(func() {
 
 			uploadInfo, err := multipartRepo.GetMultipartUploadByID(ctx, 0, item)
 			if err != nil {
@@ -230,7 +231,9 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 			// 清楚系统文件
 			multipartRepo.DeleteMultipartParts(ctx, uploadInfo.UserID, uploadInfo.UploadID)
 
-		})
+		}); err != nil {
+			log.Error("failed to submit task to pool", zap.Error(err))
+		}
 
 	}
 }
@@ -240,19 +243,14 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 // 使用协程池并发处理多个生命周期规则，提高处理效率
 func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	lifecycleRedis := redis.NewLifecycle(adaptor)
-	lifecycleRepo := lifecycle.NewLifecycleRepo(adaptor)
-	objectRepo := object.NewObjectRepo(adaptor)
-	bucketRepo := bucket.NewBucketRepo(adaptor)
+	lifecycleRepo := lifecycle.NewLifecycleRepo(adaptor.GetGORM())
+	objectRepo := object.NewObjectRepo(adaptor.GetGORM())
+	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	uinfoRepo := admin.NewUserRepo(adaptor)
+	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
 
-	// 创建gorm DB实例用于事务
-	sqlDB := adaptor.GetDB()
-	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		log.Error("failed to create gorm DB instance", zap.Error(err))
-		return
-	}
+	// 使用共享的 gorm DB 实例
+	gormDB := adaptor.GetGORM()
 
 	// 获取所有活跃的生命周期规则
 	rules, err := lifecycleRepo.ListAllActiveLifecycleRules(ctx)
@@ -268,7 +266,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	for _, rule := range rules {
 		rule := rule // 避免闭包捕获问题
 
-		pool.RunGo(func() {
+		if err := pool.RunGo(func() {
 			bucket, err := bucketRepo.GetByID(ctx, rule.BucketID)
 			if err != nil {
 				// 处理错误
@@ -280,7 +278,9 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 			// 处理过期删除事件
 			handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, gormDB, storage)
-		})
+		}); err != nil {
+			log.Error("failed to submit lifecycle handler task to pool", zap.Error(err))
+		}
 	}
 
 	pool.Wait()
@@ -382,6 +382,10 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 	}
 
 	for _, objectKey := range objects {
+		var storagePath *string
+		var objectSize int64
+		var eventDeleted bool
+
 		// 在事务内部处理删除，避免竞态条件
 		err = gormDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			// 在事务内部重新检查对象是否存在
@@ -394,8 +398,12 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 					zap.Int64("bucketID", rule.BucketID),
 					zap.Int64("ruleID", rule.ID))
 				lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+				eventDeleted = true
 				return nil // 不算错误，继续处理
 			}
+
+			storagePath = obj.StoragePath
+			objectSize = obj.Size
 
 			// 删除对象记录
 			err = objectRepo.DeleteObjectWithTx(tx, ctx, bucket.Name, objectKey, "")
@@ -428,29 +436,84 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			continue
 		}
 
-		// 获取对象信息用于删除物理文件（在事务外部，因为存储删除不应该在事务中）
-		obj, err := objectRepo.GetByKey(ctx, bucket.Name, objectKey, "")
-		if err == nil && obj != nil && obj.StoragePath != nil {
-			if err := storage.Delete(ctx, *obj.StoragePath); err != nil {
+		// 删除物理文件信息在事务外执行，避免文件系统操作影响事务
+		if storagePath != nil {
+			if err := storage.Delete(ctx, *storagePath); err != nil {
 				log.Error("failed to delete physical file",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
-					zap.String("storagePath", *obj.StoragePath),
+					zap.String("storagePath", *storagePath),
 					zap.Error(err))
 			} else {
 				log.Info("successfully deleted expired object",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
-					zap.Int64("size", obj.Size))
+					zap.Int64("size", objectSize))
 			}
 		}
 
 		// 删除已处理的事件
-		lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+		if !eventDeleted {
+			lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+		}
 	}
 }
 
 // 定时器相关的代码
+const (
+	taskInterval               = 30 * time.Second
+	uploadMergeTimeoutInterval = 30 * time.Second
+	lifecycleInterval          = 1 * time.Minute
+	eventDeliveryInterval      = 10 * time.Second
+)
+
+func runTimerTask(ctx context.Context, name string, done chan struct{}, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("timer handler panic",
+					zap.String("handler", name),
+					zap.Any("panic", r),
+					zap.Stack("stack"))
+			}
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}()
+
+		fn()
+	}()
+}
+
+func startTimerTaskLoop(ctx context.Context, name string, interval time.Duration, done chan struct{}, fn func()) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		// 尝试第一次立即执行
+		select {
+		case <-done:
+			runTimerTask(ctx, name, done, fn)
+		default:
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case <-done:
+					runTimerTask(ctx, name, done, fn)
+				default:
+					// 上一轮还没完成，跳过
+				}
+			}
+		}
+	}()
+}
+
 func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	taskDone := make(chan struct{}, 1)
 	timeoutDone := make(chan struct{}, 1)
@@ -461,57 +524,26 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	lifecycleDone <- struct{}{}
 	eventDone <- struct{}{}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+	startTimerTaskLoop(ctx, "handlerTask", taskInterval, taskDone, func() {
+		handlerTask(ctx, adaptor)
+	})
+	startTimerTaskLoop(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, timeoutDone, func() {
+		handlerUploadMergeTimeout(ctx, adaptor)
+	})
+	startTimerTaskLoop(ctx, "handlerLifecycleEvents", lifecycleInterval, lifecycleDone, func() {
+		handlerLifecycleEvents(ctx, adaptor)
+	})
+	startTimerTaskLoop(ctx, "handlerEventDeliveries", eventDeliveryInterval, eventDone, func() {
+		handlerEventDeliveries(ctx, adaptor)
+	})
 
-		select {
-		case <-taskDone:
-			go func() {
-				handlerTask(ctx, adaptor)
-				taskDone <- struct{}{}
-			}()
-		default: // 上一轮还没完成，跳过
-		}
-
-		select {
-		case <-timeoutDone:
-			go func() {
-				handlerUploadMergeTimeout(ctx, adaptor)
-				timeoutDone <- struct{}{}
-			}()
-		default:
-		}
-
-		select {
-		case <-lifecycleDone:
-			go func() {
-				handlerLifecycleEvents(ctx, adaptor)
-				lifecycleDone <- struct{}{}
-			}()
-		default:
-		}
-
-		select {
-		case <-eventDone:
-			go func() {
-				handlerEventDeliveries(ctx, adaptor)
-				eventDone <- struct{}{}
-			}()
-		default:
-		}
-
-		time.Sleep(time.Second * 30)
-	}
+	<-ctx.Done()
 }
 
 // handlerEventDeliveries 处理事件投递任务
 func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
-	eventDeliveryRepo := eventRepo.NewEventDeliveryRepo(adaptor)
-	eventRuleRepo := eventRepo.NewEventRuleRepo(adaptor)
+	eventDeliveryRepo := eventRepo.NewEventDeliveryRepo(adaptor.GetGORM())
+	eventRuleRepo := eventRepo.NewEventRuleRepo(adaptor.GetGORM())
 	eventQueue := redis.NewEventQueue(adaptor)
 
 	// 尝试从 Redis 触发队列取出 delivery_id
@@ -608,6 +640,8 @@ func deliverEvent(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.EventR
 	switch rule.TargetType {
 	case consts.EventTargetTypeWebhook:
 		return deliverWebhook(ctx, rule, delivery)
+	case consts.EventTargetTypeMQ, consts.EventTargetTypeRedis:
+		return deliverRedis(ctx, adaptor, delivery)
 
 	default:
 		return fmt.Errorf("unsupported target type: %s", rule.TargetType)
@@ -627,7 +661,7 @@ func deliverRedis(ctx context.Context, adaptor adaptor.IAdaptor, delivery *do.Ev
 		return err
 	}
 	key := fmt.Sprintf("oss:event:%d:deliveries", delivery.RuleID)
-	if err := adaptor.GetRedis().RPush(key, string(bodyBytes)).Err(); err != nil {
+	if err := adaptor.GetRedis().RPush(ctx, key, string(bodyBytes)).Err(); err != nil {
 		return err
 	}
 
@@ -683,11 +717,17 @@ func deliverWebhook(ctx context.Context, rule *do.EventRuleDo, delivery *do.Even
 		return fmt.Errorf("webhook request failed status=%d response=%s", resp.StatusCode, string(respBody))
 	}
 
+	truncatedResponse := string(respBody)
+	if len(truncatedResponse) > 200 {
+		truncatedResponse = truncatedResponse[:200] + "...(truncated)"
+	}
+
 	log.Info("Webhook delivery success",
 		zap.String("url", *rule.TargetURL),
 		zap.String("eventType", delivery.EventType),
 		zap.String("status", resp.Status),
-		zap.String("responseBody", string(respBody)))
+		zap.String("responseBody", truncatedResponse),
+		zap.Int("responseBodyLength", len(respBody)))
 
 	return nil
 }

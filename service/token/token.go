@@ -28,8 +28,8 @@ type Service struct {
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		adaptor: adaptor,
-		bucket:  bucket.NewBucketRepo(adaptor),
-		access:  accesskey.NewAccessKeyRepo(adaptor),
+		bucket:  bucket.NewBucketRepo(adaptor.GetGORM()),
+		access:  accesskey.NewAccessKeyRepo(adaptor.GetGORM()),
 		rds:     redis.NewToken(adaptor),
 	}
 }
@@ -89,7 +89,7 @@ func (s *Service) CreateDownloadToken(ctx *common.UserInfoCtx, req *dto.CreateDo
 	}, common.OK
 }
 
-func (s *Service) ValidateToken(ctx context.Context, token string, action string) (ak string, pass bool) {
+func (s *Service) ValidateToken(ctx context.Context, token string, action string, expectedBucketName, expectedObjectKey string) (ak string, pass bool) {
 	// 从redis获取token信息，判断是否存在
 
 	switch action {
@@ -98,9 +98,21 @@ func (s *Service) ValidateToken(ctx context.Context, token string, action string
 		if err != nil || req == nil {
 			return "", false
 		}
+		if expectedBucketName != "" && req.BucketName != expectedBucketName {
+			return "", false
+		}
+		if expectedObjectKey != "" && req.ObjectKey != expectedObjectKey {
+			return "", false
+		}
 	case consts.DownloadAction:
 		req, err := s.rds.GetDownloadToken(ctx, token)
 		if err != nil || req == nil {
+			return "", false
+		}
+		if expectedBucketName != "" && req.BucketName != expectedBucketName {
+			return "", false
+		}
+		if expectedObjectKey != "" && req.ObjectKey != expectedObjectKey {
 			return "", false
 		}
 	}

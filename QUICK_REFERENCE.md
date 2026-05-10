@@ -50,18 +50,27 @@
 
 ---
 
-### ✅ DeleteObject 事务支持
+### ✅ 基础设施改进
 
-**问题**: 删除对象涉及多个表更新（objects、buckets、users、metering），如中途失败可能导致数据不一致
+**新增**: 错误处理增强、并发控制优化、接口化设计
 
-**解决方案**: 使用 GORM 事务，所有数据库更新要么全部成功，要么全部回滚
+**核心模块**:
+- [utils/pool/pool.go](utils/pool/pool.go) - 协程池错误返回
+- [timer/timer.go](timer/timer.go) - 独立定时器间隔
+- [adaptor/repo/metering/metering_repo.go](adaptor/repo/metering/metering_repo.go) - 接口化设计
+- [service/event/service.go](service/event/service.go) - 返回值一致性
 
-**实现**:
-- 新增事务方法: `GetByKeyWithTx`, `DeleteObjectWithTx`, `UpdateBucketStatsWithTx`, `UpdateStorageUsedWithTx`, `DeleteMultipartPartsWithTx`
-- `service.DeleteObject()` 使用 `srv.db.WithContext(ctx).Transaction()` 包装所有数据库操作
-- 事务外进行物理文件删除（通过存储接口），确保数据一致性
+**改进详情**:
+- **Pool 错误处理**: `RunGo` 方法现在返回错误，防止静默丢弃任务
+- **Timer 优化**: 任务、生命周期、事件使用独立定时器（30s、1min、10s），避免饥饿
+- **接口化**: MeteringRepo 改为接口类型，提高可测试性和解耦
+- **返回值统一**: Service 层成功返回统一使用 `common.OK`，失败使用 `common.Errno{}`
 
-**效果**: DeleteObject 操作的数据完整性得到保证
+**优势**:
+- 更好的错误可见性
+- 防止任务执行饥饿
+- 提高代码可维护性
+- 统一错误处理语义
 
 ---
 

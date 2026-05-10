@@ -28,10 +28,10 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		eventRuleRepo:     eventRepo.NewEventRuleRepo(adaptor),
-		eventDeliveryRepo: eventRepo.NewEventDeliveryRepo(adaptor),
+		eventRuleRepo:     eventRepo.NewEventRuleRepo(adaptor.GetGORM()),
+		eventDeliveryRepo: eventRepo.NewEventDeliveryRepo(adaptor.GetGORM()),
 		eventQueue:        redis.NewEventQueue(adaptor),
-		bucketRepo:        bucket.NewBucketRepo(adaptor),
+		bucketRepo:        bucket.NewBucketRepo(adaptor.GetGORM()),
 	}
 }
 
@@ -86,7 +86,7 @@ func (srv *Service) CreateEventRule(ctx *common.UserInfoCtx, req *dto.CreateEven
 
 	return &dto.CreateEventRuleResp{
 		RuleID: ruleID,
-	}, common.Errno{}
+	}, common.OK
 }
 
 // ListEventRules 列出事件规则
@@ -125,7 +125,7 @@ func (srv *Service) ListEventRules(ctx *common.UserInfoCtx, bucketName string) (
 		})
 	}
 
-	return resp, common.Errno{}
+	return resp, common.OK
 }
 
 // UpdateEventRule 更新事件规则
@@ -191,7 +191,7 @@ func (srv *Service) UpdateEventRule(ctx *common.UserInfoCtx, bucketName string, 
 		return common.ErrInternalServer
 	}
 
-	return common.Errno{}
+	return common.OK
 }
 
 // DeleteEventRule 删除事件规则
@@ -220,7 +220,7 @@ func (srv *Service) DeleteEventRule(ctx *common.UserInfoCtx, bucketName string, 
 		return common.ErrInternalServer
 	}
 
-	return common.Errno{}
+	return common.OK
 }
 
 // TriggerEvent 触发事件
@@ -288,6 +288,7 @@ func (srv *Service) validateTargetType(targetType string) bool {
 	validTypes := map[string]bool{
 		consts.EventTargetTypeWebhook: true,
 		consts.EventTargetTypeMQ:      true,
+		consts.EventTargetTypeRedis:   true,
 		consts.EventTargetTypeFunc:    true,
 	}
 	return validTypes[targetType]

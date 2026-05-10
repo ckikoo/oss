@@ -39,3 +39,19 @@ func GetUserInfoFromContext(ctx context.Context, c *app.RequestContext) (*UserIn
 	}, true
 
 }
+
+const currentActionToken = "current_action_token_"
+
+func SetTokenWithContext(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, currentActionToken, token)
+}
+
+func GetTokenFromContext(ctx context.Context, c *app.RequestContext) (string, bool) {
+	if v, ok := c.Get(currentActionToken); ok {
+		if token, ok := v.(string); ok {
+			return token, true
+		}
+	}
+
+	return "", false
+}

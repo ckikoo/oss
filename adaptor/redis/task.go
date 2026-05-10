@@ -7,7 +7,7 @@ import (
 	"oss/consts"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 type ITask interface {
@@ -38,22 +38,22 @@ var _ ITask = (*Task)(nil)
 
 // EnqueueTask 将单个 taskID 推入队列尾部（RPUSH）
 // 配合 BLPOP 从头部取，实现 FIFO
-func (t *Task) EnqueueTask(_ context.Context, taskID string) error {
-	return t.rds.RPush(taskQueueKey(), taskID).Err()
+func (t *Task) EnqueueTask(ctx context.Context, taskID string) error {
+	return t.rds.RPush(ctx, taskQueueKey(), taskID).Err()
 }
 
 // EnqueueBatch 用 Pipeline 批量推入，减少网络往返
 // 适用于 Recovery 扫描器一次重入多个卡住的任务
-func (t *Task) EnqueueBatch(_ context.Context, taskIDs []string) error {
+func (t *Task) EnqueueBatch(ctx context.Context, taskIDs []string) error {
 	if len(taskIDs) == 0 {
 		return nil
 	}
 
 	pipe := t.rds.Pipeline()
 	for _, id := range taskIDs {
-		pipe.RPush(taskQueueKey(), id)
+		pipe.RPush(ctx, taskQueueKey(), id)
 	}
-	_, err := pipe.Exec()
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
@@ -72,31 +72,14 @@ func (t *Task) DequeueTask(ctx context.Context, size int64, timeout time.Duratio
 	key := taskQueueKey()
 
 	// Step 1: 阻塞等待第一个任务
-	// ctx 取消时利用 Done channel 提前返回
-	type blpopResult struct {
-		vals []string
-		err  error
-	}
-	ch := make(chan blpopResult, 1)
-
-	go func() {
-		vals, err := t.rds.BLPop(timeout, key).Result()
-		ch <- blpopResult{vals, err}
-	}()
-
-	var first string
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			if res.err == redis.Nil {
-				return nil, nil // 正常超时，无任务
-			}
-			return nil, res.err
+	vals, err := t.rds.BLPop(ctx, timeout, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil // 正常超时，无任务
 		}
-		first = res.vals[1] // BLPop 返回 [key, value]
+		return nil, err
 	}
+	first := vals[1] // BLPop 返回 [key, value]
 
 	taskIDs := []string{first}
 
@@ -106,7 +89,7 @@ func (t *Task) DequeueTask(ctx context.Context, size int64, timeout time.Duratio
 		return taskIDs, nil
 	}
 
-	raw, err := luaBatchPop.Run(t.rds, []string{key}, remaining).Result()
+	raw, err := luaBatchPop.Run(ctx, t.rds, []string{key}, remaining).Result()
 	if err != nil && err != redis.Nil {
 		// Lua 失败不影响已拿到的 first，降级返回
 		return taskIDs, nil
@@ -124,6 +107,6 @@ func (t *Task) DequeueTask(ctx context.Context, size int64, timeout time.Duratio
 }
 
 // QueueLen 返回队列积压长度，用于 metrics 上报或告警
-func (t *Task) QueueLen(_ context.Context) (int64, error) {
-	return t.rds.LLen(taskQueueKey()).Result()
+func (t *Task) QueueLen(ctx context.Context) (int64, error) {
+	return t.rds.LLen(ctx, taskQueueKey()).Result()
 }

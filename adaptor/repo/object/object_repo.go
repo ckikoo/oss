@@ -4,30 +4,49 @@ import (
 	"context"
 	"time"
 
-	"oss/adaptor"
+	"oss/adaptor/repo/metering"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 type ObjectRepo struct {
-	db *gorm.DB
+	db           *gorm.DB
+	meteringRepo *metering.MeteringRepo // TODO  需要重新调整，repo 套repo 会乱掉
 }
 
 var _ IObjectRepo = (*ObjectRepo)(nil)
 
-func NewObjectRepo(adaptor adaptor.IAdaptor) *ObjectRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
+func NewObjectRepo(db *gorm.DB) *ObjectRepo {
+	return &ObjectRepo{db: db, meteringRepo: metering.NewMeteringRepo(db)}
+}
 
-	return &ObjectRepo{db: ormDB}
+func (r *ObjectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
+	return &do.ObjectDo{
+		ID:            modelObject.ID,
+		BucketID:      modelObject.BucketID,
+		BucketName:    modelObject.BucketName,
+		ObjectKey:     modelObject.ObjectKey,
+		ObjectKeyHash: modelObject.ObjectKeyHash,
+		VersionID:     modelObject.VersionID,
+		Size:          modelObject.Size,
+		Etag:          modelObject.Etag,
+		ContentType:   modelObject.ContentType,
+		StorageClass:  modelObject.StorageClass,
+		IsMultipart:   modelObject.IsMultipart,
+		UploadID:      modelObject.UploadID,
+		StoragePath:   modelObject.StoragePath,
+		Acl:           modelObject.Acl,
+		Metadata:      modelObject.Metadata,
+		Status:        modelObject.Status,
+		AccessCount:   modelObject.AccessCount,
+		CreatedAt:     modelObject.CreatedAt,
+		UpdatedAt:     modelObject.UpdatedAt,
+		DeletedAt:     modelObject.DeletedAt,
+	}
 }
 
 func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) (int64, error) {
@@ -81,7 +100,7 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 			return err
 		}
 
-		if err := r.updateDailyMetering(tx, ctx, bucket.UserID, &object.BucketID, time.Now(), object.Size, 1, object.Size, 0, 0, 1, 0); err != nil {
+		if err := r.meteringRepo.UpdateDailyMetricsWithTx(tx, ctx, bucket.UserID, &object.BucketID, time.Now(), object.Size, 1, object.Size, 0, 0, 1, 0); err != nil {
 			return err
 		}
 
@@ -103,28 +122,7 @@ func (r *ObjectRepo) GetObjectFromHashKey(ctx context.Context, req *do.GetObject
 	if err != nil {
 		return nil, err
 	}
-	return &do.ObjectDo{
-		ID:            modelObject.ID,
-		BucketID:      modelObject.BucketID,
-		BucketName:    modelObject.BucketName,
-		ObjectKey:     modelObject.ObjectKey,
-		ObjectKeyHash: modelObject.ObjectKeyHash,
-		VersionID:     modelObject.VersionID,
-		Size:          modelObject.Size,
-		Etag:          modelObject.Etag,
-		ContentType:   modelObject.ContentType,
-		StorageClass:  modelObject.StorageClass,
-		IsMultipart:   modelObject.IsMultipart,
-		UploadID:      modelObject.UploadID,
-		StoragePath:   modelObject.StoragePath,
-		Acl:           modelObject.Acl,
-		Metadata:      modelObject.Metadata,
-		Status:        modelObject.Status,
-		AccessCount:   modelObject.AccessCount,
-		CreatedAt:     modelObject.CreatedAt,
-		UpdatedAt:     modelObject.UpdatedAt,
-		DeletedAt:     modelObject.DeletedAt,
-	}, nil
+	return r.toObjectDo(modelObject), nil
 }
 func (r *ObjectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
 	q := query.Use(r.db)
@@ -139,28 +137,8 @@ func (r *ObjectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 	if err != nil {
 		return nil, err
 	}
-	return &do.ObjectDo{
-		ID:            modelObject.ID,
-		BucketID:      modelObject.BucketID,
-		BucketName:    modelObject.BucketName,
-		ObjectKey:     modelObject.ObjectKey,
-		ObjectKeyHash: modelObject.ObjectKeyHash,
-		VersionID:     modelObject.VersionID,
-		Size:          modelObject.Size,
-		Etag:          modelObject.Etag,
-		ContentType:   modelObject.ContentType,
-		StorageClass:  modelObject.StorageClass,
-		IsMultipart:   modelObject.IsMultipart,
-		UploadID:      modelObject.UploadID,
-		StoragePath:   modelObject.StoragePath,
-		Acl:           modelObject.Acl,
-		Metadata:      modelObject.Metadata,
-		Status:        modelObject.Status,
-		AccessCount:   modelObject.AccessCount,
-		CreatedAt:     modelObject.CreatedAt,
-		UpdatedAt:     modelObject.UpdatedAt,
-		DeletedAt:     modelObject.DeletedAt,
-	}, nil
+
+	return r.toObjectDo(modelObject), nil
 }
 
 func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
@@ -192,28 +170,7 @@ func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 
 	objects := make([]*do.ObjectDo, len(modelObjects))
 	for i, modelObject := range modelObjects {
-		objects[i] = &do.ObjectDo{
-			ID:            modelObject.ID,
-			BucketID:      modelObject.BucketID,
-			BucketName:    modelObject.BucketName,
-			ObjectKey:     modelObject.ObjectKey,
-			ObjectKeyHash: modelObject.ObjectKeyHash,
-			VersionID:     modelObject.VersionID,
-			Size:          modelObject.Size,
-			Etag:          modelObject.Etag,
-			ContentType:   modelObject.ContentType,
-			StorageClass:  modelObject.StorageClass,
-			IsMultipart:   modelObject.IsMultipart,
-			UploadID:      modelObject.UploadID,
-			StoragePath:   modelObject.StoragePath,
-			Acl:           modelObject.Acl,
-			Metadata:      modelObject.Metadata,
-			Status:        modelObject.Status,
-			AccessCount:   modelObject.AccessCount,
-			CreatedAt:     modelObject.CreatedAt,
-			UpdatedAt:     modelObject.UpdatedAt,
-			DeletedAt:     modelObject.DeletedAt,
-		}
+		objects[i] = r.toObjectDo(modelObject)
 	}
 	return objects, nil
 }
@@ -298,28 +255,7 @@ func (r *ObjectRepo) GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName
 	if err != nil {
 		return nil, err
 	}
-	return &do.ObjectDo{
-		ID:            modelObject.ID,
-		BucketID:      modelObject.BucketID,
-		BucketName:    modelObject.BucketName,
-		ObjectKey:     modelObject.ObjectKey,
-		ObjectKeyHash: modelObject.ObjectKeyHash,
-		VersionID:     modelObject.VersionID,
-		Size:          modelObject.Size,
-		Etag:          modelObject.Etag,
-		ContentType:   modelObject.ContentType,
-		StorageClass:  modelObject.StorageClass,
-		IsMultipart:   modelObject.IsMultipart,
-		UploadID:      modelObject.UploadID,
-		StoragePath:   modelObject.StoragePath,
-		Acl:           modelObject.Acl,
-		Metadata:      modelObject.Metadata,
-		Status:        modelObject.Status,
-		AccessCount:   modelObject.AccessCount,
-		CreatedAt:     modelObject.CreatedAt,
-		UpdatedAt:     modelObject.UpdatedAt,
-		DeletedAt:     modelObject.DeletedAt,
-	}, nil
+	return r.toObjectDo(modelObject), nil
 }
 
 func (r *ObjectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) error {
@@ -332,51 +268,4 @@ func (r *ObjectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucket
 	}
 	_, err := qs.Update(q.Object.Status, consts.ObjectStatusDeleted)
 	return err
-}
-
-func (r *ObjectRepo) updateDailyMetering(tx *gorm.DB, ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {
-	sql := `INSERT INTO metering_daily
-        (user_id, bucket_id, stat_date, storage_size, object_count, upload_flow, download_flow, get_request_count, put_request_count, del_request_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-            storage_size = storage_size + VALUES(storage_size),
-            object_count = object_count + VALUES(object_count),
-            upload_flow = upload_flow + VALUES(upload_flow),
-            download_flow = download_flow + VALUES(download_flow),
-            get_request_count = get_request_count + VALUES(get_request_count),
-            put_request_count = put_request_count + VALUES(put_request_count),
-            del_request_count = del_request_count + VALUES(del_request_count)`
-
-	result := tx.WithContext(ctx).Exec(sql,
-		userID,
-		bucketID,
-		statDate.Format("2006-01-02"),
-		deltaStorageSize,
-		deltaObjectCount,
-		deltaUploadFlow,
-		deltaDownloadFlow,
-		deltaGetRequestCount,
-		deltaPutRequestCount,
-		deltaDelRequestCount,
-	)
-	if result.Error != nil {
-		return result.Error
-	}
-
-	if bucketID != nil {
-		result = tx.WithContext(ctx).Exec(sql,
-			userID,
-			nil,
-			statDate.Format("2006-01-02"),
-			deltaStorageSize,
-			deltaObjectCount,
-			deltaUploadFlow,
-			deltaDownloadFlow,
-			deltaGetRequestCount,
-			deltaPutRequestCount,
-			deltaDelRequestCount,
-		)
-		return result.Error
-	}
-	return nil
 }

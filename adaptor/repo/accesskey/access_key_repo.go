@@ -2,14 +2,12 @@ package accesskey
 
 import (
 	"context"
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -19,42 +17,12 @@ type AccessKeyRepo struct {
 
 var _ IAccessKeyRepo = (*AccessKeyRepo)(nil)
 
-func NewAccessKeyRepo(adaptor adaptor.IAdaptor) *AccessKeyRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
-	return &AccessKeyRepo{db: ormDB}
+func NewAccessKeyRepo(db *gorm.DB) *AccessKeyRepo {
+	return &AccessKeyRepo{db: db}
 }
 
-func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccessKey) (int64, error) {
-	modelAK := &model.AccessKey{
-		UserID:     ak.UserID,
-		AccessKey:  ak.AccessKey,
-		SecretKey:  ak.SecretKey,
-		Permission: ak.Permission,
-		ExpiresAt:  ak.ExpiresAt,
-		Status:     consts.AccessKeyStatusEnable,
-		CreatedAt:  time.Now(),
-	}
-	qs := query.Use(r.db).AccessKey.WithContext(ctx)
-	err := qs.Create(modelAK)
-	if err != nil {
-		return 0, err
-	}
-	return modelAK.ID, nil
-}
-
-func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*do.AccessKeyDo, error) {
-	q := query.Use(r.db)
-	qs := q.AccessKey.WithContext(ctx)
-	modelAK, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).First()
-	if err != nil {
-		return nil, err
-	}
-	doAK := &do.AccessKeyDo{
+func (r *AccessKeyRepo) toAccessKeyDo(modelAK *model.AccessKey) *do.AccessKeyDo {
+	return &do.AccessKeyDo{
 		ID:        modelAK.ID,
 		UserID:    modelAK.UserID,
 		AccessKey: modelAK.AccessKey,
@@ -86,7 +54,34 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 			return 0
 		}(),
 	}
-	return doAK, nil
+}
+
+func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccessKey) (int64, error) {
+	modelAK := &model.AccessKey{
+		UserID:     ak.UserID,
+		AccessKey:  ak.AccessKey,
+		SecretKey:  ak.SecretKey,
+		Permission: ak.Permission,
+		ExpiresAt:  ak.ExpiresAt,
+		Status:     consts.AccessKeyStatusEnable,
+		CreatedAt:  time.Now(),
+	}
+	qs := query.Use(r.db).AccessKey.WithContext(ctx)
+	err := qs.Create(modelAK)
+	if err != nil {
+		return 0, err
+	}
+	return modelAK.ID, nil
+}
+
+func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*do.AccessKeyDo, error) {
+	q := query.Use(r.db)
+	qs := q.AccessKey.WithContext(ctx)
+	modelAK, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).First()
+	if err != nil {
+		return nil, err
+	}
+	return r.toAccessKeyDo(modelAK), nil
 }
 
 func (r *AccessKeyRepo) CheckAccessKeyAndSecret(ctx context.Context, accessKey string, secretKeyHash string) bool {
@@ -111,38 +106,7 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 	}
 	doAKs := make([]*do.AccessKeyDo, len(modelAKs))
 	for i, modelAK := range modelAKs {
-		doAKs[i] = &do.AccessKeyDo{
-			ID:        modelAK.ID,
-			UserID:    modelAK.UserID,
-			AccessKey: modelAK.AccessKey,
-			SecretKey: modelAK.SecretKey,
-			Alias: func() string {
-				if modelAK.Alias_ != nil {
-					return *modelAK.Alias_
-				}
-				return ""
-			}(),
-			Status: modelAK.Status,
-			Permission: func() string {
-				if modelAK.Permission != nil {
-					return *modelAK.Permission
-				}
-				return ""
-			}(),
-			CreatedAt: modelAK.CreatedAt.UnixMilli(),
-			ExpiresAt: func() int64 {
-				if modelAK.ExpiresAt != nil {
-					return (modelAK.ExpiresAt.UnixMilli())
-				}
-				return -1
-			}(),
-			LastUsedAt: func() int64 {
-				if modelAK.LastUsedAt != nil {
-					return (modelAK.LastUsedAt.UnixMilli())
-				}
-				return -1
-			}(),
-		}
+		doAKs[i] = r.toAccessKeyDo(modelAK)
 	}
 	return doAKs, nil
 }

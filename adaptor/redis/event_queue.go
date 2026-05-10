@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 type IEventQueue interface {
@@ -32,19 +32,19 @@ func NewEventQueue(adaptor adaptor.IAdaptor) *EventQueue {
 
 var _ IEventQueue = (*EventQueue)(nil)
 
-func (q *EventQueue) EnqueueDeliveryID(_ context.Context, deliveryID int64) error {
-	return q.rds.RPush(eventDeliveryQueueKey(), strconv.FormatInt(deliveryID, 10)).Err()
+func (q *EventQueue) EnqueueDeliveryID(ctx context.Context, deliveryID int64) error {
+	return q.rds.RPush(ctx, eventDeliveryQueueKey(), strconv.FormatInt(deliveryID, 10)).Err()
 }
 
-func (q *EventQueue) EnqueueBatchDeliveryIDs(_ context.Context, deliveryIDs []int64) error {
+func (q *EventQueue) EnqueueBatchDeliveryIDs(ctx context.Context, deliveryIDs []int64) error {
 	if len(deliveryIDs) == 0 {
 		return nil
 	}
 	pipe := q.rds.Pipeline()
 	for _, id := range deliveryIDs {
-		pipe.RPush(eventDeliveryQueueKey(), strconv.FormatInt(id, 10))
+		pipe.RPush(ctx, eventDeliveryQueueKey(), strconv.FormatInt(id, 10))
 	}
-	_, err := pipe.Exec()
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
@@ -55,33 +55,17 @@ func (q *EventQueue) DequeueDeliveryIDs(ctx context.Context, size int64, timeout
 
 	key := eventDeliveryQueueKey()
 
-	type result struct {
-		vals []string
-		err  error
-	}
-
-	ch := make(chan result, 1)
-	go func() {
-		vals, err := q.rds.BLPop(timeout, key).Result()
-		ch <- result{vals: vals, err: err}
-	}()
-
-	var first string
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			if res.err == redis.Nil {
-				return nil, nil
-			}
-			return nil, res.err
+	vals, err := q.rds.BLPop(ctx, timeout, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
 		}
-		if len(res.vals) < 2 {
-			return nil, fmt.Errorf("unexpected BLPop result")
-		}
-		first = res.vals[1]
+		return nil, err
 	}
+	if len(vals) < 2 {
+		return nil, fmt.Errorf("unexpected BLPop result")
+	}
+	first := vals[1]
 
 	deliveryIDs := make([]int64, 0, size)
 	parsed, err := strconv.ParseInt(first, 10, 64)
@@ -95,7 +79,7 @@ func (q *EventQueue) DequeueDeliveryIDs(ctx context.Context, size int64, timeout
 		return deliveryIDs, nil
 	}
 
-	raw, err := luaBatchPop.Run(q.rds, []string{key}, remaining).Result()
+	raw, err := luaBatchPop.Run(ctx, q.rds, []string{key}, remaining).Result()
 	if err != nil && err != redis.Nil {
 		return deliveryIDs, nil
 	}
@@ -115,6 +99,6 @@ func (q *EventQueue) DequeueDeliveryIDs(ctx context.Context, size int64, timeout
 	return deliveryIDs, nil
 }
 
-func (q *EventQueue) QueueLen(_ context.Context) (int64, error) {
-	return q.rds.LLen(eventDeliveryQueueKey()).Result()
+func (q *EventQueue) QueueLen(ctx context.Context) (int64, error) {
+	return q.rds.LLen(ctx, eventDeliveryQueueKey()).Result()
 }

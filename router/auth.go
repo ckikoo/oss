@@ -37,7 +37,7 @@ func buildStringToSign(method, path, query, host, contentType, body string, time
 	return sb.String()
 }
 func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	repo := accesskey.NewAccessKeyRepo(adaptor)
+	repo := accesskey.NewAccessKeyRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 
 		// 特定接口处理
@@ -54,7 +54,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				pass = false
 			)
 
-			ak, pass = ctrl.ValidateToken(ctx, token, consts.DownloadAction)
+			ak, pass = ctrl.ValidateToken(ctx, token, consts.DownloadAction, c.Param("bucket_name"), c.Param("object_key"))
 			if !pass {
 				c.JSON(401, common.AuthErr.WithMsg("invalid token"))
 				c.Abort()
@@ -75,7 +75,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				return
 			}
 
-			userInfo := &common.UserInfoCtx{UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
+			userInfo := &common.UserInfoCtx{Context: ctx, UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
 			c.Set(consts.UserKeyContext, info.UserID)
 			c.Set(consts.UserInfoContext, userInfo)
 			c.Set(consts.AccessKeyContext, ak)
@@ -100,7 +100,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 					pass = false
 				)
 
-				ak, pass = ctrl.ValidateToken(ctx, ossToken, action)
+				ak, pass = ctrl.ValidateToken(ctx, ossToken, action, c.Param("bucket_name"), c.Param("object_key"))
 				if !pass {
 					c.JSON(401, common.AuthErr.WithMsg("invalid token"))
 					c.Abort()
@@ -121,7 +121,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 					return
 				}
 
-				userInfo := &common.UserInfoCtx{UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
+				userInfo := &common.UserInfoCtx{Context: ctx, UserID: info.UserID, AccessKey: ak, SecretKey: string(sec)}
 				c.Set(consts.UserKeyContext, info.UserID)
 				c.Set(consts.UserInfoContext, userInfo)
 				c.Set(consts.AccessKeyContext, ak)
@@ -208,7 +208,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		userInfo := &common.UserInfoCtx{UserID: akInfo.UserID, AccessKey: akInfo.AccessKey, SecretKey: string(sk)}
+		userInfo := &common.UserInfoCtx{Context: ctx, UserID: akInfo.UserID, AccessKey: akInfo.AccessKey, SecretKey: string(sk)}
 		c.Set(consts.SecretKeyContext, sk)
 		c.Set(consts.UserKeyContext, akInfo.UserID)
 		c.Set(consts.UserInfoContext, userInfo)

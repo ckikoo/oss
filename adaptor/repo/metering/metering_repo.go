@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -17,13 +15,16 @@ type MeteringRepo struct {
 	db *gorm.DB
 }
 
-func NewMeteringRepo(adaptor adaptor.IAdaptor) *MeteringRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-	return &MeteringRepo{db: ormDB}
+type IMeteringRepo interface {
+	UpdateDailyMetrics(ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error
+	UpdateDailyMetricsWithTx(tx *gorm.DB, ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error
+	ListDailyMetrics(ctx context.Context, userID int64, bucketID int64, hasBucketID bool, dateFrom, dateTo *time.Time) ([]*model.MeteringDaily, error)
+}
+
+var _ IMeteringRepo = (*MeteringRepo)(nil)
+
+func NewMeteringRepo(db *gorm.DB) *MeteringRepo {
+	return &MeteringRepo{db: db}
 }
 
 func (r *MeteringRepo) UpdateDailyMetrics(ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {

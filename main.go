@@ -10,9 +10,10 @@ import (
 	"oss/router"
 	"oss/timer"
 	"oss/utils/logger"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 )
@@ -40,16 +41,26 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 	h := server.Default(server.WithHostPorts(address))
 	router.RegisterRoutes(h, newAdaptor)
 
-	// 启动后台定时任务
+	// 启动后台定时任务，并在异常退出时重启
 	ctx := context.Background()
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// 记录panic信息
-				logger.GetLogger().Error("timer goroutine panic", zap.Any("panic", r))
+		for {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.GetLogger().Error("timer goroutine panic", zap.Any("panic", r), zap.Stack("stack"))
+					}
+				}()
+				timer.StartTimer(ctx, newAdaptor)
+			}()
+
+			// timer.StartTimer 只会在 ctx 取消或发生不可恢复错误时返回，短暂停顿后重启
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
 			}
-		}()
-		timer.StartTimer(ctx, newAdaptor)
+		}
 	}()
 
 	h.Spin()
@@ -97,7 +108,7 @@ func initRedis(conf *config.Redis) (*redis.Client, error) {
 		PoolSize:     conf.MaxOpen,
 	})
 
-	if err := client.Ping().Err(); err != nil {
+	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, err
 	}
 

@@ -16,7 +16,7 @@ type Service struct {
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: auditRepo.NewOperationLogRepo(adaptor)}
+	return &Service{repo: auditRepo.NewOperationLogRepo(adaptor.GetGORM())}
 }
 
 func (srv *Service) ListOperationLogs(ctx *common.UserInfoCtx, req *dto.ListOperationLogsReq) (*dto.ListOperationLogsResp, common.Errno) {

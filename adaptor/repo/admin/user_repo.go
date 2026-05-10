@@ -2,14 +2,12 @@ package admin
 
 import (
 	"context"
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -19,14 +17,8 @@ type User struct {
 
 var _ IUser = (*User)(nil)
 
-func NewUserRepo(adaptor adaptor.IAdaptor) *User {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
-	return &User{db: ormDB}
+func NewUserRepo(db *gorm.DB) *User {
+	return &User{db: db}
 }
 
 func (u *User) CreateUser(ctx context.Context, req *do.CreateUser) (int64, error) {

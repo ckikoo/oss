@@ -5,12 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -20,13 +18,8 @@ type LifecycleRepo struct {
 
 var _ ILifecycleRepo = (*LifecycleRepo)(nil)
 
-func NewLifecycleRepo(adaptor adaptor.IAdaptor) *LifecycleRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-	return &LifecycleRepo{db: ormDB}
+func NewLifecycleRepo(db *gorm.DB) *LifecycleRepo {
+	return &LifecycleRepo{db: db}
 }
 
 func (r *LifecycleRepo) CreateLifecycleRule(ctx context.Context, rule *do.CreateLifecycleRule) (int64, error) {

@@ -4,13 +4,11 @@ import (
 	"context"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -20,14 +18,25 @@ type BucketRepo struct {
 
 var _ IBucketRepo = (*BucketRepo)(nil)
 
-func NewBucketRepo(adaptor adaptor.IAdaptor) *BucketRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
+func NewBucketRepo(db *gorm.DB) *BucketRepo {
+	return &BucketRepo{db: db}
+}
 
-	return &BucketRepo{db: ormDB}
+func (r *BucketRepo) toBucketDo(modelBucket *model.Bucket) *do.BucketDo {
+	return &do.BucketDo{
+		ID:           modelBucket.ID,
+		UserID:       modelBucket.UserID,
+		Name:         modelBucket.Name,
+		Region:       modelBucket.Region,
+		Acl:          modelBucket.Acl,
+		Versioning:   modelBucket.Versioning,
+		Status:       modelBucket.Status,
+		StorageClass: modelBucket.StorageClass,
+		ObjectCount:  modelBucket.ObjectCount,
+		StorageSize:  modelBucket.StorageSize,
+		CreatedAt:    modelBucket.CreatedAt,
+		UpdatedAt:    modelBucket.UpdatedAt,
+	}
 }
 
 func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) (int64, error) {
@@ -53,7 +62,7 @@ func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) 
 		UpdatedAt:    time.Now(),
 	}
 
-	r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err = tx.Model(&model.Bucket{}).WithContext(ctx).Create(modelBucket).Error; err != nil {
 			return err
 		}
@@ -89,30 +98,15 @@ func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) 
 
 		return tx.Model(&model.LifecycleRule{}).CreateInBatches(defaultRules, 3).Error
 	})
+	if err != nil {
+		return 0, err
+	}
 
 	return modelBucket.ID, nil
 }
 
 func (r *BucketRepo) GetByName(ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
-	q := query.Use(r.db)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
-	if err != nil {
-		return nil, err
-	}
-	return &do.BucketDo{
-		ID:           modelBucket.ID,
-		UserID:       modelBucket.UserID,
-		Name:         modelBucket.Name,
-		Region:       modelBucket.Region,
-		Acl:          modelBucket.Acl,
-		Versioning:   modelBucket.Versioning,
-		Status:       modelBucket.Status,
-		StorageClass: modelBucket.StorageClass,
-		ObjectCount:  modelBucket.ObjectCount,
-		StorageSize:  modelBucket.StorageSize,
-		CreatedAt:    modelBucket.CreatedAt,
-		UpdatedAt:    modelBucket.UpdatedAt,
-	}, nil
+	return r.GetByUserAndName(ctx, userID, name)
 }
 
 func (r *BucketRepo) GetByUserAndName(ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
@@ -121,20 +115,7 @@ func (r *BucketRepo) GetByUserAndName(ctx context.Context, userID int64, name st
 	if err != nil {
 		return nil, err
 	}
-	return &do.BucketDo{
-		ID:           modelBucket.ID,
-		UserID:       modelBucket.UserID,
-		Name:         modelBucket.Name,
-		Region:       modelBucket.Region,
-		Acl:          modelBucket.Acl,
-		Versioning:   modelBucket.Versioning,
-		Status:       modelBucket.Status,
-		StorageClass: modelBucket.StorageClass,
-		ObjectCount:  modelBucket.ObjectCount,
-		StorageSize:  modelBucket.StorageSize,
-		CreatedAt:    modelBucket.CreatedAt,
-		UpdatedAt:    modelBucket.UpdatedAt,
-	}, nil
+	return r.toBucketDo(modelBucket), nil
 }
 
 func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error) {
@@ -143,20 +124,7 @@ func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error
 	if err != nil {
 		return nil, err
 	}
-	return &do.BucketDo{
-		ID:           modelBucket.ID,
-		UserID:       modelBucket.UserID,
-		Name:         modelBucket.Name,
-		Region:       modelBucket.Region,
-		Acl:          modelBucket.Acl,
-		Versioning:   modelBucket.Versioning,
-		Status:       modelBucket.Status,
-		StorageClass: modelBucket.StorageClass,
-		ObjectCount:  modelBucket.ObjectCount,
-		StorageSize:  modelBucket.StorageSize,
-		CreatedAt:    modelBucket.CreatedAt,
-		UpdatedAt:    modelBucket.UpdatedAt,
-	}, nil
+	return r.toBucketDo(modelBucket), nil
 }
 
 func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.BucketDo, error) {
@@ -175,20 +143,7 @@ func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int3
 
 	buckets := make([]*do.BucketDo, len(modelBuckets))
 	for i, modelBucket := range modelBuckets {
-		buckets[i] = &do.BucketDo{
-			ID:           modelBucket.ID,
-			UserID:       modelBucket.UserID,
-			Name:         modelBucket.Name,
-			Region:       modelBucket.Region,
-			Acl:          modelBucket.Acl,
-			Versioning:   modelBucket.Versioning,
-			Status:       modelBucket.Status,
-			StorageClass: modelBucket.StorageClass,
-			ObjectCount:  modelBucket.ObjectCount,
-			StorageSize:  modelBucket.StorageSize,
-			CreatedAt:    modelBucket.CreatedAt,
-			UpdatedAt:    modelBucket.UpdatedAt,
-		}
+		buckets[i] = r.toBucketDo(modelBucket)
 	}
 	return buckets, nil
 }
@@ -238,25 +193,7 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucket
 }
 
 func (r *BucketRepo) GetByNameWithTx(tx *gorm.DB, ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
-	q := query.Use(tx)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
-	if err != nil {
-		return nil, err
-	}
-	return &do.BucketDo{
-		ID:           modelBucket.ID,
-		UserID:       modelBucket.UserID,
-		Name:         modelBucket.Name,
-		Region:       modelBucket.Region,
-		Acl:          modelBucket.Acl,
-		Versioning:   modelBucket.Versioning,
-		Status:       modelBucket.Status,
-		StorageClass: modelBucket.StorageClass,
-		ObjectCount:  modelBucket.ObjectCount,
-		StorageSize:  modelBucket.StorageSize,
-		CreatedAt:    modelBucket.CreatedAt,
-		UpdatedAt:    modelBucket.UpdatedAt,
-	}, nil
+	return r.GetByUserAndNameWithTx(tx, ctx, userID, name)
 }
 
 func (r *BucketRepo) GetByUserAndNameWithTx(tx *gorm.DB, ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
@@ -265,20 +202,7 @@ func (r *BucketRepo) GetByUserAndNameWithTx(tx *gorm.DB, ctx context.Context, us
 	if err != nil {
 		return nil, err
 	}
-	return &do.BucketDo{
-		ID:           modelBucket.ID,
-		UserID:       modelBucket.UserID,
-		Name:         modelBucket.Name,
-		Region:       modelBucket.Region,
-		Acl:          modelBucket.Acl,
-		Versioning:   modelBucket.Versioning,
-		Status:       modelBucket.Status,
-		StorageClass: modelBucket.StorageClass,
-		ObjectCount:  modelBucket.ObjectCount,
-		StorageSize:  modelBucket.StorageSize,
-		CreatedAt:    modelBucket.CreatedAt,
-		UpdatedAt:    modelBucket.UpdatedAt,
-	}, nil
+	return r.toBucketDo(modelBucket), nil
 }
 
 func (r *BucketRepo) UpdateBucketStatsWithTx(tx *gorm.DB, ctx context.Context, userID int64, bucketName string, deltaCount, deltaSize int64) error {

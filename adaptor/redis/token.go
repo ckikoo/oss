@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 // ── 导出字段常量，调用方用常量而非裸字符串 ──────────────────────────────────
@@ -84,18 +84,18 @@ func downloadTokenKey(token string) string {
 
 // ── Upload Token ──────────────────────────────────────────────────────────────
 
-func (t *Token) CreateUploadToken(_ context.Context, token string, req *dto.CreateUploadTokenReq, expire time.Duration) error {
+func (t *Token) CreateUploadToken(ctx context.Context, token string, req *dto.CreateUploadTokenReq, expire time.Duration) error {
 	key := uploadTokenKey(token)
-	_, err := t.rds.Pipelined(func(pipe redis.Pipeliner) error {
-		pipe.HMSet(key, uploadTokenFields(req))
-		pipe.Expire(key, expire)
+	_, err := t.rds.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HMSet(ctx, key, uploadTokenFields(req))
+		pipe.Expire(ctx, key, expire)
 		return nil
 	})
 	return err
 }
 
-func (t *Token) GetUploadToken(_ context.Context, token string) (*dto.CreateUploadTokenReq, error) {
-	vals, err := t.rds.HGetAll(uploadTokenKey(token)).Result()
+func (t *Token) GetUploadToken(ctx context.Context, token string) (*dto.CreateUploadTokenReq, error) {
+	vals, err := t.rds.HGetAll(ctx, uploadTokenKey(token)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -105,28 +105,28 @@ func (t *Token) GetUploadToken(_ context.Context, token string) (*dto.CreateUplo
 	return parseUploadToken(vals)
 }
 
-func (t *Token) GetUploadTokenFields(_ context.Context, token string, fields ...string) (map[string]string, error) {
-	return hgetFields(t.rds, uploadTokenKey(token), fields...)
+func (t *Token) GetUploadTokenFields(ctx context.Context, token string, fields ...string) (map[string]string, error) {
+	return hgetFields(ctx, t.rds, uploadTokenKey(token), fields...)
 }
 
-func (t *Token) DeleteUploadToken(_ context.Context, token string) error {
-	return t.rds.Del(uploadTokenKey(token)).Err()
+func (t *Token) DeleteUploadToken(ctx context.Context, token string) error {
+	return t.rds.Del(ctx, uploadTokenKey(token)).Err()
 }
 
 // ── Download Token ────────────────────────────────────────────────────────────
 
-func (t *Token) CreateDownloadToken(_ context.Context, token string, req *dto.CreateDownloadTokenReq, expire time.Duration) error {
+func (t *Token) CreateDownloadToken(ctx context.Context, token string, req *dto.CreateDownloadTokenReq, expire time.Duration) error {
 	key := downloadTokenKey(token)
-	_, err := t.rds.Pipelined(func(pipe redis.Pipeliner) error {
-		pipe.HMSet(key, downloadTokenFields(req))
-		pipe.Expire(key, expire)
+	_, err := t.rds.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HMSet(ctx, key, downloadTokenFields(req))
+		pipe.Expire(ctx, key, expire)
 		return nil
 	})
 	return err
 }
 
-func (t *Token) GetDownloadToken(_ context.Context, token string) (*dto.CreateDownloadTokenReq, error) {
-	vals, err := t.rds.HGetAll(downloadTokenKey(token)).Result()
+func (t *Token) GetDownloadToken(ctx context.Context, token string) (*dto.CreateDownloadTokenReq, error) {
+	vals, err := t.rds.HGetAll(ctx, downloadTokenKey(token)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -136,12 +136,12 @@ func (t *Token) GetDownloadToken(_ context.Context, token string) (*dto.CreateDo
 	return parseDownloadToken(vals)
 }
 
-func (t *Token) GetDownloadTokenFields(_ context.Context, token string, fields ...string) (map[string]string, error) {
-	return hgetFields(t.rds, downloadTokenKey(token), fields...)
+func (t *Token) GetDownloadTokenFields(ctx context.Context, token string, fields ...string) (map[string]string, error) {
+	return hgetFields(ctx, t.rds, downloadTokenKey(token), fields...)
 }
 
-func (t *Token) DeleteDownloadToken(_ context.Context, token string) error {
-	return t.rds.Del(downloadTokenKey(token)).Err()
+func (t *Token) DeleteDownloadToken(ctx context.Context, token string) error {
+	return t.rds.Del(ctx, downloadTokenKey(token)).Err()
 }
 
 // ── 核心：字段查询（单/多字段统一入口） ──────────────────────────────────────
@@ -156,7 +156,7 @@ func (t *Token) DeleteDownloadToken(_ context.Context, token string) error {
 //   - key 不存在（token 过期）→ ErrTokenNotFound
 //   - key 存在但某字段不存在 → 该字段不出现在返回 map 中（非 error）
 //   - 调用方可通过 ok-idiom 判断字段是否存在：val, ok := result[FieldXxx]
-func hgetFields(rds *redis.Client, key string, fields ...string) (map[string]string, error) {
+func hgetFields(ctx context.Context, rds *redis.Client, key string, fields ...string) (map[string]string, error) {
 	if len(fields) == 0 {
 		return nil, errors.New("at least one field is required")
 	}
@@ -164,10 +164,10 @@ func hgetFields(rds *redis.Client, key string, fields ...string) (map[string]str
 	result := make(map[string]string, len(fields))
 
 	if len(fields) == 1 {
-		val, err := rds.HGet(key, fields[0]).Result()
+		val, err := rds.HGet(ctx, key, fields[0]).Result()
 		if err == redis.Nil {
 			// 区分 key 不存在 vs 字段不存在
-			if n, _ := rds.Exists(key).Result(); n == 0 {
+			if n, _ := rds.Exists(ctx, key).Result(); n == 0 {
 				return nil, ErrTokenNotFound
 			}
 			return result, nil // key 存在，字段缺失，返回空 map
@@ -179,7 +179,7 @@ func hgetFields(rds *redis.Client, key string, fields ...string) (map[string]str
 		return result, nil
 	}
 
-	hasKey, err := rds.Exists(key).Result()
+	hasKey, err := rds.Exists(ctx, key).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,7 @@ func hgetFields(rds *redis.Client, key string, fields ...string) (map[string]str
 	}
 
 	// HMGET：不存在的 key 和不存在的字段都返回 nil
-	vals, err := rds.HMGet(key, fields...).Result()
+	vals, err := rds.HMGet(ctx, key, fields...).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -201,13 +201,6 @@ func hgetFields(rds *redis.Client, key string, fields ...string) (map[string]str
 			result[fields[i]] = s
 		}
 	}
-
-	// // 全 nil：可能是 key 不存在，做一次 EXISTS 确认
-	// if allNil {
-	// 	if n, _ := rds.Exists(key).Result(); n == 0 {
-	// 		return nil, ErrTokenNotFound
-	// 	}
-	// }
 
 	return result, nil
 }

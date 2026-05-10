@@ -14,7 +14,7 @@ type Service struct {
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: metering.NewMeteringRepo(adaptor)}
+	return &Service{repo: metering.NewMeteringRepo(adaptor.GetGORM())}
 }
 
 func (srv *Service) ListDailyMetrics(ctx *common.UserInfoCtx, req *dto.ListDailyMeteringReq) (*dto.ListDailyMeteringResp, common.Errno) {

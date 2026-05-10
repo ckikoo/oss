@@ -2,14 +2,12 @@ package event
 
 import (
 	"context"
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -17,14 +15,8 @@ type eventDeliveryRepo struct {
 	db *gorm.DB
 }
 
-func NewEventDeliveryRepo(adaptor adaptor.IAdaptor) IEventDeliveryRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
-	return &eventDeliveryRepo{db: ormDB}
+func NewEventDeliveryRepo(db *gorm.DB) IEventDeliveryRepo {
+	return &eventDeliveryRepo{db: db}
 }
 
 func (r *eventDeliveryRepo) CreateEventDelivery(ctx context.Context, delivery *do.EventDeliveryDo) (int64, error) {

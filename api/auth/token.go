@@ -65,7 +65,7 @@ func (ctrl *TokenCtrl) CreateDownloadToken(ctx context.Context, c *app.RequestCo
 
 	api.WriteResp(c, resp, errno)
 }
-func (ctrl *TokenCtrl) ValidateToken(ctx context.Context, token, action string) (ak string, pass bool) {
+func (ctrl *TokenCtrl) ValidateToken(ctx context.Context, token, action, expectedBucketName, expectedObjectKey string) (ak string, pass bool) {
 
-	return ctrl.srv.ValidateToken(ctx, token, action)
+	return ctrl.srv.ValidateToken(ctx, token, action, expectedBucketName, expectedObjectKey)
 }

@@ -25,35 +25,28 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"go.uber.org/zap"
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 type Service struct {
+	adaptor       adaptor.IAdaptor
 	userRepo      admin.IUser
 	objRepo       objectRepo.IObjectRepo
 	bucketRepo    bucket.IBucketRepo
 	multipartRepo multipartRepo.IMultipartRepo
-	meteringRepo  *meteringRepo.MeteringRepo
-	db            *gorm.DB
+	meteringRepo  meteringRepo.IMeteringRepo
 	storage       storage.IStorage
 	eventService  *event.Service
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
 	return &Service{
-		userRepo:      admin.NewUserRepo(adaptor),
-		objRepo:       objectRepo.NewObjectRepo(adaptor),
-		bucketRepo:    bucket.NewBucketRepo(adaptor),
-		multipartRepo: multipartRepo.NewObjectRepo(adaptor),
-		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor),
-		db:            ormDB,
+		adaptor:       adaptor,
+		userRepo:      admin.NewUserRepo(adaptor.GetGORM()),
+		objRepo:       objectRepo.NewObjectRepo(adaptor.GetGORM()),
+		bucketRepo:    bucket.NewBucketRepo(adaptor.GetGORM()),
+		multipartRepo: multipartRepo.NewObjectRepo(adaptor.GetGORM()),
+		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor.GetGORM()),
 		storage:       adaptor.GetStorage(),
 		eventService:  event.NewService(adaptor),
 	}
@@ -246,7 +239,7 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
-		return common.ParamErr.WithErr(err)
+		return common.DatabaseErr.WithErr(err)
 	}
 
 	// Set response headers
@@ -348,7 +341,7 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 	}
 
 	var deletedObj *do.ObjectDo
-	err := srv.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := srv.adaptor.GetGORM().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		obj, err := srv.objRepo.GetByKeyWithTx(tx, ctx, bucketName, objectKey, versionID)
 		if err != nil {
 			return err
@@ -449,16 +442,18 @@ func (srv *Service) streamMultipartObject(ctx *common.UserInfoCtx, obj *do.Objec
 	c.Response.Header.Del("Content-Length") // 分块传输不能设置Content-Length
 
 	for _, part := range parts {
-		file, err := srv.storage.Get(ctx, part.StoragePath)
-		if err != nil {
-			return common.ServerErr.WithErr(err)
-		}
+		if err := func() error {
+			file, err := srv.storage.Get(ctx, part.StoragePath)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
 
-		if _, err = io.Copy(io.MultiWriter(c.Response.BodyWriter(), counter), file); err != nil {
-			file.Close()
+			_, err = io.Copy(io.MultiWriter(c.Response.BodyWriter(), counter), file)
+			return err
+		}(); err != nil {
 			return common.ServerErr.WithErr(err)
 		}
-		file.Close()
 	}
 
 	return common.OK

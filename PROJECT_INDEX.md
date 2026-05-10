@@ -60,7 +60,7 @@ adaptor/repo/
 ```
 adaptor/redis/
 ├── mutipart.go     ✅ 分片上传超时管理 (ZSet存储)
-├── lifecycle.go    ⚠️ 生命周期事件存储 (待实现消息处理)
+├── lifecycle.go    ✅ 生命周期事件存储 (ZSet存储，基于执行时间排序)
 └── file.go         ✅ 分布式文件锁 (基于bucket+object名称)
 ```
 

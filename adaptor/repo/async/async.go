@@ -4,12 +4,10 @@ import (
 	"context"
 	"time"
 
-	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -23,15 +21,9 @@ type AsyncTaskRepo struct {
 	db *gorm.DB
 }
 
-func NewAsyncTaskRepo(adaptor adaptor.IAdaptor) IAsyncTaskRepo {
-	sqlDB := adaptor.GetDB()
-	ormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-
+func NewAsyncTaskRepo(db *gorm.DB) IAsyncTaskRepo {
 	return &AsyncTaskRepo{
-		db: ormDB,
+		db: db,
 	}
 }
 
@@ -64,22 +56,51 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do
 		return nil, err
 	}
 
+	uploadID := ""
+	if modelTask.UploadID != nil {
+		uploadID = *modelTask.UploadID
+	}
+	objectID := int64(0)
+	if modelTask.ObjectID != nil {
+		objectID = *modelTask.ObjectID
+	}
+	result := ""
+	if modelTask.Result != nil {
+		result = *modelTask.Result
+	}
+	errorMsg := ""
+	if modelTask.ErrorMsg != nil {
+		errorMsg = *modelTask.ErrorMsg
+	}
+	workerID := ""
+	if modelTask.WorkerID != nil {
+		workerID = *modelTask.WorkerID
+	}
+	startedAt := time.Time{}
+	if modelTask.StartedAt != nil {
+		startedAt = *modelTask.StartedAt
+	}
+	finishedAt := time.Time{}
+	if modelTask.FinishedAt != nil {
+		finishedAt = *modelTask.FinishedAt
+	}
+
 	return &do.AsyncTaskDo{
 		ID:         modelTask.ID,
 		UserId:     modelTask.UserID,
 		TaskID:     modelTask.TaskID,
 		TaskType:   modelTask.TaskType,
-		UploadID:   *modelTask.UploadID,
-		ObjectID:   *modelTask.ObjectID,
+		UploadID:   uploadID,
+		ObjectID:   objectID,
 		Status:     modelTask.Status,
 		Progress:   modelTask.Progress,
-		Result:     *modelTask.Result,
-		ErrorMsg:   *modelTask.ErrorMsg,
+		Result:     result,
+		ErrorMsg:   errorMsg,
 		RetryCount: modelTask.RetryCount,
 		MaxRetry:   modelTask.MaxRetry,
-		WorkerID:   *modelTask.WorkerID,
-		StartedAt:  *modelTask.StartedAt,
-		FinishedAt: *modelTask.FinishedAt,
+		WorkerID:   workerID,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
 		CreatedAt:  modelTask.CreatedAt,
 		UpdatedAt:  modelTask.UpdatedAt,
 	}, nil

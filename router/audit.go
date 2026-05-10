@@ -16,7 +16,7 @@ import (
 
 // NewOperationLogMiddleware creates a middleware that logs all operations
 func NewOperationLogMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	auditRepo := audit.NewOperationLogRepo(adaptor)
+	auditRepo := audit.NewOperationLogRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		requestID := uuid.NewString()
 		c.Set("request_id", requestID)

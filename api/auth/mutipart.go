@@ -51,6 +51,11 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 		return
 	}
 
+	token, pass := common.GetTokenFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
 	uploadID := c.Param("upload_id")
 	partNumberStr := c.Param("part_number")
 
@@ -68,7 +73,7 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 
 	etag := c.Request.Header.Get("Content-MD5")
 
-	resp, errno := ctrl.object.UploadMultipartPart(ctx1, etag, uploadID, int32(partNumber), body)
+	resp, errno := ctrl.object.UploadMultipartPart(ctx1, token, etag, uploadID, int32(partNumber), body)
 	api.WriteResp(c, resp, errno)
 }
 

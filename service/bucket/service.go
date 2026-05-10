@@ -21,8 +21,8 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:          bucketRepo.NewBucketRepo(adaptor),
-		lifecycleRepo: lifecycleRepo.NewLifecycleRepo(adaptor),
+		repo:          bucketRepo.NewBucketRepo(adaptor.GetGORM()),
+		lifecycleRepo: lifecycleRepo.NewLifecycleRepo(adaptor.GetGORM()),
 	}
 }
 
@@ -109,7 +109,7 @@ func (srv *Service) GetBucket(ctx *common.UserInfoCtx, name string) (*dto.Bucket
 	}
 	bucketDo, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 	return &dto.BucketItem{
 		ID:           bucketDo.ID,
@@ -138,7 +138,7 @@ func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.
 	// First check if bucket exists and belongs to user
 	_, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	bucketDo, err := srv.repo.UpdateBucket(ctx, ctx.UserID, name, &do.UpdateBucket{
@@ -169,13 +169,13 @@ func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.
 }
 
 func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, name string) common.Errno {
-	if name == "" {
-		return common.ParamErr.WithMsg("bucket name is required")
-	}
 	// First check if bucket exists and belongs to user
-	_, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
+	bucketDo, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
-		return common.ParamErr.WithErr(err)
+		return common.DatabaseErr.WithErr(err)
+	}
+	if bucketDo.ObjectCount > 0 {
+		return common.BucketNotEmptyErr
 	}
 	if err := srv.repo.DeleteBucket(ctx, ctx.UserID, name); err != nil {
 		return common.DatabaseErr.WithErr(err)
