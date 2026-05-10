@@ -11,12 +11,18 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
+	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/async"
+	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
-	eventRepo "oss/adaptor/repo/event"
-	"oss/adaptor/repo/lifecycle"
-	"oss/adaptor/repo/multipart"
+	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
+
+	// "oss/adaptor/repo/multipart"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
+	gormEvent "oss/adaptor/repo/event/gorm"
+	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/repo/object"
+	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/storage"
 	"oss/consts"
 	"oss/service/do"
@@ -48,12 +54,12 @@ func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID
 func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	// 从 Redis 队列中取出任务 ID
 	redisTask := redis.NewTask(adaptor)
-	taskRepo := async.NewAsyncTaskRepo(adaptor.GetGORM())
+	taskRepo := gormAsync.NewAsyncTaskRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	multipart := multipart.NewObjectRepo(adaptor.GetGORM())
-	fileRepo := object.NewObjectRepo(adaptor.GetGORM())
+	multipart := gormMultipart.NewObjectRepo(adaptor.GetGORM())
+	fileRepo := gormObject.NewObjectRepo(adaptor.GetGORM())
 	taskLocker := redis.NewLock(adaptor)
-	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
 
 	if err != nil {
@@ -186,9 +192,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	// 处理上传超时的任务
 	multipartRedis := redis.NewMultipart(adaptor)
-	multipartRepo := multipart.NewObjectRepo(adaptor.GetGORM())
+	multipartRepo := gormMultipart.NewObjectRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
 
 	list, err := multipartRedis.GetTimeWaitMultipartCancel(ctx)
 	if err != nil {
@@ -243,11 +249,11 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 // 使用协程池并发处理多个生命周期规则，提高处理效率
 func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	lifecycleRedis := redis.NewLifecycle(adaptor)
-	lifecycleRepo := lifecycle.NewLifecycleRepo(adaptor.GetGORM())
-	objectRepo := object.NewObjectRepo(adaptor.GetGORM())
-	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
+	lifecycleRepo := gormLifecycle.NewLifecycleRepo(adaptor.GetGORM())
+	objectRepo := gormObject.NewObjectRepo(adaptor.GetGORM())
+	bucketRepo := gormBucket.NewBucketRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	uinfoRepo := admin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
 
 	// 使用共享的 gorm DB 实例
 	gormDB := adaptor.GetGORM()
@@ -542,8 +548,8 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 // handlerEventDeliveries 处理事件投递任务
 func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
-	eventDeliveryRepo := eventRepo.NewEventDeliveryRepo(adaptor.GetGORM())
-	eventRuleRepo := eventRepo.NewEventRuleRepo(adaptor.GetGORM())
+	eventDeliveryRepo := gormEvent.NewEventDeliveryRepo(adaptor.GetGORM())
+	eventRuleRepo := gormEvent.NewEventRuleRepo(adaptor.GetGORM())
 	eventQueue := redis.NewEventQueue(adaptor)
 
 	// 尝试从 Redis 触发队列取出 delivery_id

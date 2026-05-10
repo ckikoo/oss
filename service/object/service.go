@@ -10,10 +10,15 @@ import (
 
 	"oss/adaptor"
 	"oss/adaptor/repo/admin"
+	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/bucket"
-	meteringRepo "oss/adaptor/repo/metering"
-	multipartRepo "oss/adaptor/repo/multipart"
-	objectRepo "oss/adaptor/repo/object"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/metering"
+	gormMetering "oss/adaptor/repo/metering/gorm"
+	Imultipart "oss/adaptor/repo/multipart"
+	gormMultipart "oss/adaptor/repo/multipart/gorm"
+	"oss/adaptor/repo/object"
+	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/storage"
 	"oss/common"
 	"oss/consts"
@@ -31,10 +36,10 @@ import (
 type Service struct {
 	adaptor       adaptor.IAdaptor
 	userRepo      admin.IUser
-	objRepo       objectRepo.IObjectRepo
+	objRepo       object.IObjectRepo
 	bucketRepo    bucket.IBucketRepo
-	multipartRepo multipartRepo.IMultipartRepo
-	meteringRepo  meteringRepo.IMeteringRepo
+	multipartRepo Imultipart.IMultipartRepo
+	meteringRepo  metering.IMeteringRepo
 	storage       storage.IStorage
 	eventService  *event.Service
 }
@@ -42,11 +47,11 @@ type Service struct {
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		adaptor:       adaptor,
-		userRepo:      admin.NewUserRepo(adaptor.GetGORM()),
-		objRepo:       objectRepo.NewObjectRepo(adaptor.GetGORM()),
-		bucketRepo:    bucket.NewBucketRepo(adaptor.GetGORM()),
-		multipartRepo: multipartRepo.NewObjectRepo(adaptor.GetGORM()),
-		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor.GetGORM()),
+		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
+		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
+		bucketRepo:    gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
+		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
 		storage:       adaptor.GetStorage(),
 		eventService:  event.NewService(adaptor),
 	}

@@ -1,4 +1,4 @@
-package policy
+package admin
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"oss/adaptor/repo/model"
+	"oss/adaptor/repo/policy"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 	"oss/utils/pool"
@@ -17,7 +18,7 @@ type PolicyRepo struct {
 	db *gorm.DB
 }
 
-var _ IPolicyRepo = (*PolicyRepo)(nil)
+var _ policy.IPolicyRepo = (*PolicyRepo)(nil)
 
 func NewPolicyRepo(db *gorm.DB) *PolicyRepo {
 	return &PolicyRepo{db: db}

@@ -6,7 +6,9 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/accesskey"
+	gormAccessKey "oss/adaptor/repo/accesskey/gorm"
 	"oss/adaptor/repo/bucket"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
 	"oss/common"
 	"oss/consts"
 	"oss/service/dto"
@@ -28,8 +30,8 @@ type Service struct {
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		adaptor: adaptor,
-		bucket:  bucket.NewBucketRepo(adaptor.GetGORM()),
-		access:  accesskey.NewAccessKeyRepo(adaptor.GetGORM()),
+		bucket:  gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		access:  gormAccessKey.NewAccessKeyRepo(adaptor.GetGORM()),
 		rds:     redis.NewToken(adaptor),
 	}
 }

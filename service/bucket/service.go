@@ -5,7 +5,9 @@ import (
 
 	"oss/adaptor"
 	bucketRepo "oss/adaptor/repo/bucket"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
 	lifecycleRepo "oss/adaptor/repo/lifecycle"
+	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -21,8 +23,8 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:          bucketRepo.NewBucketRepo(adaptor.GetGORM()),
-		lifecycleRepo: lifecycleRepo.NewLifecycleRepo(adaptor.GetGORM()),
+		repo:          gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
 	}
 }
 

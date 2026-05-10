@@ -1,7 +1,9 @@
-package admin
+package gorm
 
 import (
 	"context"
+	"oss/adaptor"
+	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
@@ -15,10 +17,20 @@ type User struct {
 	db *gorm.DB
 }
 
-var _ IUser = (*User)(nil)
+var _ admin.IUser = (*User)(nil)
 
 func NewUserRepo(db *gorm.DB) *User {
 	return &User{db: db}
+}
+
+func (u *User) WithTx(tx *adaptor.Tx) admin.IUser {
+
+	txDB, ok := (*tx).(*gorm.DB)
+	if ok {
+		return &User{db: txDB}
+	}
+
+	return u
 }
 
 func (u *User) CreateUser(ctx context.Context, req *do.CreateUser) (int64, error) {

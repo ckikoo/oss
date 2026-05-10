@@ -1,10 +1,11 @@
-package metering
+package gorm
 
 import (
 	"context"
 	"fmt"
 	"time"
 
+	"oss/adaptor/repo/metering"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 
@@ -15,13 +16,7 @@ type MeteringRepo struct {
 	db *gorm.DB
 }
 
-type IMeteringRepo interface {
-	UpdateDailyMetrics(ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error
-	UpdateDailyMetricsWithTx(tx *gorm.DB, ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error
-	ListDailyMetrics(ctx context.Context, userID int64, bucketID int64, hasBucketID bool, dateFrom, dateTo *time.Time) ([]*model.MeteringDaily, error)
-}
-
-var _ IMeteringRepo = (*MeteringRepo)(nil)
+var _ metering.IMeteringRepo = (*MeteringRepo)(nil)
 
 func NewMeteringRepo(db *gorm.DB) *MeteringRepo {
 	return &MeteringRepo{db: db}

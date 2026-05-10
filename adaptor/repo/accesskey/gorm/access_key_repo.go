@@ -1,7 +1,8 @@
-package accesskey
+package gorm
 
 import (
 	"context"
+	"oss/adaptor/repo/accesskey"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/consts"
@@ -15,7 +16,7 @@ type AccessKeyRepo struct {
 	db *gorm.DB
 }
 
-var _ IAccessKeyRepo = (*AccessKeyRepo)(nil)
+var _ accesskey.IAccessKeyRepo = (*AccessKeyRepo)(nil)
 
 func NewAccessKeyRepo(db *gorm.DB) *AccessKeyRepo {
 	return &AccessKeyRepo{db: db}

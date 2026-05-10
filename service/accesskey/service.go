@@ -4,6 +4,7 @@ import (
 	"context"
 	"oss/adaptor"
 	repo "oss/adaptor/repo/accesskey"
+	"oss/adaptor/repo/accesskey/gorm"
 	"oss/common"
 	"oss/config"
 	"oss/consts"
@@ -23,7 +24,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:   repo.NewAccessKeyRepo(adaptor.GetGORM()),
+		repo:   gorm.NewAccessKeyRepo(adaptor.GetGORM()),
 		config: adaptor.GetConfig(),
 	}
 }

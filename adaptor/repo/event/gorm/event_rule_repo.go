@@ -1,7 +1,8 @@
-package event
+package gorm
 
 import (
 	"context"
+	"oss/adaptor/repo/event"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
@@ -13,7 +14,9 @@ type eventRuleRepo struct {
 	db *gorm.DB
 }
 
-func NewEventRuleRepo(db *gorm.DB) IEventRuleRepo {
+var _ event.IEventRuleRepo = (*eventRuleRepo)(nil)
+
+func NewEventRuleRepo(db *gorm.DB) event.IEventRuleRepo {
 	return &eventRuleRepo{db: db}
 }
 

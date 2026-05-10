@@ -1,11 +1,12 @@
-package object
+package gorm
 
 import (
 	"context"
 	"time"
 
-	"oss/adaptor/repo/metering"
+	meteringRepo "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/model"
+	"oss/adaptor/repo/object"
 	"oss/adaptor/repo/query"
 	"oss/consts"
 	"oss/service/do"
@@ -15,13 +16,13 @@ import (
 
 type ObjectRepo struct {
 	db           *gorm.DB
-	meteringRepo *metering.MeteringRepo // TODO  需要重新调整，repo 套repo 会乱掉
+	meteringRepo *meteringRepo.MeteringRepo
 }
 
-var _ IObjectRepo = (*ObjectRepo)(nil)
+var _ object.IObjectRepo = (*ObjectRepo)(nil)
 
 func NewObjectRepo(db *gorm.DB) *ObjectRepo {
-	return &ObjectRepo{db: db, meteringRepo: metering.NewMeteringRepo(db)}
+	return &ObjectRepo{db: db, meteringRepo: meteringRepo.NewMeteringRepo(db)}
 }
 
 func (r *ObjectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {

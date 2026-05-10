@@ -1,10 +1,11 @@
-package lifecycle
+package gorm
 
 import (
 	"context"
 	"errors"
 	"time"
 
+	"oss/adaptor/repo/lifecycle"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
@@ -16,7 +17,7 @@ type LifecycleRepo struct {
 	db *gorm.DB
 }
 
-var _ ILifecycleRepo = (*LifecycleRepo)(nil)
+var _ lifecycle.ILifecycleRepo = (*LifecycleRepo)(nil)
 
 func NewLifecycleRepo(db *gorm.DB) *LifecycleRepo {
 	return &LifecycleRepo{db: db}

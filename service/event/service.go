@@ -5,7 +5,9 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/bucket"
-	eventRepo "oss/adaptor/repo/event"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/event"
+	"oss/adaptor/repo/event/gorm"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -20,18 +22,18 @@ import (
 var log = logger.GetLogger()
 
 type Service struct {
-	eventRuleRepo     eventRepo.IEventRuleRepo
-	eventDeliveryRepo eventRepo.IEventDeliveryRepo
+	eventRuleRepo     event.IEventRuleRepo
+	eventDeliveryRepo event.IEventDeliveryRepo
 	eventQueue        redis.IEventQueue
 	bucketRepo        bucket.IBucketRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		eventRuleRepo:     eventRepo.NewEventRuleRepo(adaptor.GetGORM()),
-		eventDeliveryRepo: eventRepo.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventRuleRepo:     gorm.NewEventRuleRepo(adaptor.GetGORM()),
+		eventDeliveryRepo: gorm.NewEventDeliveryRepo(adaptor.GetGORM()),
 		eventQueue:        redis.NewEventQueue(adaptor),
-		bucketRepo:        bucket.NewBucketRepo(adaptor.GetGORM()),
+		bucketRepo:        gormBucket.NewBucketRepo(adaptor.GetGORM()),
 	}
 }
 

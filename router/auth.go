@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 	"oss/adaptor"
-	"oss/adaptor/repo/accesskey"
+	"oss/adaptor/repo/accesskey/gorm"
 	"oss/api/auth"
 	"oss/common"
 	"oss/consts"
@@ -37,7 +37,7 @@ func buildStringToSign(method, path, query, host, contentType, body string, time
 	return sb.String()
 }
 func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	repo := accesskey.NewAccessKeyRepo(adaptor.GetGORM())
+	repo := gorm.NewAccessKeyRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 
 		// 特定接口处理

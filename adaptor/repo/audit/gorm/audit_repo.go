@@ -1,8 +1,9 @@
-package audit
+package gorm
 
 import (
 	"context"
 
+	"oss/adaptor/repo/audit"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
@@ -14,7 +15,7 @@ type OperationLogRepo struct {
 	db *gorm.DB
 }
 
-var _ IOperationLogRepo = (*OperationLogRepo)(nil)
+var _ audit.IOperationLogRepo = (*OperationLogRepo)(nil)
 
 func NewOperationLogRepo(db *gorm.DB) *OperationLogRepo {
 	return &OperationLogRepo{db: db}

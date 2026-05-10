@@ -5,16 +5,17 @@ import (
 
 	"oss/adaptor"
 	"oss/adaptor/repo/metering"
+	"oss/adaptor/repo/metering/gorm"
 	"oss/common"
 	"oss/service/dto"
 )
 
 type Service struct {
-	repo *metering.MeteringRepo
+	repo metering.IMeteringRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: metering.NewMeteringRepo(adaptor.GetGORM())}
+	return &Service{repo: gorm.NewMeteringRepo(adaptor.GetGORM())}
 }
 
 func (srv *Service) ListDailyMetrics(ctx *common.UserInfoCtx, req *dto.ListDailyMeteringReq) (*dto.ListDailyMeteringResp, common.Errno) {

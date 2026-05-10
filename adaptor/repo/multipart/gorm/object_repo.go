@@ -1,4 +1,4 @@
-package multipart
+package gorm
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"oss/adaptor/repo/model"
+	"oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/query"
 	"oss/service/do"
 
@@ -18,7 +19,7 @@ type ObjectRepo struct {
 	db *gorm.DB
 }
 
-var _ IMultipartRepo = (*ObjectRepo)(nil)
+var _ multipart.IMultipartRepo = (*ObjectRepo)(nil)
 
 func NewObjectRepo(db *gorm.DB) *ObjectRepo {
 	return &ObjectRepo{db: db}

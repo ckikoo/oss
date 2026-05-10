@@ -4,7 +4,8 @@ import (
 	"time"
 
 	"oss/adaptor"
-	auditRepo "oss/adaptor/repo/audit"
+	"oss/adaptor/repo/audit"
+	"oss/adaptor/repo/audit/gorm"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -12,11 +13,11 @@ import (
 )
 
 type Service struct {
-	repo auditRepo.IOperationLogRepo
+	repo audit.IOperationLogRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: auditRepo.NewOperationLogRepo(adaptor.GetGORM())}
+	return &Service{repo: gorm.NewOperationLogRepo(adaptor.GetGORM())}
 }
 
 func (srv *Service) ListOperationLogs(ctx *common.UserInfoCtx, req *dto.ListOperationLogsReq) (*dto.ListOperationLogsResp, common.Errno) {

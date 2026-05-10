@@ -6,7 +6,9 @@ import (
 
 	"oss/adaptor"
 	bucketRepo "oss/adaptor/repo/bucket"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
 	policyRepo "oss/adaptor/repo/policy"
+	gormPolicy "oss/adaptor/repo/policy/gorm"
 	"oss/common"
 	"oss/service/do"
 	"oss/service/dto"
@@ -19,8 +21,8 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:       policyRepo.NewPolicyRepo(adaptor.GetGORM()),
-		bucketRepo: bucketRepo.NewBucketRepo(adaptor.GetGORM()),
+		repo:       gormPolicy.NewPolicyRepo(adaptor.GetGORM()),
+		bucketRepo: gormBucket.NewBucketRepo(adaptor.GetGORM()),
 	}
 }
 

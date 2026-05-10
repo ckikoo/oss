@@ -6,10 +6,15 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
+	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/async"
+	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
-	multipartRepo "oss/adaptor/repo/multipart"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/multipart"
+	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/repo/object"
+	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/storage"
 	"oss/common"
 	"oss/consts"
@@ -29,7 +34,7 @@ import (
 type Service struct {
 	userRepo      admin.IUser
 	objRepo       object.IObjectRepo
-	multipartRepo multipartRepo.IMultipartRepo
+	multipartRepo multipart.IMultipartRepo
 	bucketRepo    bucket.IBucketRepo
 	rdsmultipart  redis.IMultipart
 	storage       storage.IStorage
@@ -41,13 +46,13 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		userRepo:      admin.NewUserRepo(adaptor.GetGORM()),
-		objRepo:       object.NewObjectRepo(adaptor.GetGORM()),
-		bucketRepo:    bucket.NewBucketRepo(adaptor.GetGORM()),
-		multipartRepo: multipartRepo.NewObjectRepo(adaptor.GetGORM()),
+		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
+		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
+		bucketRepo:    gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
 		rdsmultipart:  redis.NewMultipart(adaptor),
 		storage:       adaptor.GetStorage(),
-		asyncRepo:     async.NewAsyncTaskRepo(adaptor.GetGORM()),
+		asyncRepo:     gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
 		asyncRedis:    redis.NewTask(adaptor),
 		eventService:  event.NewService(adaptor),
 		tokenRedis:    redis.NewToken(adaptor),
@@ -162,7 +167,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ParamErr.WithErr(err)
 	}
 
 	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
@@ -236,7 +241,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ParamErr.WithErr(err)
 	}
 
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)

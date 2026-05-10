@@ -3,8 +3,8 @@ package router
 import (
 	"context"
 	"oss/adaptor"
-	"oss/adaptor/repo/bucket"
-	"oss/adaptor/repo/object"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
+	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/common"
 	"oss/consts"
 
@@ -13,7 +13,7 @@ import (
 
 // NewBucketACLMiddleware checks bucket ACL for operations
 func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
+	bucketRepo := gormBucket.NewBucketRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		userID := c.GetInt64(consts.UserKeyContext)
 		if userID == 0 {
@@ -58,8 +58,8 @@ func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 
 // NewObjectACLMiddleware checks object ACL based on bucket ACL and object ACL
 func NewObjectACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	bucketRepo := bucket.NewBucketRepo(adaptor.GetGORM())
-	objectRepo := object.NewObjectRepo(adaptor.GetGORM())
+	bucketRepo := gormBucket.NewBucketRepo(adaptor.GetGORM())
+	objectRepo := gormObject.NewObjectRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		userID := c.GetInt64(consts.UserKeyContext)
 		if userID == 0 {

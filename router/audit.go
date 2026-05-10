@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"oss/adaptor"
-	"oss/adaptor/repo/audit"
+	"oss/adaptor/repo/audit/gorm"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -16,7 +16,7 @@ import (
 
 // NewOperationLogMiddleware creates a middleware that logs all operations
 func NewOperationLogMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	auditRepo := audit.NewOperationLogRepo(adaptor.GetGORM())
+	auditRepo := gorm.NewOperationLogRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
 		requestID := uuid.NewString()
 		c.Set("request_id", requestID)
