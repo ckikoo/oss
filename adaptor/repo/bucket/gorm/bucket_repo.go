@@ -7,6 +7,7 @@ import (
 	"oss/adaptor/repo/bucket"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
 
@@ -21,6 +22,10 @@ var _ bucket.IBucketRepo = (*BucketRepo)(nil)
 
 func NewBucketRepo(db *gorm.DB) *BucketRepo {
 	return &BucketRepo{db: db}
+}
+
+func (r *BucketRepo) WithTx(tx tx.Tx) bucket.IBucketRepo {
+	return &BucketRepo{db: tx.(*gorm.DB)}
 }
 
 func (r *BucketRepo) toBucketDo(modelBucket *model.Bucket) *do.BucketDo {

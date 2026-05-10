@@ -395,7 +395,8 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 		// 在事务内部处理删除，避免竞态条件
 		err = gormDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			// 在事务内部重新检查对象是否存在
-			obj, err := objectRepo.GetByKeyWithTx(tx, ctx, bucket.Name, objectKey, "")
+
+			obj, err := objectRepo.WithTx(tx).GetByKey(ctx, bucket.Name, objectKey, "")
 			if err != nil || obj == nil {
 				// 对象不存在，删除事件
 				log.Warn("object not found in transaction, removing lifecycle event",
@@ -412,19 +413,19 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			objectSize = obj.Size
 
 			// 删除对象记录
-			err = objectRepo.DeleteObjectWithTx(tx, ctx, bucket.Name, objectKey, "")
+			err = objectRepo.WithTx(tx).DeleteObject(ctx, bucket.Name, objectKey, "")
 			if err != nil {
 				return err
 			}
 
 			// 更新bucket统计
-			err = bucketRepo.UpdateBucketStatsWithTx(tx, ctx, bucket.UserID, bucket.Name, -1, -obj.Size)
+			err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, -obj.Size)
 			if err != nil {
 				return err
 			}
 
 			// 更新用户存储使用量
-			err = uinfoRepo.UpdateStorageUsedWithTx(tx, ctx, bucket.UserID, -obj.Size)
+			err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, -obj.Size)
 			if err != nil {
 				return err
 			}

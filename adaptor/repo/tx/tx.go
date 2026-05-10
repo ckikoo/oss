@@ -1,4 +1,5 @@
-package adaptor
+// Package tx 定义了事务相关的接口和类型 请不要移动这个包，或者修改
+package tx
 
 import "context"
 

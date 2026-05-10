@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/event"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
 	"time"
@@ -22,6 +23,9 @@ func NewEventDeliveryRepo(db *gorm.DB) event.IEventDeliveryRepo {
 	return &eventDeliveryRepo{db: db}
 }
 
+func (r *eventDeliveryRepo) WithTx(tx tx.Tx) event.IEventDeliveryRepo {
+	return &eventDeliveryRepo{db: tx.(*gorm.DB)}
+}
 func (r *eventDeliveryRepo) CreateEventDelivery(ctx context.Context, delivery *do.EventDeliveryDo) (int64, error) {
 	q := query.Use(r.db).EventDelivery
 

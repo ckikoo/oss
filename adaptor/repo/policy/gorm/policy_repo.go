@@ -8,6 +8,7 @@ import (
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/policy"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 	"oss/utils/pool"
 
@@ -22,6 +23,10 @@ var _ policy.IPolicyRepo = (*PolicyRepo)(nil)
 
 func NewPolicyRepo(db *gorm.DB) *PolicyRepo {
 	return &PolicyRepo{db: db}
+}
+
+func (r *PolicyRepo) WithTx(tx tx.Tx) policy.IPolicyRepo {
+	return &PolicyRepo{db: tx.(*gorm.DB)}
 }
 
 func (r *PolicyRepo) CreateBucketPolicy(ctx context.Context, bucketID int64, policy *do.CreateBucketPolicy) (int64, error) {

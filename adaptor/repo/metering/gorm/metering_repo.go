@@ -8,6 +8,7 @@ import (
 	"oss/adaptor/repo/metering"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 
 	"gorm.io/gorm"
 )
@@ -22,6 +23,9 @@ func NewMeteringRepo(db *gorm.DB) *MeteringRepo {
 	return &MeteringRepo{db: db}
 }
 
+func (r *MeteringRepo) WithTx(tx tx.Tx) metering.IMeteringRepo {
+	return &MeteringRepo{db: tx.(*gorm.DB)}
+}
 func (r *MeteringRepo) UpdateDailyMetrics(ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {
 	if userID <= 0 {
 		return fmt.Errorf("user_id must be positive")

@@ -2,11 +2,13 @@ package event
 
 import (
 	"context"
+	"oss/adaptor/tx"
 	"oss/service/do"
 )
 
 // IEventRuleRepo 事件规则仓库接口
 type IEventRuleRepo interface {
+	WithTx(tx tx.Tx) IEventRuleRepo
 	CreateEventRule(ctx context.Context, rule *do.EventRuleDo) (int64, error)
 	GetByID(ctx context.Context, ruleID int64) (*do.EventRuleDo, error)
 	GetByBucketIDAndRuleName(ctx context.Context, bucketID int64, ruleName string) (*do.EventRuleDo, error)
@@ -18,6 +20,7 @@ type IEventRuleRepo interface {
 
 // IEventDeliveryRepo 事件投递仓库接口
 type IEventDeliveryRepo interface {
+	WithTx(tx tx.Tx) IEventDeliveryRepo
 	CreateEventDelivery(ctx context.Context, delivery *do.EventDeliveryDo) (int64, error)
 	GetPendingDeliveries(ctx context.Context, limit int) ([]*do.EventDeliveryDo, error)
 	GetEventDeliveryByID(ctx context.Context, deliveryID int64) (*do.EventDeliveryDo, error)

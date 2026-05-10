@@ -4,9 +4,12 @@ import (
 	"database/sql"
 	"oss/adaptor/storage"
 	"oss/adaptor/storage/local"
+	"oss/adaptor/tx"
 	"oss/config"
+	"oss/utils/logger"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -17,21 +20,23 @@ type IAdaptor interface {
 	GetRedis() *redis.Client
 	GetStorage() storage.IStorage
 	GetGORM() *gorm.DB
-	GetTxManager() ITxManager
+	GetTxManager() tx.ITxManager
 }
+
 type Adaptor struct {
 	conf      *config.Config
 	db        *sql.DB
 	redis     *redis.Client
 	storage   storage.IStorage
 	gormDB    *gorm.DB
-	txManager ITxManager
+	txManager tx.ITxManager
 }
 
 func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client) *Adaptor {
 	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: db}), &gorm.Config{})
 	if err != nil {
-		panic(err)
+		logger.Error("failed to connect to database with gorm", zap.Error(err))
+		return nil
 	}
 
 	return &Adaptor{
@@ -40,7 +45,7 @@ func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client) *Adaptor {
 		redis:     redis,
 		storage:   local.New(conf.Server.SaveDir),
 		gormDB:    gormDB,
-		txManager: nil,
+		txManager: tx.NewGormTxManager(gormDB),
 	}
 }
 
@@ -64,6 +69,6 @@ func (a *Adaptor) GetGORM() *gorm.DB {
 	return a.gormDB
 }
 
-func (a *Adaptor) GetTxManager() ITxManager {
+func (a *Adaptor) GetTxManager() tx.ITxManager {
 	return a.txManager
 }

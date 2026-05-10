@@ -1,7 +1,7 @@
 package object
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -20,6 +20,7 @@ import (
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/storage"
+	"oss/adaptor/tx"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -34,6 +35,7 @@ import (
 )
 
 type Service struct {
+	txManger      tx.ITxManager
 	adaptor       adaptor.IAdaptor
 	userRepo      admin.IUser
 	objRepo       object.IObjectRepo
@@ -46,6 +48,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
+		txManger:      adaptor.GetTxManager(),
 		adaptor:       adaptor,
 		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
 		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
@@ -208,7 +211,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			return &req.Metadata
 		}(),
 		CallBack: func(tx *gorm.DB) error {
-			return srv.userRepo.UpdateStorageUsed(ctx, ctx.UserID, putResult.Size)
+			return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, putResult.Size)
 		},
 	}
 
@@ -341,45 +344,39 @@ func (w *countingWriter) Count() int64 {
 }
 
 func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) common.Errno {
-	if bucketName == "" || objectKey == "" {
-		return common.ParamErr.WithMsg("bucket_name and object_key are required")
+
+	// ── Step 1: 读操作移出事务，各用独立连接 ──────────────────
+	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
 	}
 
-	var deletedObj *do.ObjectDo
-	err := srv.adaptor.GetGORM().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		obj, err := srv.objRepo.GetByKeyWithTx(tx, ctx, bucketName, objectKey, versionID)
-		if err != nil {
-			return err
-		}
-		deletedObj = obj
+	bucket, err := srv.bucketRepo.GetByUserAndName(ctx, ctx.UserID, bucketName)
+	if err != nil {
+		return common.DatabaseErr.WithErr(err)
+	}
 
-		bucket, err := srv.bucketRepo.GetByUserAndNameWithTx(tx, ctx, ctx.UserID, bucketName)
-		if err != nil {
-			return err
-		}
+	// ── Step 2: 业务校验在事务外，不占连接 ────────────────────
+	if obj.BucketID != bucket.ID {
+		return common.AuthErr
+	}
 
-		if bucket.UserID != ctx.UserID || obj.BucketID != bucket.ID {
-			return common.AuthErr
-		}
+	err = srv.txManger.RunInTx(ctx, func(tx tx.Tx) error {
 
-		if err := srv.meteringRepo.UpdateDailyMetricsWithTx(tx, ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
+		if err := srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
 			return err
 		}
 
-		if err := srv.objRepo.DeleteObjectWithTx(tx, ctx, bucketName, objectKey, versionID); err != nil {
+		if err := srv.objRepo.WithTx(tx).DeleteObject(ctx, bucketName, objectKey, versionID); err != nil {
 			return err
 		}
 
-		if err := srv.bucketRepo.UpdateBucketStatsWithTx(tx, ctx, ctx.UserID, bucketName, -1, -obj.Size); err != nil {
+		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, -obj.Size); err != nil {
 			return err
 		}
 
-		if err := srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, ctx.UserID, -obj.Size); err != nil {
-			return err
-		}
-
-		if obj.IsMultipart == consts.ObjectIsMultipartMerged {
-			if err = srv.multipartRepo.DeleteMultipartPartsWithTx(tx, ctx, ctx.UserID, *obj.UploadID); err != nil {
+		if obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
+			if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx, ctx.UserID, *obj.UploadID); err != nil {
 				return err
 			}
 		}
@@ -388,27 +385,25 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 	})
 
 	if err != nil {
-		var errno common.Errno
-		if errors.As(err, &errno) {
-			return errno
-		}
 		return common.DatabaseErr.WithErr(err)
 	}
 
-	// 删除物理文件（在事务外进行，数据库更新已确保）
-	if deletedObj != nil && deletedObj.StoragePath != nil {
-		if err := srv.storage.Delete(ctx, *deletedObj.StoragePath); err != nil {
-			logger.GetLogger().Error("failed to delete object storage file", zap.String("storage_path", *deletedObj.StoragePath), zap.Error(err))
-			// 可以选择是否返回错误给用户
+	// 对文件进行删除
+	if obj != nil && obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
+		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
+			logger.GetLogger().Error("failed to delete multipart storage parts", zap.String("upload_id", *obj.UploadID), zap.Error(err))
+		}
+	} else if obj != nil && obj.StoragePath != nil {
+		if err := srv.storage.Delete(ctx, *obj.StoragePath); err != nil {
+			logger.GetLogger().Error("failed to delete object storage file", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
 		}
 	}
 
-	// 触发事件
-	go srv.eventService.TriggerEvent(ctx, deletedObj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
+	go srv.eventService.TriggerEvent(context.TODO(), obj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
 		"bucket_name": bucketName,
 		"object_key":  objectKey,
-		"size":        deletedObj.Size,
-		"etag":        deletedObj.Etag,
+		"size":        obj.Size,
+		"etag":        obj.Etag,
 	})
 
 	return common.OK

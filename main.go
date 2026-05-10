@@ -37,6 +37,11 @@ func main() {
 func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 	newAdaptor := adaptor.NewAdaptor(conf, db, redis)
 
+	if newAdaptor == nil {
+		logger.Error("failed to initialize adaptor")
+		return
+	}
+
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
 	h := server.Default(server.WithHostPorts(address))
 	router.RegisterRoutes(h, newAdaptor)

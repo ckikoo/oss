@@ -6,6 +6,7 @@ import (
 	"oss/adaptor/repo/audit"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 
 	"gorm.io/gorm"
@@ -21,6 +22,9 @@ func NewOperationLogRepo(db *gorm.DB) *OperationLogRepo {
 	return &OperationLogRepo{db: db}
 }
 
+func (r *OperationLogRepo) WithTx(tx tx.Tx) audit.IOperationLogRepo {
+	return &OperationLogRepo{db: tx.(*gorm.DB)}
+}
 func (r *OperationLogRepo) ListByFilter(ctx context.Context, filter *do.OperationLogFilter) ([]*do.OperationLogDo, int64, error) {
 	ql := query.Use(r.db).OperationLog
 	q := ql.WithContext(ctx)

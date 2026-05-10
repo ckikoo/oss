@@ -9,6 +9,7 @@ import (
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 
 	"gorm.io/gorm"
@@ -23,6 +24,10 @@ var _ multipart.IMultipartRepo = (*ObjectRepo)(nil)
 
 func NewObjectRepo(db *gorm.DB) *ObjectRepo {
 	return &ObjectRepo{db: db}
+}
+
+func (r *ObjectRepo) WithTx(tx tx.Tx) multipart.IMultipartRepo {
+	return &ObjectRepo{db: tx.(*gorm.DB)}
 }
 
 func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.CreateMultipartUpload) (int64, error) {

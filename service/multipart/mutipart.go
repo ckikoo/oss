@@ -16,6 +16,7 @@ import (
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/storage"
+	"oss/adaptor/tx"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
@@ -32,6 +33,7 @@ import (
 )
 
 type Service struct {
+	txManger      tx.ITxManager
 	userRepo      admin.IUser
 	objRepo       object.IObjectRepo
 	multipartRepo multipart.IMultipartRepo
@@ -46,6 +48,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
+		txManger:      adaptor.GetTxManager(),
 		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
 		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
 		bucketRepo:    gormBucket.NewBucketRepo(adaptor.GetGORM()),
@@ -347,10 +350,10 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		Acl:           consts.ObjectAclInheritBucket,
 		Metadata:      metadata,
 		CallBack: func(tx *gorm.DB) error {
-			if err := srv.multipartRepo.UpdateMultipartUploadWithTx(tx, ctx, ctx.UserID, uploadID, update); err != nil {
+			if _, err := srv.multipartRepo.WithTx(tx).UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
 				return err
 			}
-			return srv.userRepo.UpdateStorageUsedWithTx(tx, ctx, ctx.UserID, totalSize)
+			return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, totalSize)
 		},
 	})
 	if err != nil {

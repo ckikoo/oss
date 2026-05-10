@@ -2,10 +2,10 @@ package gorm
 
 import (
 	"context"
-	"oss/adaptor"
 	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
 	"time"
@@ -23,14 +23,8 @@ func NewUserRepo(db *gorm.DB) *User {
 	return &User{db: db}
 }
 
-func (u *User) WithTx(tx *adaptor.Tx) admin.IUser {
-
-	txDB, ok := (*tx).(*gorm.DB)
-	if ok {
-		return &User{db: txDB}
-	}
-
-	return u
+func (u *User) WithTx(tx tx.Tx) admin.IUser {
+	return &User{db: tx.(*gorm.DB)}
 }
 
 func (u *User) CreateUser(ctx context.Context, req *do.CreateUser) (int64, error) {

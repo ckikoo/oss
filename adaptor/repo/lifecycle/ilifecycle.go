@@ -2,10 +2,12 @@ package lifecycle
 
 import (
 	"context"
+	"oss/adaptor/tx"
 	"oss/service/do"
 )
 
 type ILifecycleRepo interface {
+	WithTx(tx tx.Tx) ILifecycleRepo
 	CreateLifecycleRule(ctx context.Context, rule *do.CreateLifecycleRule) (int64, error)
 	ListLifecycleRules(ctx context.Context, bucketID int64) ([]*do.LifecycleRuleDo, error)
 	ListAllActiveLifecycleRules(ctx context.Context) ([]*do.LifecycleRuleDo, error)

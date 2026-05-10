@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/event"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 
 	"gorm.io/gorm"
@@ -20,6 +21,9 @@ func NewEventRuleRepo(db *gorm.DB) event.IEventRuleRepo {
 	return &eventRuleRepo{db: db}
 }
 
+func (r *eventRuleRepo) WithTx(tx tx.Tx) event.IEventRuleRepo {
+	return &eventRuleRepo{db: tx.(*gorm.DB)}
+}
 func (r *eventRuleRepo) CreateEventRule(ctx context.Context, rule *do.EventRuleDo) (int64, error) {
 	q := query.Use(r.db).EventRule
 	model := &model.EventRule{

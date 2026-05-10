@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/async"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 	"time"
 
@@ -23,6 +24,9 @@ func NewAsyncTaskRepo(db *gorm.DB) async.IAsyncTaskRepo {
 	}
 }
 
+func (r *AsyncTaskRepo) WithTx(tx tx.Tx) async.IAsyncTaskRepo {
+	return &AsyncTaskRepo{db: tx.(*gorm.DB)}
+}
 func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyncTask) (int64, error) {
 	modelTask := &model.AsyncTask{
 		TaskID:     task.TaskID,

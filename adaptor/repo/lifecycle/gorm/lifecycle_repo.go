@@ -8,6 +8,7 @@ import (
 	"oss/adaptor/repo/lifecycle"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/tx"
 	"oss/service/do"
 
 	"gorm.io/gorm"
@@ -21,6 +22,10 @@ var _ lifecycle.ILifecycleRepo = (*LifecycleRepo)(nil)
 
 func NewLifecycleRepo(db *gorm.DB) *LifecycleRepo {
 	return &LifecycleRepo{db: db}
+}
+
+func (r *LifecycleRepo) WithTx(tx tx.Tx) lifecycle.ILifecycleRepo {
+	return &LifecycleRepo{db: tx.(*gorm.DB)}
 }
 
 func (r *LifecycleRepo) CreateLifecycleRule(ctx context.Context, rule *do.CreateLifecycleRule) (int64, error) {
