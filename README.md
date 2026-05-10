@@ -10,22 +10,19 @@
 - **数据库**: MySQL
 - **缓存**: Redis
 - **对象转换**: [Govertor](https://github.com/jmattheis/goverter)
-- **存储层**: 抽象接口 + 本地磁盘实现（支持扩展至 S3/MinIO）
 
 ## 功能特性
 
 - **AK/SK 认证**: 支持 Access Key 和 Secret Key 认证，保护所有 bucket、object 和 multipart API。
 - **Bucket 管理**: 创建、列出、获取、更新和删除 bucket。
-- **Object 存储**: 上传、下载、获取元数据和删除对象（带事务一致性保证）。
+- **Object 存储**: 上传、下载、获取元数据和删除对象。
 - **Multipart Upload**: 支持分片上传，实现大文件上传。
 - **权限控制**: 基于 JSON 的细粒度权限系统，支持 bucket policy 及多维策略规则。
-- **ACL 控制**: 支持 Bucket 和 Object 级别的访问控制列表 (ACL)，包括 Private、Public-Read、Public-RW 等权限级别。
 - **策略查询优化**: `bucket_policies` 查询使用 `utils/pool` 控制并发加载子表，避免 N+1 查询卡顿。
 - **版本控制**: 支持对象版本管理。
 - **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。
 - **分布式锁**: 基于 Redis 的文件锁机制，支持并发控制和原子操作。
-- **存储接口抽象**: 统一存储层接口 `IStorage`，支持多种后端实现（本地、S3、MinIO 等）。
-- **事务一致性**: 删除操作使用 GORM 事务确保数据完整性。
+- **生命周期管理**: 支持对象存储类转换和过期删除规则。
 
 > 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
 
@@ -33,10 +30,11 @@
 
 所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证：
 
+- **Header 方式**: 
+  - `X-Access-Key`: Access Key
+  - `X-Secret-Key`: Secret Key
 - **Authorization 方式**: 
-  - `Authorization: OSS <access_key>:<timestamp>:<signature>`
-  - `<timestamp>` 用于防重放，签名过期范围约为 30 秒
-- 对于 `application/octet-stream` 和 `multipart/*` 请求，签名计算时会跳过 body 内容
+  - `Authorization: AccessKey AK:SK`
 
 ## Bucket Policy API
 
@@ -63,8 +61,6 @@
 
 1. **初始化**: `POST /api/v1/buckets/{bucket}/multipart/uploads`
 2. **上传分片**: `PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}`
-   - 直接发送分片二进制 body
-   - 需携带 `Content-MD5` 头进行校验
 3. **完成上传**: `POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete`
 4. **中止上传**: `DELETE /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}`
 
@@ -72,7 +68,7 @@
 
 - 虚拟合并，无需物理文件组装
 - 流式上传，避免内存溢出
-- 分片独立存储，便于管理与重传
+- 并发分片上传
 - 自动超时清理
 
 ## Metering／日统计
@@ -103,68 +99,33 @@
 - `date_from`：起始统计日期，格式 `YYYY-MM-DD`
 - `date_to`：结束统计日期，格式 `YYYY-MM-DD`
 
+## 生命周期管理
+
+支持对象的生命周期规则，包括存储类转换和过期删除。详细规则请参考 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
+
+### 创建生命周期规则
+- `POST /api/v1/buckets/:bucket_name/lifecycle`
+- 受 AK/SK 认证保护
+
+### 列表生命周期规则
+- `GET /api/v1/buckets/:bucket_name/lifecycle`
+- 受 AK/SK 认证保护
+
+### 获取生命周期规则
+- `GET /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
+- 受 AK/SK 认证保护
+
+### 更新生命周期规则
+- `PUT /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
+- 受 AK/SK 认证保护
+
+### 删除生命周期规则
+- `DELETE /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
+- 受 AK/SK 认证保护
+
 该接口返回按天汇总的统计条目，适用于日常流量审计、费用核算和用户行为分析。
 
 > 注意：对象下载流量统计以实际传输字节为准，避免仅依赖对象元数据 `Size`，已通过 `io.MultiWriter` 统计真实下行流量。
-
-## 存储层架构
-
-项目实现了抽象的存储接口 `IStorage`，支持多种后端实现，实现业务逻辑与存储实现的完全解耦。
-
-### 存储接口设计
-
-```go
-type IStorage interface {
-    // Put 保存普通对象，返回存储路径和哈希信息
-    Put(ctx context.Context, bucket, objectKey string, src io.Reader) (*PutResult, error)
-
-    // Get 读取文件，调用方负责关闭返回的 ReadCloser
-    Get(ctx context.Context, storagePath string) (io.ReadCloser, error)
-
-    // Delete 删除单个文件，文件不存在时不报错
-    Delete(ctx context.Context, storagePath string) error
-
-    // PutPart 保存分片，路径规则由实现层维护
-    PutPart(ctx context.Context, bucket, uploadID string, partNumber int32, src io.Reader) (*PutResult, error)
-
-    // DeletePart 删除某次分片上传的单个分片目录
-    DeletePart(ctx context.Context, bucket, uploadID string, partNum int32) error
-
-    // DeleteParts 删除某次分片上传的全部分片目录
-    DeleteParts(ctx context.Context, bucket, uploadID string) error
-
-    // MergeParts 将已保存的分片按顺序合并成一个完整对象文件
-    MergeParts(ctx context.Context, bucket, objectKey string, partPaths []string) (*PutResult, error)
-
-    // BuildObjectPath 给外部查询对象最终路径用
-    BuildObjectPath(ctx context.Context, bucket, objectKey string) string
-}
-```
-
-> 所有存储接口方法均支持 `context.Context`，便于后端实现进行超时控制、trace 传播和请求取消。
-
-### 本地存储实现
-
-- **位置**: [adaptor/storage/local/local.go](adaptor/storage/local/local.go)
-- **目录结构**:
-  ```
-  {baseDir}/{bucket}/{objectKey}                               ← 普通对象
-  {baseDir}/{bucket}/multipart/{uploadID}/part_{partNumber}   ← 分片
-  ```
-- **特性**: 流式保存，一次 IO 同时计算 MD5 和 SHA256，避免大文件 OOM
-
-### Service 层集成
-
-- `PutObject`: 调用 `srv.storage.Put(ctx, ...)` 完成文件上传
-- `GetObject`: 调用 `srv.storage.Get(ctx, ...)` 获取文件流
-- `DeleteObject`: 调用 `srv.storage.Delete(ctx, ...)` 删除物理文件（在事务外进行）
-- `streamMultipartObject`: 调用 `srv.storage.Get(ctx, ...)` 流式返回分片内容
-- Multipart 上传中的 `DeletePart` / `DeleteParts` 也通过 `ctx` 传递到存储层
-- 物理合并由后台任务执行，`storage.MergeParts(ctx, ...)` 可在 worker 中安全调用
-
-### 扩展支持
-
-未来可扩展支持其他存储后端（如 S3、MinIO），只需实现 `IStorage` 接口，无需修改 service 层逻辑。
 
 ## 分布式锁机制
 

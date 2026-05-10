@@ -1,13 +1,19 @@
 package timer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/async"
 	"oss/adaptor/repo/bucket"
+	eventRepo "oss/adaptor/repo/event"
 	"oss/adaptor/repo/lifecycle"
 	"oss/adaptor/repo/multipart"
 	"oss/adaptor/repo/object"
@@ -16,8 +22,10 @@ import (
 	"oss/service/do"
 	"oss/utils/logger"
 	"oss/utils/pool"
+	"oss/utils/tools"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gogf/gf/util/gconv"
@@ -447,9 +455,11 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	taskDone := make(chan struct{}, 1)
 	timeoutDone := make(chan struct{}, 1)
 	lifecycleDone := make(chan struct{}, 1)
+	eventDone := make(chan struct{}, 1)
 	taskDone <- struct{}{}
 	timeoutDone <- struct{}{}
 	lifecycleDone <- struct{}{}
+	eventDone <- struct{}{}
 
 	for {
 		select {
@@ -485,6 +495,199 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 		default:
 		}
 
+		select {
+		case <-eventDone:
+			go func() {
+				handlerEventDeliveries(ctx, adaptor)
+				eventDone <- struct{}{}
+			}()
+		default:
+		}
+
 		time.Sleep(time.Second * 30)
 	}
+}
+
+// handlerEventDeliveries 处理事件投递任务
+func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
+	eventDeliveryRepo := eventRepo.NewEventDeliveryRepo(adaptor)
+	eventRuleRepo := eventRepo.NewEventRuleRepo(adaptor)
+	eventQueue := redis.NewEventQueue(adaptor)
+
+	// 尝试从 Redis 触发队列取出 delivery_id
+	deliveryIDs, err := eventQueue.DequeueDeliveryIDs(ctx, 50, time.Second*5)
+	if err != nil {
+		log.Error("failed to dequeue event delivery IDs", zap.Error(err))
+		return
+	}
+
+	if len(deliveryIDs) == 0 {
+		// 如果触发队列为空，检查数据库中待处理或到期重试的记录，补齐触发队列
+		deliveries, err := eventDeliveryRepo.GetPendingDeliveries(ctx, 50)
+		if err != nil {
+			log.Error("failed to scan pending event deliveries", zap.Error(err))
+			return
+		}
+
+		for _, delivery := range deliveries {
+			if delivery.Status == consts.EventDeliveryStatusFailed {
+				pending := int32(consts.EventDeliveryStatusPending)
+				if err := eventDeliveryRepo.UpdateEventDelivery(ctx, delivery.ID, &do.UpdateEventDelivery{
+					Status:      &pending,
+					NextRetryAt: nil,
+				}); err != nil {
+					log.Error("failed to reset failed delivery to pending", zap.Int64("deliveryID", delivery.ID), zap.Error(err))
+					continue
+				}
+			}
+
+			if err := eventQueue.EnqueueDeliveryID(ctx, delivery.ID); err != nil {
+				log.Error("failed to enqueue pending delivery ID", zap.Int64("deliveryID", delivery.ID), zap.Error(err))
+			}
+		}
+		return
+	}
+
+	for _, deliveryID := range deliveryIDs {
+		delivery, err := eventDeliveryRepo.GetEventDeliveryByID(ctx, deliveryID)
+		if err != nil {
+			log.Error("failed to get event delivery by ID", zap.Int64("deliveryID", deliveryID), zap.Error(err))
+			continue
+		}
+		if delivery == nil {
+			log.Warn("event delivery record not found", zap.Int64("deliveryID", deliveryID))
+			continue
+		}
+
+		if delivery.Status != consts.EventDeliveryStatusPending {
+			log.Warn("skipping non-pending delivery", zap.Int64("deliveryID", delivery.ID), zap.Int32("status", delivery.Status))
+			continue
+		}
+
+		// 获取事件规则
+		rule, err := eventRuleRepo.GetByID(ctx, delivery.RuleID)
+		if err != nil || rule == nil {
+			log.Error("failed to get event rule", zap.Int64("ruleID", delivery.RuleID), zap.Error(err))
+			continue
+		}
+
+		// 执行投递
+		err = deliverEvent(ctx, adaptor, rule, delivery)
+		update := &do.UpdateEventDelivery{
+			Status: &[]int32{consts.EventDeliveryStatusSuccess}[0],
+		}
+
+		if err != nil {
+			log.Error("failed to deliver event",
+				zap.Int64("deliveryID", delivery.ID),
+				zap.String("eventType", delivery.EventType),
+				zap.Error(err))
+
+			// 更新重试信息
+			retryCount := delivery.RetryCount + 1
+			update.Status = &[]int32{consts.EventDeliveryStatusFailed}[0]
+			update.RetryCount = &retryCount
+
+			// 如果重试次数未达到上限，设置下次重试时间
+			if retryCount < 3 {
+				nextRetry := time.Now().Add(time.Duration(retryCount) * time.Minute)
+				update.NextRetryAt = &nextRetry
+			}
+		}
+
+		// 更新投递状态
+		if updateErr := eventDeliveryRepo.UpdateEventDelivery(ctx, delivery.ID, update); updateErr != nil {
+			log.Error("failed to update event delivery status",
+				zap.Int64("deliveryID", delivery.ID), zap.Error(updateErr))
+		}
+	}
+}
+
+// deliverEvent 执行具体的事件投递
+func deliverEvent(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.EventRuleDo, delivery *do.EventDeliveryDo) error {
+	switch rule.TargetType {
+	case consts.EventTargetTypeWebhook:
+		return deliverWebhook(ctx, rule, delivery)
+
+	default:
+		return fmt.Errorf("unsupported target type: %s", rule.TargetType)
+	}
+}
+
+func deliverRedis(ctx context.Context, adaptor adaptor.IAdaptor, delivery *do.EventDeliveryDo) error {
+	payload := map[string]interface{}{
+		"event_type": delivery.EventType,
+		"object_key": delivery.ObjectKey,
+		"payload":    delivery.Payload,
+		"timestamp":  time.Now().Unix(),
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	key := fmt.Sprintf("oss:event:%d:deliveries", delivery.RuleID)
+	if err := adaptor.GetRedis().RPush(key, string(bodyBytes)).Err(); err != nil {
+		return err
+	}
+
+	log.Info("Redis MQ delivery queued",
+		zap.String("queueKey", key),
+		zap.Int64("deliveryID", delivery.ID),
+		zap.String("eventType", delivery.EventType))
+
+	return nil
+}
+
+// deliverWebhook 通过Webhook投递事件
+func deliverWebhook(ctx context.Context, rule *do.EventRuleDo, delivery *do.EventDeliveryDo) error {
+	if rule.TargetURL == nil || *rule.TargetURL == "" {
+		return fmt.Errorf("webhook URL not configured")
+	}
+
+	payload := map[string]interface{}{
+		"event_type": delivery.EventType,
+		"object_key": delivery.ObjectKey,
+		"payload":    delivery.Payload,
+		"timestamp":  time.Now().Unix(),
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, *rule.TargetURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if rule.Secret != nil && *rule.Secret != "" {
+		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+		stringToSign := strings.Join([]string{timestamp, string(bodyBytes)}, "\n")
+		signature := tools.HmacSHA256(stringToSign, *rule.Secret)
+		req.Header.Set("X-Event-Timestamp", timestamp)
+		req.Header.Set("X-Event-Signature", signature)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook request failed status=%d response=%s", resp.StatusCode, string(respBody))
+	}
+
+	log.Info("Webhook delivery success",
+		zap.String("url", *rule.TargetURL),
+		zap.String("eventType", delivery.EventType),
+		zap.String("status", resp.Status),
+		zap.String("responseBody", string(respBody)))
+
+	return nil
 }

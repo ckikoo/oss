@@ -1,44 +1,35 @@
-# OSS 服务设计 Agent
+# OSS 数据库设计 Agent
 
 ## 目标
-该文档用于让 AI 理解当前 OSS 项目的核心设计，包括数据库结构、认证模型、存储路径、分片上传机制和权限策略。
+该文档用于让 AI 理解当前 OSS 项目的数据库设计、核心表关系和认证模型。它帮助分析 `init.sql`、配合代码结构理解认证、权限和对象存储流程。
 
 ## 设计原则
-- 将业务层与存储层分离，数据库负责元数据，文件系统负责原始对象数据。
-- `users`、`access_keys`、`buckets`、`objects`、`multipart_uploads` 等表是核心资源。
-- 复杂权限采用策略表结构，支持从简单 ACL 扩展到细粒度控制。
-- 代码中使用 `consts` 包统一常量，避免直接写魔法字符串或数字。
-- 存储根目录由 `config.yaml` 中 `server.save_dir` 配置控制，默认回退到 `./storage`。
+- `users` 表保存账户基础信息，主要用于管理和统计。
+- `access_keys` 表负责 AK/SK 认证，是对外 API 密钥入口。
+- `buckets`、`objects`、`multipart_uploads` 等表是 OSS 核心资源。
+- 复杂权限使用策略表结构，允许从简单 ACL 扩展到细粒度控制。
+- 目前数据库设计侧重可扩展性与业务分层，实现 MVP 到后续扩展。
+- 常量全部放在 `consts` 包里，禁止直接写魔法字符串或数字。
 
 ## 认证模型
-- 当前主认证方式是 HTTP Header `Authorization`，格式为：`OSS <access_key>:<timestamp>:<signature>`
-- 认证中间件 `NewAccessKeyMiddleware` 会：
-  1. 解析 `Authorization` 头
-  2. 校验时间戳是否在允许范围内（约 30 秒）
-  3. 根据 AK 查找 `access_keys` 表并解密 `secret_key`
-  4. 计算签名并比对客户端签名
-- 签名规则：`stringToSign` 包含 `method path?query`、`Host`、`Content-Type`、以及 body。
-- 对于 `application/octet-stream` 和 `multipart/*`，body 不参与签名。
-- 还支持 `x-oss-token` 令牌验证机制，当前用于部分 token 校验场景，如分片上传 token。
-- 权限通过 `access_keys.permission` JSON 字段控制，支持细粒度策略。
-
-## 存储路径与配置
-- 全局存储根目录由 `config.yaml` 中 `server.save_dir` 配置控制，默认回退到 `./storage`。
-- 代码中使用 `filepath.Join(saveDir, bucketName, ...)` 拼接路径，避免直接拼接字符串。
-- 对象文件存储路径通常为：`<save_dir>/<bucket_name>/<object_key>`。
-- 分片文件存储路径通常为：`<save_dir>/<bucket_name>/multipart/<upload_id>/part_<part_number>`。
+- API 请求通过 AK/SK 认证，AK 在 `access_keys` 表中查找，SK 通过 SHA256 哈希验证。
+- 支持两种认证方式：
+  - HTTP Header: `X-Access-Key` 和 `X-Secret-Key`
+  - Authorization Header: `AccessKey AK:SK`
+- 认证中间件 `NewAccessKeyMiddleware` 保护 bucket、object 和 multipart API。
+- 权限通过 `access_keys.permission` JSON 字段控制，支持细粒度权限。
 
 ## Multipart Upload 流程
 - `CreateMultipartUpload`: 初始化会话，生成 `upload_id`，创建 `multipart_uploads` 记录。
-- `UploadMultipartPart`: 使用 `PUT /api/v1/buckets/:bucket_name/multipart/uploads/:upload_id/parts/:part_number` 直接上传原始二进制分片，分片校验通过 `Content-MD5` header 传递。
-- `CompleteMultipartUpload`: 校验所有分片 `etag` 是否匹配，按顺序计算最终 `etag`，创建最终 `objects` 记录，并将 multipart 会话标记为已完成。
-- `AbortMultipartUpload`: 中止会话，删除分片数据与会话记录。
+- `UploadMultipartPart`: 上传分片，保存到 `multipart_parts`，更新会话进度。
+- `CompleteMultipartUpload`: 虚拟合并，创建最终 `objects` 记录，标记会话完成。不进行物理文件合并。
+- `AbortMultipartUpload`: 中止会话，清理分片和会话记录。
 - **虚拟合并策略**: 不实际合并文件，在读取时动态流式输出分片内容。
 
 ### 优势
-- 避免大文件合并的 IO 开销
+- 避免大文件合并的IO开销
 - 支持超大文件上传
-- 读取时流式处理，避免 OOM
+- 读取时流式处理，避免OOM
 - 分片独立存储，便于管理
 
 ## 核心表说明

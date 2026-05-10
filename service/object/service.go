@@ -19,6 +19,7 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/service/event"
 	"oss/utils/logger"
 	"oss/utils/tools"
 
@@ -36,6 +37,7 @@ type Service struct {
 	meteringRepo  *meteringRepo.MeteringRepo
 	db            *gorm.DB
 	storage       storage.IStorage
+	eventService  *event.Service
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -53,6 +55,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		meteringRepo:  meteringRepo.NewMeteringRepo(adaptor),
 		db:            ormDB,
 		storage:       adaptor.GetStorage(),
+		eventService:  event.NewService(adaptor),
 	}
 }
 
@@ -217,6 +220,16 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.DatabaseErr.WithErr(err)
 	}
 
+	// 触发事件
+	go srv.eventService.TriggerEvent(ctx, bucketID, consts.EventTypePutObject, req.ObjectKey, map[string]interface{}{
+		"bucket_name":   req.BucketName,
+		"object_key":    req.ObjectKey,
+		"size":          putResult.Size,
+		"etag":          putResult.Etag,
+		"content_type":  req.ContentType,
+		"storage_class": storageClass,
+	})
+
 	return &dto.PutObjectResp{
 		ObjectKey:   req.ObjectKey,
 		Size:        putResult.Size,
@@ -257,6 +270,16 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 		if errno := srv.incrementGetObjectMetering(ctx, obj, counter.Count()); errno.NotOk() {
 			return errno
 		}
+
+		// 触发事件
+		go srv.eventService.TriggerEvent(ctx, obj.BucketID, consts.EventTypeGetObject, objectKey, map[string]interface{}{
+			"bucket_name": bucketName,
+			"object_key":  objectKey,
+			"size":        obj.Size,
+			"etag":        obj.Etag,
+			"transmitted": counter.Count(),
+		})
+
 		return common.OK
 	}
 
@@ -276,9 +299,19 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 		return common.ServerErr.WithErr(err)
 	}
 
-	if errno := srv.incrementGetObjectMetering(ctx, obj, counter.Count()); errno.NotOk() {
+	transmittedBytes := counter.Count()
+	if errno := srv.incrementGetObjectMetering(ctx, obj, transmittedBytes); errno.NotOk() {
 		return errno
 	}
+
+	// 触发事件
+	go srv.eventService.TriggerEvent(ctx, obj.BucketID, consts.EventTypeGetObject, objectKey, map[string]interface{}{
+		"bucket_name": bucketName,
+		"object_key":  objectKey,
+		"size":        obj.Size,
+		"etag":        obj.Etag,
+		"transmitted": transmittedBytes,
+	})
 
 	return common.OK
 }
@@ -371,6 +404,15 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 			// 可以选择是否返回错误给用户
 		}
 	}
+
+	// 触发事件
+	go srv.eventService.TriggerEvent(ctx, deletedObj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
+		"bucket_name": bucketName,
+		"object_key":  objectKey,
+		"size":        deletedObj.Size,
+		"etag":        deletedObj.Etag,
+	})
+
 	return common.OK
 }
 

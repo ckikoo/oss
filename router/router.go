@@ -28,6 +28,8 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 
 	tokenCtrl := auth.NewTokenCtrl(adaptor)
 
+	eventCtrl := auth.NewEventCtrl(adaptor)
+
 	// TODO 后续完善管理端那边的
 	h.POST("/api/v1/access-keys", akCtrl.CreateAccessKey)
 	h.GET("/api/v1/access-keys", akCtrl.ListAccessKeys)
@@ -54,6 +56,11 @@ func RegisterRoutes(h *server.Hertz, adaptor adaptor.IAdaptor) {
 	bucketGroup.GET("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.GetLifecycleRule)
 	bucketGroup.PUT("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.UpdateLifecycleRule)
 	bucketGroup.DELETE("/buckets/:bucket_name/lifecycle/:rule_id", lifecycleCtrl.DeleteLifecycleRule)
+
+	bucketGroup.POST("/buckets/:bucket_name/events", eventCtrl.CreateEventRule)
+	bucketGroup.GET("/buckets/:bucket_name/events", eventCtrl.ListEventRules)
+	bucketGroup.PUT("/buckets/:bucket_name/events/:rule_id", eventCtrl.UpdateEventRule)
+	bucketGroup.DELETE("/buckets/:bucket_name/events/:rule_id", eventCtrl.DeleteEventRule)
 
 	// Object operations - check bucket ACL
 	objectGroup := authGroup.Group("", NewObjectACLMiddleware(adaptor))

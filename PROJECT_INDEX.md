@@ -59,8 +59,8 @@ adaptor/repo/
 #### `adaptor/redis/` - Redis操作
 ```
 adaptor/redis/
-├── multipart.go     ✅ 分片上传超时管理 (ZSet存储)
-├── lifecycle.go    ⚠️ 生命周期事件存储 / 事件消费者未完成
+├── mutipart.go     ✅ 分片上传超时管理 (ZSet存储)
+├── lifecycle.go    ⚠️ 生命周期事件存储 (待实现消息处理)
 └── file.go         ✅ 分布式文件锁 (基于bucket+object名称)
 ```
 
@@ -98,8 +98,8 @@ adaptor/redis/
   - 支持多种storage_class (STANDARD/IA/ARCHIVE)
   - 流式处理，避免大文件OOM
 
-#### `service/multipart/` - 分片上传服务
-- `multipart.go`: 初始化、上传分片、完成合并、中止上传
+#### `service/mutipart/` - 分片上传服务
+- `mutipart.go`: 初始化、上传分片、完成合并、中止上传
 - **虚拟合并策略**:
   - 分片存储在 `/storage/{bucket}/multipart/{upload_id}/part_{number}`
   - 完成时创建object记录，不进行物理合并
@@ -289,6 +289,7 @@ PUT /api/v1/buckets/{bucket}/objects/{object_key}
   ↓ object.Service.PutObject()
     ├─ bucket.Repo.GetByName()        // 获取bucket_id
     ├─ Tools.Md5Hash(object_key)      // 生成object_key_hash
+    ├─ saveFileAndComputeHashes()     // 流式存储文件 + 计算etag
     ├─ object.Repo.CreateObject()     // 创建object记录
     └─ 返回PutObjectResp
 ```
@@ -296,20 +297,20 @@ PUT /api/v1/buckets/{bucket}/objects/{object_key}
 ### 分片上传的完整流程
 ```
 1️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads
-   └─ multipart.Service.CreateMultipartUpload()
+   └─ mutipart.Service.CreateMultipartUpload()
       ├─ 生成upload_id (UUID)
       ├─ redis.SetTimeoutMultipartCancel() // 设置超时
       └─ 返回upload_id + expires_at
 
 2️⃣ PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}
-   └─ multipart.Service.UploadMultipartPart()
+   └─ mutipart.Service.UploadMultipartPart()
       ├─ 验证权限 + 上传状态
       ├─ 流式存储分片到 /storage/{bucket}/multipart/{upload_id}/part_{n}
       ├─ multipart.Repo.CreateOrUpdateMultipartPart()
       └─ 返回etag
 
 3️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete
-   └─ multipart.Service.CompleteMultipartUpload()
+   └─ mutipart.Service.CompleteMultipartUpload()
       ├─ 验证所有分片
       ├─ 计算最终etag
       ├─ object.Repo.CreateObject() // 虚拟合并
@@ -418,7 +419,7 @@ go build -o oss ./main.go
 | 问题 | 建议 |
 |------|------|
 | 版本控制 | PutObject中的TODO: Handle versioning |
-| 分片清理 | 已实现超时清理任务，建议补充监控、失败重试逻辑 |
+| 分片清理 | 后台任务定期清理超时的分片上传 |
 | 指标收集 | 完善 `metering_daily` 日统计，支持 PUT/GET/DELETE 请求类型和真实下行字节计数 |
 
 ### 🟢 低优先级 - 优化
@@ -458,8 +459,6 @@ go build -o oss ./main.go
 - ✅ 生命周期规则管理
 - ✅ 默认规则自动创建
 - ✅ 分布式文件锁
-- ✅ 后台任务框架初步实现（`timer/timer.go`）
-- ✅ 异步 multipart 合并与超时清理任务
 
 **待完成特性**:
 - ❌ 生命周期规则执行（后台任务）

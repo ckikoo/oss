@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"oss/adaptor"
 	"oss/config"
 	"oss/router"
@@ -13,6 +14,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-redis/redis"
 	_ "github.com/go-sql-driver/mysql"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -44,7 +46,7 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 		defer func() {
 			if r := recover(); r != nil {
 				// 记录panic信息
-				fmt.Printf("timer goroutine panic: %v\n", r)
+				logger.GetLogger().Error("timer goroutine panic", zap.Any("panic", r))
 			}
 		}()
 		timer.StartTimer(ctx, newAdaptor)
@@ -103,7 +105,8 @@ func initRedis(conf *config.Redis) (*redis.Client, error) {
 }
 func handleErr(err error) {
 	if err != nil {
-		panic(err)
+		logger.GetLogger().Error("fatal error", zap.Error(err))
+		os.Exit(1)
 	}
 }
 

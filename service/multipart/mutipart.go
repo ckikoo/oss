@@ -15,6 +15,7 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/service/event"
 	"oss/utils/tools"
 	"sort"
 	"strings"
@@ -33,6 +34,7 @@ type Service struct {
 	storage       storage.IStorage
 	asyncRepo     async.IAsyncTaskRepo
 	asyncRedis    redis.ITask
+	eventService  *event.Service
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -45,6 +47,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		storage:       adaptor.GetStorage(),
 		asyncRepo:     async.NewAsyncTaskRepo(adaptor),
 		asyncRedis:    redis.NewTask(adaptor),
+		eventService:  event.NewService(adaptor),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -339,6 +342,16 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if err := srv.publishTask(ctx, consts.TaskTypePhysicalMerge, uploadID, objectID); err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
+
+	// 触发事件
+	go srv.eventService.TriggerEvent(ctx, upload.BucketID, consts.EventTypeMultipartComplete, upload.ObjectKey, map[string]interface{}{
+		"bucket_name": upload.BucketName,
+		"object_key":  upload.ObjectKey,
+		"upload_id":   uploadID,
+		"size":        totalSize,
+		"etag":        resultEtag,
+		"parts_count": len(sortedParts),
+	})
 
 	return &dto.CompleteMultipartUploadResp{
 		ObjectID:  objectID,

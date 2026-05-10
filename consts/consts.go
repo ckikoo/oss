@@ -144,3 +144,31 @@ func ValidAsyncTaskType(taskType string) bool {
 		return false
 	}
 }
+
+// 事件相关常量
+const (
+	EventRuleStatusEnabled  = 1
+	EventRuleStatusDisabled = 0
+)
+
+const (
+	EventDeliveryStatusPending = 0
+	EventDeliveryStatusSuccess = 1
+	EventDeliveryStatusFailed  = 2
+)
+
+const (
+	EventTypePutObject           = "PutObject"
+	EventTypeGetObject           = "GetObject"
+	EventTypeDeleteObject        = "DeleteObject"
+	EventTypeMultipartComplete   = "MultipartComplete"
+	EventTypeLifecycleTransition = "LifecycleTransition"
+	EventTypeLifecycleExpiration = "LifecycleExpiration"
+)
+
+const (
+	EventTargetTypeWebhook = "WEBHOOK"
+	EventTargetTypeMQ      = "MQ"
+	EventTargetTypeRedis   = "REDIS"
+	EventTargetTypeFunc    = "FUNC"
+)

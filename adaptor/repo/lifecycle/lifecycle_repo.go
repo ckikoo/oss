@@ -88,18 +88,18 @@ func (r *LifecycleRepo) ListAllActiveLifecycleRules(ctx context.Context) ([]*do.
 	rules := make([]*do.LifecycleRuleDo, 0, len(modelRules))
 	for _, modelRule := range modelRules {
 		rules = append(rules, &do.LifecycleRuleDo{
-			ID:                             modelRule.ID,
-			BucketID:                       modelRule.BucketID,
-			RuleName:                       modelRule.RuleName,
-			Status:                         modelRule.Status,
-			Prefix:                         modelRule.Prefix,
-			TransitionDays:                 modelRule.TransitionDays,
-			TransitionStorageClass:         modelRule.TransitionStorageClass,
-			ExpirationDays:                 modelRule.ExpirationDays,
+			ID:                              modelRule.ID,
+			BucketID:                        modelRule.BucketID,
+			RuleName:                        modelRule.RuleName,
+			Status:                          modelRule.Status,
+			Prefix:                          modelRule.Prefix,
+			TransitionDays:                  modelRule.TransitionDays,
+			TransitionStorageClass:          modelRule.TransitionStorageClass,
+			ExpirationDays:                  modelRule.ExpirationDays,
 			NoncurrentVersionExpirationDays: modelRule.NoncurrentVersionExpirationDays,
-			AbortIncompleteMultipartDays:   modelRule.AbortIncompleteMultipartDays,
-			CreatedAt:                      modelRule.CreatedAt,
-			UpdatedAt:                      modelRule.UpdatedAt,
+			AbortIncompleteMultipartDays:    modelRule.AbortIncompleteMultipartDays,
+			CreatedAt:                       modelRule.CreatedAt,
+			UpdatedAt:                       modelRule.UpdatedAt,
 		})
 	}
 	return rules, nil
