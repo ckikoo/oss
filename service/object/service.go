@@ -30,6 +30,7 @@ import (
 	"oss/utils/tools"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/gogf/gf/util/gconv"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -133,16 +134,17 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 }
 
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
-	if req.BucketName == "" || req.ObjectKey == "" {
-		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
-	}
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
 		return nil, common.ParamErr.WithMsg("bucket not found")
 	}
-
 	bucketID := bucket.ID
+
+	srv.meteringRepo.UpdateDailyMetrics()
+	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, file.Size, 0, 1, 0, 0); err != nil {
+		logger.Error("object PutObject meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("req", gconv.String(req)), zap.Int64("uploadSize", (file.Size)))
+	}
 
 	// Generate object key hash
 	// 需要优化
@@ -201,9 +203,15 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		ContentType:   &req.ContentType,
 		StorageClass:  storageClass,
 		IsMultipart:   consts.ObjectIsMultipartNormal,
-		UploadID:      nil,
-		StoragePath:   &putResult.StoragePath,
-		Acl:           req.Acl,
+
+		StoragePath: &putResult.StoragePath,
+		Acl:         req.Acl,
+		UploadID: func() *string {
+			if req.UploadID == "" {
+				return nil
+			}
+			return &req.UploadID
+		}(),
 		Metadata: func() *string {
 			if req.Metadata == "" {
 				return nil
@@ -241,10 +249,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 }
 
 func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
-	if bucketName == "" || objectKey == "" {
-		return common.ParamErr.WithMsg("bucket_name and object_key are required")
-	}
-
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
 		return common.DatabaseErr.WithErr(err)

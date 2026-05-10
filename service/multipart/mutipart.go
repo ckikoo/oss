@@ -11,6 +11,8 @@ import (
 	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/metering"
+	gormMetering "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/multipart"
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/repo/object"
@@ -22,13 +24,16 @@ import (
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/service/event"
+	"oss/utils/logger"
 	"oss/utils/tools"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gogf/gf/util/gconv"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -44,6 +49,7 @@ type Service struct {
 	asyncRedis    redis.ITask
 	eventService  *event.Service
 	tokenRedis    redis.IToken
+	meteringRepo  metering.IMeteringRepo
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -59,6 +65,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		asyncRedis:    redis.NewTask(adaptor),
 		eventService:  event.NewService(adaptor),
 		tokenRedis:    redis.NewToken(adaptor),
+		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -152,25 +159,49 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 
 func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
 
-	limitStr, err := srv.tokenRedis.GetUploadTokenFields(ctx, token, redis.FieldSizeLimit)
+	limitMap, err := srv.tokenRedis.GetUploadTokenFields(ctx, token, redis.FieldSizeLimit, redis.FieldBucketName, redis.FieldObjectKey, redis.FieldExpiresIn)
 	if err != nil {
 		return nil, common.RedisErr.WithErr(err)
 	}
 
-	if limitStr[redis.FieldSizeLimit] != "" {
-		limit, err := strconv.ParseInt(limitStr[redis.FieldSizeLimit], 10, 64)
+	if limitMap[redis.FieldExpiresIn] != "" {
+		expiresIn, err := strconv.ParseInt(limitMap[redis.FieldExpiresIn], 10, 64)
+		if err != nil {
+			return nil, common.ErrInternalServer.WithErr(err)
+		}
+
+		if time.Now().Unix() > expiresIn {
+			return nil, common.TokenExpired
+		}
+	}
+
+	bucketName := limitMap[redis.FieldBucketName]
+
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
+	if err != nil {
+		logger.Error("UploadMultipartPart buckcetRepo.GetByName error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+	}
+
+	if bucket != nil {
+		if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, int64(len(data)), 0, 1, 0, 0); err != nil {
+			logger.Error("UploadMultipartPart meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+		}
+	}
+
+	if limitMap[redis.FieldSizeLimit] != "" {
+		limit, err := strconv.ParseInt(limitMap[redis.FieldSizeLimit], 10, 64)
 		if err != nil {
 			return nil, common.ErrInternalServer.WithErr(err)
 		}
 
 		if int64(len(data)) > limit {
-			return nil, common.ParamErr.WithMsg(fmt.Sprintf("part size exceeds limit of %d bytes", limit))
+			return nil, common.FilePartSizeOutLimit
 		}
 	}
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.DatabaseErr.WithErr(err)
 	}
 
 	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
@@ -179,7 +210,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 	}
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
 	if upload.Status != consts.MultipartPartStatusUploading {
-		return nil, common.ParamErr.WithMsg("multipart upload is not in uploading state")
+		return nil, common.FileUploadIdStatusNotOnUpload
 	}
 
 	if partNumber <= 0 || partNumber > upload.TotalChunk {
@@ -253,7 +284,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	}
 
 	if upload.Status != consts.MultipartUploadStatusUploading {
-		return nil, common.FileHasUploadSuccess
+		return nil, common.FileUploadIdStatusNotOnUpload
 	}
 
 	storedParts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, uploadID)

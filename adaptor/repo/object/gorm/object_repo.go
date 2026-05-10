@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	metering "oss/adaptor/repo/metering"
-	meteringRepo "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/object"
 	"oss/adaptor/repo/query"
@@ -17,18 +15,17 @@ import (
 )
 
 type ObjectRepo struct {
-	db           *gorm.DB
-	meteringRepo metering.IMeteringRepo
+	db *gorm.DB
 }
 
 var _ object.IObjectRepo = (*ObjectRepo)(nil)
 
 func NewObjectRepo(db *gorm.DB) *ObjectRepo {
-	return &ObjectRepo{db: db, meteringRepo: meteringRepo.NewMeteringRepo(db)}
+	return &ObjectRepo{db: db}
 }
 
 func (r *ObjectRepo) WithTx(tx tx.Tx) object.IObjectRepo {
-	return &ObjectRepo{db: tx.(*gorm.DB), meteringRepo: r.meteringRepo.WithTx(tx)}
+	return &ObjectRepo{db: tx.(*gorm.DB)}
 }
 func (r *ObjectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 	return &do.ObjectDo{
@@ -99,15 +96,6 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		})
 		if result.Error != nil {
 			return result.Error
-		}
-
-		bucket, err := query.Use(tx).Bucket.WithContext(ctx).Where(query.Use(tx).Bucket.ID.Eq(object.BucketID)).First()
-		if err != nil {
-			return err
-		}
-
-		if err := r.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &object.BucketID, time.Now(), object.Size, 1, object.Size, 0, 0, 1, 0); err != nil {
-			return err
 		}
 
 		return object.CallBack(tx)
