@@ -41,7 +41,6 @@ import (
 	"github.com/gogf/gf/util/gconv"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -324,13 +323,6 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		if oldObject != nil {
 			// 删除旧版本的存储文件 只有分片需要删除，别的直接覆盖
 			if oldObject.IsMultipart == consts.ObjectIsMultipartMerged {
-				err := srv.storage.DeleteParts(ctx, oldObject.BucketName, *oldObject.UploadID)
-				if err != nil {
-					srv.logger.Warn("failed to delete old multipart parts storage",
-						zap.String("bucket_name", oldObject.BucketName),
-						zap.String("upload_id", *oldObject.UploadID),
-						zap.Error(err))
-				}
 
 				if err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 					// 删除旧版本的数据库记录
@@ -348,6 +340,15 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 				}); err != nil {
 					return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 				}
+
+				err := srv.storage.DeleteParts(ctx, oldObject.BucketName, *oldObject.UploadID)
+				if err != nil {
+					srv.logger.Warn("failed to delete old multipart parts storage",
+						zap.String("bucket_name", oldObject.BucketName),
+						zap.String("upload_id", *oldObject.UploadID),
+						zap.Error(err))
+				}
+
 			}
 		}
 	}
@@ -442,7 +443,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		update.TotalChunk = &totalChunk
 	}
 
-	objectID, err := srv.objRepo.CreateObject(ctx, &do.CreateObject{
+	createObj := &do.CreateObject{
 		BucketID:      upload.BucketID,
 		BucketName:    upload.BucketName,
 		ObjectKey:     upload.ObjectKey,
@@ -456,13 +457,30 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		UploadID:      &uploadID,
 		Acl:           consts.ObjectAclInheritBucket,
 		Metadata:      metadata,
-		CallBack: func(tx *gorm.DB) error {
-			if _, err := srv.multipartRepo.WithTx(tx).UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
-				return err
-			}
-			return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, totalSize)
-		},
+	}
+
+	var objectID int64
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		if err := srv.objRepo.UpdateObjectNotLatest(ctx1, bucketName, oldObject.ObjectKey, createObj.VersionID); err != nil {
+			return err
+		}
+
+		objectID, err = srv.objRepo.WithTx(tx).CreateObject(ctx, createObj)
+		if err != nil {
+			return err
+		}
+
+		if _, err := srv.multipartRepo.WithTx(tx).UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+			return err
+		}
+
+		if err = srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, totalSize); err != nil {
+			return err
+		}
+
+		return nil
 	})
+
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}

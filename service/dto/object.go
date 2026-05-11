@@ -36,6 +36,10 @@ type ObjectMetadata struct {
 	Status       int32  `json:"status"`
 }
 
+type GetObjectVersionsResp struct {
+	Items []*ObjectMetadata `json:"items"`
+}
+
 type PutObjectReq struct {
 	BucketName   string `json:"bucket_name"`
 	ObjectKey    string `json:"object_key"`

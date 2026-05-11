@@ -174,7 +174,7 @@ func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 	if versionID != "" {
 		qs = qs.Where(q.Object.VersionID.Eq(versionID))
 	} else {
-		qs = qs.Where(q.Object.VersionID.Eq(""))
+		qs = qs.Where(q.Object.VersionID.Eq(""), q.Object.IsLatest.Eq(1))
 	}
 
 	modelObject, err := qs.First()
@@ -226,6 +226,22 @@ func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 	return objects, nil
 }
 
+func (r *objectRepo) ListVersionsByFilter(ctx context.Context, bucketName, objectKey string) ([]*do.ObjectDo, error) {
+	q := query.Use(r.db)
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
+
+	modelObjects, err := qs.Order(q.Object.VersionID.Desc()).Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+
+	objects := make([]*do.ObjectDo, len(modelObjects))
+	for i, modelObject := range modelObjects {
+		objects[i] = r.toObjectDo(modelObject)
+	}
+	return objects, nil
+}
+
 func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error) {
 	// Invalidate cache before update
 	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
@@ -260,6 +276,10 @@ func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 
 	if update.IsMultipart != nil {
 		updates[q.IsMultipart.ColumnName().String()] = *update.IsMultipart
+	}
+
+	if update.IsLatest != nil {
+		updates[q.IsLatest.ColumnName().String()] = *update.IsLatest
 	}
 
 	if len(updates) == 0 {
@@ -370,4 +390,9 @@ func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListOb
 		objects = append(objects, r.toObjectDo(modelObject))
 	}
 	return objects, nil
+}
+func (r *objectRepo) UpdateObjectNotLatest(ctx context.Context, bucketName, objectKey string, version string) error {
+	q := query.Use(r.db).Object
+	_, err := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.VersionID.Neq(version)).Update(q.IsLatest, 0)
+	return repoerr.Wrap(err)
 }

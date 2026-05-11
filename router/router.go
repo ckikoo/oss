@@ -86,6 +86,7 @@ func registerObjectRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor
 	objectGroup := authGroup.Group("", NewObjectACLMiddleware(adaptor))
 	objectGroup.GET("/buckets/:bucket_name/objects", deps.ObjectHandler.ListObjects)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", deps.ObjectHandler.GetObjectMetadata)
+	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/versions", deps.ObjectHandler.GetObjectVersions)
 	objectGroup.PUT("/buckets/:bucket_name/objects/:object_key", deps.ObjectHandler.PutObject)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key", deps.ObjectHandler.GetObject)
 	objectGroup.DELETE("/buckets/:bucket_name/objects/:object_key", deps.ObjectHandler.DeleteObject)

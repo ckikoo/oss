@@ -146,6 +146,36 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 	}, common.OK
 }
 
+func (srv *Service) GetObjectVersions(ctx *common.UserInfoCtx, bucketName, objectKey string) (*dto.GetObjectVersionsResp, common.Errno) {
+	if bucketName == "" || objectKey == "" {
+		return nil, common.ParamErr.WithMsg("bucket_name and object_key are required")
+	}
+
+	objects, err := srv.objRepo.ListVersionsByFilter(ctx, bucketName, objectKey)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	items := make([]*dto.ObjectMetadata, 0, len(objects))
+	for _, obj := range objects {
+		contentType := ""
+		if obj.ContentType != nil {
+			contentType = *obj.ContentType
+		}
+		items = append(items, &dto.ObjectMetadata{
+			ObjectKey:    obj.ObjectKey,
+			Size:         obj.Size,
+			Etag:         obj.Etag,
+			ContentType:  contentType,
+			StorageClass: obj.StorageClass,
+			VersionID:    obj.VersionID,
+			Status:       obj.Status,
+		})
+	}
+
+	return &dto.GetObjectVersionsResp{Items: items}, common.OK
+}
+
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
@@ -163,40 +193,31 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		)
 	}
 
-	// Generate object key hash
-	// 需要优化
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 
 	// Check if object already exists
-	cacheFile, err := srv.objRepo.GetObjectFromHashKey(ctx, &do.GetObjectFromHashKey{
-		BucketName:    req.BucketName,
-		ObjectKeyHash: objectKeyHash,
-	})
+	cacheFile, err := srv.objRepo.GetByKey(ctx, req.BucketName, req.ObjectKey, "")
 	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	// Handle versioning
-	versionID := ""
-	if bucket.Versioning == consts.BucketVersioningEnabled {
+	versionID := uuid.New().String()
+	if bucket.Versioning == consts.BucketVersioningEnabled { // 版本控制开启，生成新的versionID，保留旧版本
 		// Generate UUID for version ID when versioning is enabled
-		versionID = uuid.New().String()
-	} else {
+	} else { // 旧的版本
+
+		if req.Overwrite == false && cacheFile != nil {
+			return nil, common.FileNameExists
+		}
+
 		// If versioning is disabled and object exists, delete the old one
 		if cacheFile != nil {
-			// Delete old version's storage // 可以删除也可以不删除，后续会被覆盖掉
-			if cacheFile.IsMultipart == consts.ObjectIsMultipartMerged {
-				if err := srv.storage.DeleteParts(ctx, cacheFile.BucketName, *cacheFile.UploadID); err != nil {
-					srv.logger.Warn("failed to delete old object storage",
-						zap.String("path", *cacheFile.StoragePath),
-						zap.Error(err))
-				}
-			}
 
 			err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 				// Mark old object as deleted
 				if err := srv.objRepo.DeleteObject(ctx1, req.BucketName, req.ObjectKey, cacheFile.VersionID); err != nil {
-					srv.logger.Warn("failed to delete old object record",
+					srv.logger.Error("PutObject DeleteObject ",
 						zap.String("bucket", req.BucketName),
 						zap.String("objectKey", req.ObjectKey),
 						zap.String("versionID", cacheFile.VersionID),
@@ -205,8 +226,17 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 					return err
 				}
 
+				if err := srv.multipartRepo.DeleteMultipartParts(ctx1, ctx.UserID, *cacheFile.UploadID); err != nil {
+					srv.logger.Error("PutObject DeleteMultipartParts ",
+						zap.String("bucket", req.BucketName),
+						zap.String("objectKey", req.ObjectKey),
+						zap.String("uploadID", *cacheFile.UploadID),
+						zap.Error(err))
+					return err
+				}
+
 				if err := srv.userRepo.UpdateStorageUsed(ctx1, ctx.UserID, -cacheFile.Size); err != nil {
-					srv.logger.Warn("service.PutObject UpdateStorageUsed",
+					srv.logger.Error("service.PutObject UpdateStorageUsed",
 						zap.String("bucket", req.BucketName),
 						zap.String("objectKey", req.ObjectKey),
 						zap.String("versionID", cacheFile.VersionID),
@@ -216,6 +246,15 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 				return nil
 			})
+
+			// Delete old version's storage // 可以删除也可以不删除，后续会被覆盖掉
+			if cacheFile.IsMultipart == consts.ObjectIsMultipartMerged {
+				if err := srv.storage.DeleteParts(ctx, cacheFile.BucketName, *cacheFile.UploadID); err != nil {
+					srv.logger.Error("PutObject  DeleteParts ",
+						zap.String("path", *cacheFile.StoragePath),
+						zap.Error(err))
+				}
+			}
 
 			if err != nil {
 				return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
@@ -254,7 +293,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	if storageClass == "" {
 		storageClass = consts.StorageClassStandard
 	}
-
 	// Create object
 	createObj := &do.CreateObject{
 		BucketID:      bucketID,
@@ -282,13 +320,27 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			return &req.Metadata
 		}(),
 		CallBack: func(tx *gorm.DB) error {
-			return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, putResult.Size)
+
+			return nil
 		},
 	}
 
-	id, err := srv.objRepo.CreateObject(ctx, createObj)
+	var id int64
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		if err := srv.objRepo.UpdateObjectNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey, createObj.VersionID); err != nil {
+			return err
+		}
+
+		id, err = srv.objRepo.CreateObject(ctx1, createObj)
+		if err != nil {
+			srv.storage.Delete(ctx1, putResult.StoragePath)
+			return err
+		}
+
+		return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, putResult.Size)
+	})
+
 	if err != nil {
-		srv.storage.Delete(ctx, putResult.StoragePath)
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 

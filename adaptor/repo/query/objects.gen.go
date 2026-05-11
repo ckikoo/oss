@@ -41,6 +41,7 @@ func newObject(db *gorm.DB, opts ...gen.DOOption) object {
 	_object.UploadID = field.NewString(tableName, "upload_id")
 	_object.StoragePath = field.NewString(tableName, "storage_path")
 	_object.Acl = field.NewInt32(tableName, "acl")
+	_object.IsLatest = field.NewInt32(tableName, "is_latest")
 	_object.Metadata = field.NewString(tableName, "metadata")
 	_object.Status = field.NewInt32(tableName, "status")
 	_object.AccessCount = field.NewInt64(tableName, "access_count")
@@ -72,6 +73,7 @@ type object struct {
 	UploadID      field.String // 分片上传ID(is_multipart=1时)
 	StoragePath   field.String // 物理路径(普通文件或物理合并后)
 	Acl           field.Int32  // 0=继承Bucket 1=私有 2=公共读
+	IsLatest      field.Int32
 	Metadata      field.String // 用户自定义元数据
 	Status        field.Int32  // 1=正常 2=删除标记(版本控制) 3=物理删除
 	AccessCount   field.Int64  // 访问次数(懒合并触发依据)
@@ -108,6 +110,7 @@ func (o *object) updateTableName(table string) *object {
 	o.UploadID = field.NewString(table, "upload_id")
 	o.StoragePath = field.NewString(table, "storage_path")
 	o.Acl = field.NewInt32(table, "acl")
+	o.IsLatest = field.NewInt32(table, "is_latest")
 	o.Metadata = field.NewString(table, "metadata")
 	o.Status = field.NewInt32(table, "status")
 	o.AccessCount = field.NewInt64(table, "access_count")
@@ -138,7 +141,7 @@ func (o *object) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (o *object) fillFieldMap() {
-	o.fieldMap = make(map[string]field.Expr, 20)
+	o.fieldMap = make(map[string]field.Expr, 21)
 	o.fieldMap["id"] = o.ID
 	o.fieldMap["bucket_id"] = o.BucketID
 	o.fieldMap["bucket_name"] = o.BucketName
@@ -153,6 +156,7 @@ func (o *object) fillFieldMap() {
 	o.fieldMap["upload_id"] = o.UploadID
 	o.fieldMap["storage_path"] = o.StoragePath
 	o.fieldMap["acl"] = o.Acl
+	o.fieldMap["is_latest"] = o.IsLatest
 	o.fieldMap["metadata"] = o.Metadata
 	o.fieldMap["status"] = o.Status
 	o.fieldMap["access_count"] = o.AccessCount

@@ -24,10 +24,11 @@ type Object struct {
 	Etag          string         `gorm:"column:etag;not null;comment:MD5 或分片合并ETag" json:"etag"`                                // MD5 或分片合并ETag
 	ContentType   *string        `gorm:"column:content_type;comment:MIME类型" json:"content_type"`                                // MIME类型
 	StorageClass  string         `gorm:"column:storage_class;not null;default:STANDARD" json:"storage_class"`
-	IsMultipart   int32          `gorm:"column:is_multipart;not null;comment:0=普通上传 1=分片虚拟合并" json:"is_multipart"`        // 0=普通上传 1=分片虚拟合并
-	UploadID      *string        `gorm:"column:upload_id;comment:分片上传ID(is_multipart=1时)" json:"upload_id"`               // 分片上传ID(is_multipart=1时)
-	StoragePath   *string        `gorm:"column:storage_path;comment:物理路径(普通文件或物理合并后)" json:"storage_path"`                // 物理路径(普通文件或物理合并后)
-	Acl           int32          `gorm:"column:acl;not null;comment:0=继承Bucket 1=私有 2=公共读" json:"acl"`                    // 0=继承Bucket 1=私有 2=公共读
+	IsMultipart   int32          `gorm:"column:is_multipart;not null;comment:0=普通上传 1=分片虚拟合并" json:"is_multipart"` // 0=普通上传 1=分片虚拟合并
+	UploadID      *string        `gorm:"column:upload_id;comment:分片上传ID(is_multipart=1时)" json:"upload_id"`        // 分片上传ID(is_multipart=1时)
+	StoragePath   *string        `gorm:"column:storage_path;comment:物理路径(普通文件或物理合并后)" json:"storage_path"`         // 物理路径(普通文件或物理合并后)
+	Acl           int32          `gorm:"column:acl;not null;comment:0=继承Bucket 1=私有 2=公共读" json:"acl"`             // 0=继承Bucket 1=私有 2=公共读
+	IsLatest      *int32         `gorm:"column:is_latest" json:"is_latest"`
 	Metadata      *string        `gorm:"column:metadata;comment:用户自定义元数据" json:"metadata"`                                // 用户自定义元数据
 	Status        int32          `gorm:"column:status;not null;default:1;comment:1=正常 2=删除标记(版本控制) 3=物理删除" json:"status"` // 1=正常 2=删除标记(版本控制) 3=物理删除
 	AccessCount   int64          `gorm:"column:access_count;not null;comment:访问次数(懒合并触发依据)" json:"access_count"`          // 访问次数(懒合并触发依据)

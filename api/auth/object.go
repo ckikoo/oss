@@ -62,6 +62,25 @@ func (ctrl *ObjectCtrl) GetObjectMetadata(ctx context.Context, c *app.RequestCon
 	api.WriteResp(c, resp, errno)
 }
 
+func (ctrl *ObjectCtrl) GetObjectVersions(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	bucketName := c.Param("bucket_name")
+	objectKey := c.Param("object_key")
+
+	if bucketName == "" || objectKey == "" {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name and object_key are required"))
+		return
+	}
+
+	resp, errno := ctrl.object.GetObjectVersions(ctx1, bucketName, objectKey)
+	api.WriteResp(c, resp, errno)
+}
+
 func (ctrl *ObjectCtrl) PutObject(ctx context.Context, c *app.RequestContext) {
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {

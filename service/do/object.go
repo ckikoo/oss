@@ -63,6 +63,7 @@ type UpdateObject struct {
 	Metadata     *string
 	Status       *int32
 	IsMultipart  *int32
+	IsLatest     *bool
 }
 
 type ListObjectsByBucket struct {
