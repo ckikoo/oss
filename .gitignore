@@ -1,6 +1,6 @@
 
 adaptor/repo/gen.yaml
 config.yaml
-storage
+storage/*
 tmp
 *.exe
