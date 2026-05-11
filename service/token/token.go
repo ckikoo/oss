@@ -49,14 +49,10 @@ func (s *Service) CreateUploadToken(ctx *common.UserInfoCtx, req *dto.CreateUplo
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	bucketInfo, err := s.bucket.GetByName(ctx, accessInfo.UserID, req.BucketName)
+	_, err = s.bucket.GetByName(ctx, accessInfo.UserID, req.BucketName)
 	if err != nil {
 		s.logger.Error("CreateUploadToken failed to get bucket", zap.Error(err), zap.String("bucket_name", req.BucketName))
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
-	}
-
-	if bucketInfo == nil {
-		return nil, common.BucketNotFoundErr
 	}
 
 	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.UploadMethod, consts.UploadAction, expireAtUnix, ctx.SecretKey)

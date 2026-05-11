@@ -128,26 +128,38 @@
 - ✅ 创建 Bucket 时自动生成默认生命周期规则
 - ✅ `timer/timer.go` 已实现后台任务框架，支持 Redis 任务队列消费
 - ✅ 当前后台任务已支持 `PHYSICAL_MERGE` 和 `ABORT_MULTIPART` 两类 multipart 任务
+- ✅ `timer/scan_lifecycle.go` 实现了生命周期规则扫描器（按批扫描对象，生成事件）
+- ✅ `timer/lifecycle.go` 实现了生命周期事件消费和执行器
+- ✅ 对象存储类转移（Transition）功能
+- ✅ 对象过期删除（Expiration）功能
+
+### 工作流程
+1. **扫描阶段** (`handlerScanTableLifecycleEvents`)：
+   - 定时扫描所有活跃的生命周期规则
+   - 对每条规则，批量查询符合条件的对象
+   - 将待处理事件写入 Redis ZSet（按执行时间排序）
+
+2. **执行阶段** (`handlerLifecycleEvents`)：
+   - 从 Redis 读取待执行的生命周期事件
+   - 对于 Transition 事件：更新对象的存储类
+   - 对于 Expiration 事件：获取分布式锁后删除对象
 
 ### 待完成
-- ❌ 生命周期规则扫描与实际执行逻辑
-- ❌ lifecycle 事件生产/消费机制
-- ❌ 基于 lifecycle 规则的对象转移/删除执行
+- ❌ 版本控制支持
+- ❌ 事件通知机制
 
 ### 说明
-- `timer/timer.go` 目前负责：
-  - 从 Redis 任务队列中批量消费异步任务
-  - 执行 multipart 物理合并
-  - 清理超时 multipart 上传
-- Lifecycle 规则管理本身已完成，但生命周期执行器仍需补充扫描和任务发布功能
-
-### 后续建议
-1. 增加 lifecycle 规则扫描器，将满足条件的对象转成待处理任务
-2. 增加 lifecycle 事件生产者，将任务写入 Redis 或任务队列
-3. 增加事件消费者/执行器，处理转储、归档、过期删除等操作
+- `timer/timer.go` 负责启动以下后台任务（独立定时器）：
+  - `handlerTask` (30s 间隔) - 消费 multipart 合并和超时清理任务
+  - `handlerLifecycleEvents` (1min 间隔) - 执行生命周期事件
+  - `handlerScanTableLifecycleEvents` (1min 间隔) - 扫描生命周期规则并生成事件
+  - `handlerEventDeliveries` (10s 间隔) - 处理事件通知
+- Lifecycle 规则管理和执行均已完成
 
 ### 性能考虑
-- 扫描任务应限制批量大小（如 1000 条）
+- 扫描任务限制批量大小（100条每批）
+- 事件执行采用协程池并发处理（大小为 CPU * 2）
+- 对象删除使用分布式锁防止并发删除
 - 事件执行应支持并行消费与重试
 - 对象迁移/删除任务需保持幂等性和失败回滚能力
 

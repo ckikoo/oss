@@ -1,11 +1,14 @@
 package object
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -173,9 +176,51 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	// TODO 应该支持覆盖才对
-	if cacheFile != nil {
-		return nil, common.FileNameExists
+	// Handle versioning
+	versionID := ""
+	if bucket.Versioning == consts.BucketVersioningEnabled {
+		// Generate UUID for version ID when versioning is enabled
+		versionID = uuid.New().String()
+	} else {
+		// If versioning is disabled and object exists, delete the old one
+		if cacheFile != nil {
+			// Delete old version's storage // 可以删除也可以不删除，后续会被覆盖掉
+			if cacheFile.IsMultipart == consts.ObjectIsMultipartMerged {
+				if err := srv.storage.DeleteParts(ctx, cacheFile.BucketName, *cacheFile.UploadID); err != nil {
+					srv.logger.Warn("failed to delete old object storage",
+						zap.String("path", *cacheFile.StoragePath),
+						zap.Error(err))
+				}
+			}
+
+			err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+				// Mark old object as deleted
+				if err := srv.objRepo.DeleteObject(ctx1, req.BucketName, req.ObjectKey, cacheFile.VersionID); err != nil {
+					srv.logger.Warn("failed to delete old object record",
+						zap.String("bucket", req.BucketName),
+						zap.String("objectKey", req.ObjectKey),
+						zap.String("versionID", cacheFile.VersionID),
+						zap.Error(err))
+
+					return err
+				}
+
+				if err := srv.userRepo.UpdateStorageUsed(ctx1, ctx.UserID, -cacheFile.Size); err != nil {
+					srv.logger.Warn("service.PutObject UpdateStorageUsed",
+						zap.String("bucket", req.BucketName),
+						zap.String("objectKey", req.ObjectKey),
+						zap.String("versionID", cacheFile.VersionID),
+						zap.Error(err))
+					return err
+				}
+
+				return nil
+			})
+
+			if err != nil {
+				return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+			}
+		}
 	}
 
 	rules, err := srv.lifecycleRepo.ListLifecycleRules(ctx, bucket.ID)
@@ -199,7 +244,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	}
 	defer f.Close()
 
-	putResult, err := srv.storage.Put(ctx, req.BucketName, req.ObjectKey, f)
+	putResult, err := srv.storage.Put(ctx, req.BucketName, req.ObjectKey, versionID, f)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
@@ -216,15 +261,14 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		BucketName:    req.BucketName,
 		ObjectKey:     req.ObjectKey,
 		ObjectKeyHash: objectKeyHash,
-		VersionID:     "", // TODO: Handle versioning
+		VersionID:     versionID,
 		Size:          putResult.Size,
 		Etag:          putResult.Etag,
 		ContentType:   &req.ContentType,
 		StorageClass:  storageClass,
 		IsMultipart:   consts.ObjectIsMultipartNormal,
-
-		StoragePath: &putResult.StoragePath,
-		Acl:         req.Acl,
+		StoragePath:   &putResult.StoragePath,
+		Acl:           req.Acl,
 		UploadID: func() *string {
 			if req.UploadID == "" {
 				return nil
@@ -242,7 +286,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		},
 	}
 
-	_, err = srv.objRepo.CreateObject(ctx, createObj)
+	id, err := srv.objRepo.CreateObject(ctx, createObj)
 	if err != nil {
 		srv.storage.Delete(ctx, putResult.StoragePath)
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
@@ -259,6 +303,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			srv.scheduleObjectEvents(ctx, bucket.ID, rule, prefix, &do.ObjectDo{
 				ObjectKey: req.ObjectKey,
 				CreatedAt: now,
+				VersionID: createObj.VersionID,
 			}, now)
 		}
 	}
@@ -273,14 +318,68 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		"storage_class": storageClass,
 	})
 
+	if req.CallbackUrl != "" {
+		callbackURL := req.CallbackUrl
+		callbackPayload := map[string]interface{}{
+			"event_type":  "multipart_complete",
+			"bucket_name": req.BucketName,
+			"object_key":  req.ObjectKey,
+			"upload_id":   createObj.UploadID,
+			"object_id":   id,
+			"version_id":  createObj.VersionID,
+			"size":        createObj.Size,
+			"etag":        createObj.Etag,
+			"status":      "completed",
+		}
+		go srv.sendMultipartCompleteCallback(callbackURL, callbackPayload)
+	}
+
 	return &dto.PutObjectResp{
 		ObjectKey:   req.ObjectKey,
 		Size:        putResult.Size,
 		Etag:        putResult.Etag,
 		StoragePath: putResult.StoragePath,
-		VersionID:   "",
+		VersionID:   versionID, // Return the version ID set during creation
 	}, common.OK
 }
+
+func (srv *Service) sendMultipartCompleteCallback(callbackURL string, payload map[string]interface{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		srv.logger.Error("failed to marshal multipart callback payload", zap.Error(err), zap.String("callback_url", callbackURL))
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		srv.logger.Error("failed to create multipart callback request", zap.Error(err), zap.String("callback_url", callbackURL))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		srv.logger.Error("multipart callback request failed", zap.Error(err), zap.String("callback_url", callbackURL))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		srv.logger.Error("multipart callback returned non-success status",
+			zap.String("callback_url", callbackURL),
+			zap.Int("status", resp.StatusCode),
+			zap.String("response", string(respBody)))
+		return
+	}
+
+	srv.logger.Info("multipart callback delivered successfully", zap.String("callback_url", callbackURL), zap.String("upload_id", fmt.Sprintf("%v", payload["upload_id"])))
+}
+
 func (srv *Service) scheduleObjectEvents(
 	ctx context.Context,
 	bucketID int64,

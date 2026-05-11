@@ -99,7 +99,7 @@ func (ctrl *multipartCtrl) CompleteMultipartUpload(ctx context.Context, c *app.R
 		return
 	}
 
-	resp, errno := ctrl.object.CompleteMultipartUpload(ctx1, uploadID, req)
+	resp, errno := ctrl.object.CompleteMultipartUpload(ctx1, uploadID, bucketName, req)
 	api.WriteResp(c, resp, errno)
 }
 

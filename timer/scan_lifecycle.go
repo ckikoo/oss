@@ -61,6 +61,10 @@ func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
 					break // 这条 rule 跳过，继续下一条
 				}
 
+				if len(list) == 0 {
+					break
+				}
+
 				for _, obj := range list {
 					// transition
 					if rule.TransitionDays != nil && *rule.TransitionDays > 0 {

@@ -410,17 +410,17 @@ go build -o oss ./main.go
 ### 🔴 高优先级 - 缺失核心功能
 | 问题 | 状态 | 说明 |
 |------|------|------|
-| 生命周期规则执行器 | ❌ 无 | 后台任务扫描并执行lifecycle规则 |
-| 事件消费者 | ❌ 无 | Redis Stream消费lifecycle事件 |
-| 对象转移逻辑 | ❌ 无 | 实现STANDARD→IA→ARCHIVE转换 |
-| 过期删除逻辑 | ❌ 无 | 实现自动删除过期对象 |
+| 生命周期规则执行器 | ✅ 已实现 | `timer/scan_lifecycle.go` 后台扫描并生成lifecycle事件 |
+| 事件消费者 | ✅ 已实现 | `timer/lifecycle.go` 消费Redis中的lifecycle事件 |
+| 对象转移逻辑 | ✅ 已实现 | `timer/lifecycle.go` 中 `handleTransitionEvents` 实现STANDARD→IA→ARCHIVE转换 |
+| 过期删除逻辑 | ✅ 已实现 | `timer/lifecycle.go` 中 `handleExpirationEvents` 实现自动删除过期对象 |
 
 ### 🟡 中优先级 - 功能增强
-| 问题 | 建议 |
-|------|------|
-| 版本控制 | PutObject中的TODO: Handle versioning |
-| 分片清理 | 后台任务定期清理超时的分片上传 |
-| 指标收集 | 完善 `metering_daily` 日统计，支持 PUT/GET/DELETE 请求类型和真实下行字节计数 |
+| 问题 | 状态 | 说明 |
+|------|------|------|
+| 版本控制 | ✅ 已实现 | `service/object/service.go` PutObject 中实现版本控制逻辑 |
+| 分片清理 | ✅ 已实现 | `timer/upload_timeout.go` 定期清理超时的分片上传 | 
+| 指标收集 | ✅ 已实现 | `metering_daily` 支持 PUT/GET/DELETE 请求计数和真实下行字节数 |
 
 ### 🟢 低优先级 - 优化
 | 问题 | 建议 |
@@ -431,13 +431,18 @@ go build -o oss ./main.go
 
 ---
 
-## 📝 编译状态 (2026-05-03)
+## 📝 编译状态 (2026-05-11)
 - ✅ `go build ./...` - **通过**
 - ✅ `go test ./...` - **通过** (35个包，无编译错误)
 - ✅ Presigned URL 服务 - **已实现**
 - ✅ Lifecycle 规则服务 - **已实现**
 - ✅ 默认生命周期规则 - **已实现** (CreateBucket时自动创建)
 - ✅ 分布式文件锁 - **已实现** (Redis原子操作)
+- ✅ 生命周期规则扫描器 - **已实现** (`timer/scan_lifecycle.go` 按批扫描并生成事件)
+- ✅ 生命周期事件执行器 - **已实现** (`timer/lifecycle.go` 处理转移和删除事件)
+- ✅ 分片超时清理 - **已实现** (`timer/upload_timeout.go` 后台定期清理)
+- ✅ 日统计指标收集 - **已实现** (支持 PUT/GET/DELETE 请求计数、上下行流量)
+- ✅ 版本控制 - **已实现** (Bucket versioning 支持，PutObject 自动生成 version_id)
 
 ---
 
@@ -459,9 +464,12 @@ go build -o oss ./main.go
 - ✅ 生命周期规则管理
 - ✅ 默认规则自动创建
 - ✅ 分布式文件锁
+- ✅ 生命周期规则扫描和事件生成
+- ✅ 对象存储类转移（Transition）
+- ✅ 对象过期删除（Expiration）
+- ✅ 分片超时清理
+- ✅ 日统计指标收集（PUT/GET/DELETE 请求计数、上下行流量）
+- ✅ 版本控制（Bucket versioning 和自动生成 version_id）
 
 **待完成特性**:
-- ❌ 生命周期规则执行（后台任务）
-- ❌ 对象自动转移和删除
-- ❌ 版本控制
 - ❌ 事件通知
