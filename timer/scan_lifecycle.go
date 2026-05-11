@@ -12,75 +12,80 @@ import (
 	"go.uber.org/zap"
 )
 
-func handlerScanTableLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
-	repo := gormLifecycle.NewLifecycleRepo(adaptor.GetGORM())
-	objRepo := gormObject.NewObjectRepo(adaptor)
-
-	rds := redis.NewLifecycle(adaptor)
+func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
+	repo := gormLifecycle.NewLifecycleRepo(a.GetGORM())
+	objRepo := gormObject.NewObjectRepo(a)
+	rds := redis.NewLifecycle(a)
 
 	const batchSize = 100
 	var cursor int64 = 0
 
-	// 有可能存在大量的生命周期规则，应该分页扫描，避免一次性 OOM， mvp 阶段先全部
+	// ── 分批扫 lifecycle rules ───────────────────────────────
 	for {
 		rules, err := repo.ListAllActiveLifecycleRulesByCursor(ctx, cursor, batchSize)
 		if err != nil {
-			log.Error("timer.handlerScanTableLifecycleEvents ListAllActiveLifecycleRules", zap.Error(err))
+			log.Error("handlerScanTableLifecycleEvents: list rules", zap.Error(err))
 			return
 		}
 
+		if len(rules) == 0 {
+			break
+		}
+
 		for _, rule := range rules {
+			prefix := ""
+			if rule.Prefix != nil {
+				prefix = *rule.Prefix
+			}
 
-			prefix := func() string {
-				if rule.Prefix == nil {
-					return ""
-				}
-				return *rule.Prefix
-			}()
-
+			// ── 分批扫该规则下的 objects ─────────────────────
+			offset := 0 // ← 移到内层循环外
 			for {
-				// 后续使用游标优化
-				offset := 0
 				list, err := objRepo.ListByBucketWithPrefix(ctx, &do.ListObjectsByBucket{
 					BucketID: rule.BucketID,
 					Prefix:   prefix,
 					Limit:    batchSize,
 					Offset:   offset,
 				})
-
 				if err != nil {
-					log.Error("timer.handlerScanTableLifecycleEvents ListByBucketWithPrefix failed", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
-					continue
+					log.Error("handlerScanTableLifecycleEvents: list objects",
+						zap.Int64("bucketID", rule.BucketID),
+						zap.Int64("ruleID", rule.ID),
+						zap.Error(err))
+					break // 这条 rule 跳过，继续下一条
 				}
 
 				for _, obj := range list {
+					// transition
 					if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
 						executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.TransitionDays))
-						rds.SetLifecycleEvent(ctx, rule.BucketID, rule.ID, *rule.Prefix, "expiration", obj.ObjectKey, executeTime)
+						if err := rds.SetLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "transition", obj.ObjectKey, executeTime); err != nil {
+							log.Warn("handlerScanTableLifecycleEvents: set transition event",
+								zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+						}
 					}
-
-					if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
-						rds.SetLifecycleEvent(ctx, rule.BucketID, rule.ID, *rule.Prefix, "transition", obj.ObjectKey, obj.CreatedAt.AddDate(0, 0, int(*rule.TransitionDays)))
+					// expiration
+					if rule.ExpirationDays != nil && *rule.ExpirationDays > 0 {
+						executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.ExpirationDays))
+						if err := rds.SetLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", obj.ObjectKey, executeTime); err != nil {
+							log.Warn("handlerScanTableLifecycleEvents: set expiration event",
+								zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+						}
 					}
 				}
 
 				offset += len(list)
-
-				time.Sleep(time.Millisecond * 200) // 让出 CPU，避免打爆 DB
+				time.Sleep(50 * time.Millisecond) // 200ms 太保守，50ms 够了
 
 				if len(list) < batchSize {
 					break
 				}
-
 			}
-
 		}
 
 		cursor = rules[len(rules)-1].ID
-
 		if len(rules) < batchSize {
 			break
 		}
 	}
-
 }
