@@ -15,7 +15,9 @@ type TokenCtrl struct {
 	srv *token.Service
 }
 
-func NewTokenCtrl(adaptor adaptor.IAdaptor) *TokenCtrl {
+var _ ITokenHandler = (*TokenCtrl)(nil)
+
+func NewTokenCtrl(adaptor adaptor.IAdaptor) ITokenHandler {
 	return &TokenCtrl{
 		srv: token.NewService(adaptor),
 	}

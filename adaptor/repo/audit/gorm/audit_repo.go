@@ -6,6 +6,7 @@ import (
 	"oss/adaptor/repo/audit"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/service/do"
 
@@ -47,9 +48,9 @@ func (r *OperationLogRepo) ListByFilter(ctx context.Context, filter *do.Operatio
 		q = q.Where(ql.CreatedAt.Lte(*filter.DateTo))
 	}
 
-	logs, total, err := q.Order(ql.CreatedAt.Desc()).FindByPage(filter.GetOffset(), filter.Limit)
+	logs, total, err := q.Order(ql.CreatedAt.Desc()).FindByPage(filter.Pager.GetOffset(), filter.Pager.Limit)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, repoerr.Wrap(err)
 	}
 
 	result := make([]*do.OperationLogDo, 0, len(logs))

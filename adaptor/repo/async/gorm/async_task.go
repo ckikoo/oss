@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/async"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/service/do"
 	"time"
@@ -43,7 +44,7 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 
 	err := r.db.WithContext(ctx).Model(&model.AsyncTask{}).Create(modelTask).Error
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 
 	return modelTask.ID, nil
@@ -53,7 +54,7 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do
 	q := query.Use(r.db)
 	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.ID.Eq(taskID)).First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	uploadID := ""
@@ -140,7 +141,7 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, updat
 	// 执行更新
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(taskID)).Updates(updates)
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	// 返回更新后的记录

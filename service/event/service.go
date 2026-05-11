@@ -19,13 +19,12 @@ import (
 	"go.uber.org/zap"
 )
 
-var log = logger.GetLogger()
-
 type Service struct {
 	eventRuleRepo     event.IEventRuleRepo
 	eventDeliveryRepo event.IEventDeliveryRepo
 	eventQueue        redis.IEventQueue
 	bucketRepo        bucket.IBucketRepo
+	logger            *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -33,7 +32,8 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		eventRuleRepo:     gorm.NewEventRuleRepo(adaptor.GetGORM()),
 		eventDeliveryRepo: gorm.NewEventDeliveryRepo(adaptor.GetGORM()),
 		eventQueue:        redis.NewEventQueue(adaptor),
-		bucketRepo:        gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		bucketRepo:        gormBucket.NewBucketRepo(adaptor),
+		logger:            logger.GetLogger().With(zap.String("module", "event")),
 	}
 }
 
@@ -51,8 +51,8 @@ func (srv *Service) CreateEventRule(ctx *common.UserInfoCtx, req *dto.CreateEven
 
 	info, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
-		log.Error("failed to get bucket", zap.Error(err))
-		return nil, common.ErrInvalidParams
+		srv.logger.Error("failed to get bucket", zap.Error(err))
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 	if info == nil {
 		return nil, common.BucketNotFoundErr
@@ -61,7 +61,7 @@ func (srv *Service) CreateEventRule(ctx *common.UserInfoCtx, req *dto.CreateEven
 	// 检查规则名是否已存在
 	existing, err := srv.eventRuleRepo.GetByBucketIDAndRuleName(ctx, info.ID, req.RuleName)
 	if err != nil {
-		log.Error("failed to check existing rule", zap.Error(err))
+		srv.logger.Error("failed to check existing rule", zap.Error(err))
 		return nil, common.ErrInternalServer
 	}
 	if existing != nil {
@@ -82,7 +82,7 @@ func (srv *Service) CreateEventRule(ctx *common.UserInfoCtx, req *dto.CreateEven
 
 	ruleID, err := srv.eventRuleRepo.CreateEventRule(ctx, rule)
 	if err != nil {
-		log.Error("failed to create event rule", zap.Error(err))
+		srv.logger.Error("failed to get event rule", zap.Error(err))
 		return nil, common.ErrInternalServer
 	}
 
@@ -95,8 +95,8 @@ func (srv *Service) CreateEventRule(ctx *common.UserInfoCtx, req *dto.CreateEven
 func (srv *Service) ListEventRules(ctx *common.UserInfoCtx, bucketName string) (*dto.ListEventRulesResp, common.Errno) {
 	info, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		log.Error("failed to get bucket", zap.Error(err))
-		return nil, common.ErrInvalidParams
+		srv.logger.Error("failed to get bucket", zap.Error(err))
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 	if info == nil {
 		return nil, common.BucketNotFoundErr
@@ -104,7 +104,7 @@ func (srv *Service) ListEventRules(ctx *common.UserInfoCtx, bucketName string) (
 
 	rules, err := srv.eventRuleRepo.ListByBucketID(ctx, info.ID)
 	if err != nil {
-		log.Error("failed to list event rules", zap.Error(err))
+		srv.logger.Error("failed to list event rules", zap.Error(err))
 		return nil, common.ErrInternalServer
 	}
 
@@ -144,8 +144,8 @@ func (srv *Service) UpdateEventRule(ctx *common.UserInfoCtx, bucketName string, 
 
 	info, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		log.Error("failed to get bucket", zap.Error(err))
-		return common.ErrInvalidParams
+		srv.logger.Error("failed to get bucket", zap.Error(err))
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 	if info == nil {
 		return common.BucketNotFoundErr
@@ -153,8 +153,8 @@ func (srv *Service) UpdateEventRule(ctx *common.UserInfoCtx, bucketName string, 
 
 	rule, err := srv.eventRuleRepo.GetByID(ctx, ruleID)
 	if err != nil {
-		log.Error("failed to get event rule", zap.Error(err))
-		return common.ErrInternalServer
+		srv.logger.Error("failed to get event rule", zap.Error(err))
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.ErrInternalServer, common.EventRuleNotFound)
 	}
 	if rule == nil || rule.BucketID != info.ID {
 		return common.EventRuleNotFound
@@ -189,7 +189,7 @@ func (srv *Service) UpdateEventRule(ctx *common.UserInfoCtx, bucketName string, 
 
 	err = srv.eventRuleRepo.UpdateEventRule(ctx, ruleID, update)
 	if err != nil {
-		log.Error("failed to update event rule", zap.Error(err))
+		srv.logger.Error("failed to update event rule", zap.Error(err))
 		return common.ErrInternalServer
 	}
 
@@ -200,8 +200,8 @@ func (srv *Service) UpdateEventRule(ctx *common.UserInfoCtx, bucketName string, 
 func (srv *Service) DeleteEventRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64) common.Errno {
 	info, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		log.Error("failed to get bucket", zap.Error(err))
-		return common.ErrInvalidParams
+		srv.logger.Error("failed to get bucket", zap.Error(err))
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 	if info == nil {
 		return common.BucketNotFoundErr
@@ -209,8 +209,8 @@ func (srv *Service) DeleteEventRule(ctx *common.UserInfoCtx, bucketName string, 
 
 	rule, err := srv.eventRuleRepo.GetByID(ctx, ruleID)
 	if err != nil {
-		log.Error("failed to get event rule", zap.Error(err))
-		return common.ErrInternalServer
+		srv.logger.Error("failed to get event rule", zap.Error(err))
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.ErrInternalServer, common.EventRuleNotFound)
 	}
 	if rule == nil || rule.BucketID != info.ID {
 		return common.EventRuleNotFound
@@ -218,7 +218,7 @@ func (srv *Service) DeleteEventRule(ctx *common.UserInfoCtx, bucketName string, 
 
 	err = srv.eventRuleRepo.DeleteEventRule(ctx, ruleID)
 	if err != nil {
-		log.Error("failed to delete event rule", zap.Error(err))
+		srv.logger.Error("failed to delete event rule", zap.Error(err))
 		return common.ErrInternalServer
 	}
 
@@ -230,7 +230,7 @@ func (srv *Service) TriggerEvent(ctx context.Context, bucketID int64, eventType 
 	// 获取匹配的规则
 	rules, err := srv.eventRuleRepo.ListActiveRulesByBucketID(ctx, bucketID)
 	if err != nil {
-		log.Error("failed to list active event rules", zap.Error(err))
+		srv.logger.Error("failed to list active event rules", zap.Error(err))
 		return
 	}
 
@@ -256,12 +256,12 @@ func (srv *Service) TriggerEvent(ctx context.Context, bucketID int64, eventType 
 
 		deliveryID, err := srv.eventDeliveryRepo.CreateEventDelivery(ctx, delivery)
 		if err != nil {
-			log.Error("failed to create event delivery", zap.Error(err))
+			srv.logger.Error("failed to create event delivery", zap.Error(err))
 			continue
 		}
 
 		if err := srv.eventQueue.EnqueueDeliveryID(ctx, deliveryID); err != nil {
-			log.Error("failed to enqueue event delivery trigger", zap.Int64("delivery_id", deliveryID), zap.Error(err))
+			srv.logger.Error("failed to enqueue event delivery trigger", zap.Int64("delivery_id", deliveryID), zap.Error(err))
 		}
 	}
 }

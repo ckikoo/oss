@@ -12,17 +12,22 @@ import (
 	"oss/common"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/utils/logger"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
 	repo       policyRepo.IPolicyRepo
 	bucketRepo bucketRepo.IBucketRepo
+	logger     *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		repo:       gormPolicy.NewPolicyRepo(adaptor.GetGORM()),
-		bucketRepo: gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		bucketRepo: gormBucket.NewBucketRepo(adaptor),
+		logger:     logger.GetLogger().With(zap.String("module", "policy")),
 	}
 }
 
@@ -51,7 +56,10 @@ func (srv *Service) CreateBucketPolicy(ctx *common.UserInfoCtx, bucketName strin
 
 	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucketDo == nil {
+		return nil, common.BucketNotFoundErr
 	}
 
 	principals := make([]*do.PolicyPrincipalDo, 0, len(req.Principals))
@@ -80,7 +88,7 @@ func (srv *Service) CreateBucketPolicy(ctx *common.UserInfoCtx, bucketName strin
 		Conditions: conditions,
 	})
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	now := time.Now().UnixMilli()
@@ -101,12 +109,15 @@ func (srv *Service) ListBucketPolicies(ctx *common.UserInfoCtx, bucketName strin
 
 	bucketDo, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucketDo == nil {
+		return nil, common.BucketNotFoundErr
 	}
 
 	policies, err := srv.repo.ListBucketPolicies(ctx, bucketDo.ID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	items := make([]*dto.BucketPolicyItem, 0, len(policies))

@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/accesskey"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/consts"
 	"oss/service/do"
 	"time"
@@ -70,7 +71,7 @@ func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccess
 	qs := query.Use(r.db).AccessKey.WithContext(ctx)
 	err := qs.Create(modelAK)
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 	return modelAK.ID, nil
 }
@@ -80,7 +81,7 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 	qs := q.AccessKey.WithContext(ctx)
 	modelAK, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 	return r.toAccessKeyDo(modelAK), nil
 }
@@ -103,7 +104,7 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 	}
 	modelAKs, err := qs.Order(q.AccessKey.ID.Desc()).Find()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 	doAKs := make([]*do.AccessKeyDo, len(modelAKs))
 	for i, modelAK := range modelAKs {
@@ -117,7 +118,7 @@ func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, stat
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Update(q.AccessKey.Status, status)
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 	return r.GetByAccessKey(ctx, accessKey)
 }
@@ -126,5 +127,5 @@ func (r *AccessKeyRepo) DeleteAccessKey(ctx context.Context, accessKey string) e
 	q := query.Use(r.db)
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Delete()
-	return err
+	return repoerr.Wrap(err)
 }

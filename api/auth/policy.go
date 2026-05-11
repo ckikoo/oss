@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/dto"
@@ -14,8 +15,10 @@ type PolicyCtrl struct {
 	policy *policy.Service
 }
 
-func NewPolicyCtrl(service *policy.Service) *PolicyCtrl {
-	return &PolicyCtrl{policy: service}
+var _ IPolicyHandler = (*PolicyCtrl)(nil)
+
+func NewPolicyCtrl(adaptor adaptor.IAdaptor) IPolicyHandler {
+	return &PolicyCtrl{policy: policy.NewService(adaptor)}
 }
 
 func (ctrl *PolicyCtrl) CreateBucketPolicy(ctx context.Context, c *app.RequestContext) {

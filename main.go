@@ -44,7 +44,9 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
 	h := server.Default(server.WithHostPorts(address))
-	router.RegisterRoutes(h, newAdaptor)
+
+	deps := router.NewRouterDeps(newAdaptor)
+	router.RegisterRoutes(h, deps, newAdaptor)
 
 	// 启动后台定时任务，并在异常退出时重启
 	ctx := context.Background()

@@ -16,7 +16,9 @@ type AuditCtrl struct {
 	service *audit.Service
 }
 
-func NewAuditCtrl(adaptor adaptor.IAdaptor) *AuditCtrl {
+var _ IAuditHandler = (*AuditCtrl)(nil)
+
+func NewAuditCtrl(adaptor adaptor.IAdaptor) IAuditHandler {
 	return &AuditCtrl{service: audit.NewService(adaptor)}
 }
 

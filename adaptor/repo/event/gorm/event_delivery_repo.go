@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/event"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
@@ -39,7 +40,7 @@ func (r *eventDeliveryRepo) CreateEventDelivery(ctx context.Context, delivery *d
 
 	err := q.WithContext(ctx).Create(model)
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 
 	return model.ID, nil
@@ -54,7 +55,7 @@ func (r *eventDeliveryRepo) GetPendingDeliveries(ctx context.Context, limit int)
 		Limit(limit).
 		Find(&models).Error
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	deliveries := make([]*do.EventDeliveryDo, 0, len(models))
@@ -85,7 +86,7 @@ func (r *eventDeliveryRepo) GetEventDeliveryByID(ctx context.Context, deliveryID
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	return &do.EventDeliveryDo{
@@ -126,7 +127,7 @@ func (r *eventDeliveryRepo) UpdateEventDelivery(ctx context.Context, deliveryID 
 
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(deliveryID)).Updates(model)
 	if err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 	return nil
 }
@@ -134,5 +135,5 @@ func (r *eventDeliveryRepo) UpdateEventDelivery(ctx context.Context, deliveryID 
 func (r *eventDeliveryRepo) DeleteEventDelivery(ctx context.Context, deliveryID int64) error {
 	q := query.Use(r.db).EventDelivery
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(deliveryID)).Delete()
-	return err
+	return repoerr.Wrap(err)
 }

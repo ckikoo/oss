@@ -16,7 +16,9 @@ type EventCtrl struct {
 	event *event.Service
 }
 
-func NewEventCtrl(adaptor adaptor.IAdaptor) *EventCtrl {
+var _ IEventHandler = (*EventCtrl)(nil)
+
+func NewEventCtrl(adaptor adaptor.IAdaptor) IEventHandler {
 	return &EventCtrl{
 		event: event.NewService(adaptor),
 	}

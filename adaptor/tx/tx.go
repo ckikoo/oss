@@ -9,5 +9,5 @@ type Tx interface{}
 // ITxManager 事务管理器接口
 // 仅暴露 RunInTx，不提供具体数据库类型。
 type ITxManager interface {
-	RunInTx(ctx context.Context, fn func(tx Tx) error) error
+	RunInTx(ctx context.Context, fn func(context.Context, Tx) error) error
 }

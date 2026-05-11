@@ -2,10 +2,12 @@ package object
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"sort"
+	"strings"
 	"time"
 
 	"oss/adaptor"
@@ -14,12 +16,15 @@ import (
 	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/lifecycle"
+	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
 	"oss/adaptor/repo/metering"
 	gormMetering "oss/adaptor/repo/metering/gorm"
 	Imultipart "oss/adaptor/repo/multipart"
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/storage"
 	"oss/adaptor/tx"
 	"oss/common"
@@ -48,6 +53,9 @@ type Service struct {
 	storage       storage.IStorage
 	eventService  *event.Service
 	locker        redis.ILock
+	logger        *zap.Logger
+	lifecycleRepo lifecycle.ILifecycleRepo
+	lifeRedis     redis.ILifecycle
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -55,12 +63,15 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		txManger:      adaptor.GetTxManager(),
 		adaptor:       adaptor,
 		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
-		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
-		bucketRepo:    gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		objRepo:       gormObject.NewObjectRepo(adaptor),
+		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
 		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
 		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
 		storage:       adaptor.GetStorage(),
 		eventService:  event.NewService(adaptor),
+		logger:        logger.GetLogger().With(zap.String("module", "object")),
+		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
+		lifeRedis:     redis.NewLifecycle(adaptor),
 	}
 }
 
@@ -71,7 +82,7 @@ func (srv *Service) ListObjects(ctx *common.UserInfoCtx, req *dto.ListObjectsReq
 
 	objects, err := srv.objRepo.ListByFilter(ctx, req.BucketName, req.Prefix, req.Delimiter, req.Marker, req.MaxKeys, req.VersionID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	items := make([]*dto.ObjectItem, 0, len(objects))
@@ -102,7 +113,7 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 
 	if bucket == nil {
@@ -111,7 +122,7 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
-		return nil, common.ResouceNotFoundErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
 
 	metadata := ""
@@ -140,12 +151,19 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
-		return nil, common.ParamErr.WithMsg("bucket not found")
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucket == nil {
+		return nil, common.BucketNotFoundErr
 	}
 	bucketID := bucket.ID
 
 	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, file.Size, 0, 1, 0, 0); err != nil {
-		logger.Error("object PutObject meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("req", gconv.String(req)), zap.Int64("uploadSize", (file.Size)))
+		srv.logger.Error("object PutObject meteringRepo.UpdateDailyMetrics error",
+			zap.Error(err),
+			zap.String("req", gconv.String(req)),
+			zap.Int64("uploadSize", file.Size),
+		)
 	}
 
 	// Generate object key hash
@@ -157,8 +175,8 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		BucketName:    req.BucketName,
 		ObjectKeyHash: objectKeyHash,
 	})
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, common.DatabaseErr.WithErr(err)
+	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	// TODO 应该支持覆盖才对
@@ -166,9 +184,14 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.FileNameExists
 	}
 
+	rules, err := srv.lifecycleRepo.ListLifecycleRules(ctx, bucket.ID)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if uInfo.StorageQuota != 0 && uInfo.StorageUsed+file.Size > uInfo.StorageQuota {
@@ -228,7 +251,49 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	_, err = srv.objRepo.CreateObject(ctx, createObj)
 	if err != nil {
 		srv.storage.Delete(ctx, putResult.StoragePath)
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	now := time.Now()
+	for _, rule := range rules {
+		if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
+			executeTime := now.AddDate(0, 0, int(*rule.TransitionDays))
+			prefix := ""
+			if rule.Prefix != nil {
+				prefix = *rule.Prefix
+			}
+			// objectKey 匹配 prefix 才挂载
+			if strings.HasPrefix(req.ObjectKey, prefix) {
+				srv.lifeRedis.SetLifecycleEvent(
+					ctx,
+					bucket.ID,
+					rule.ID,
+					prefix,
+					"transition",
+					req.ObjectKey,
+					executeTime, // now + 30d
+				)
+			}
+		}
+
+		if rule.ExpirationDays != nil && *rule.ExpirationDays > 0 {
+			executeTime := now.AddDate(0, 0, int(*rule.ExpirationDays))
+			prefix := ""
+			if rule.Prefix != nil {
+				prefix = *rule.Prefix
+			}
+			if strings.HasPrefix(req.ObjectKey, prefix) {
+				srv.lifeRedis.SetLifecycleEvent(
+					ctx,
+					bucket.ID,
+					rule.ID,
+					prefix,
+					"expiration",
+					req.ObjectKey,
+					executeTime, // now + 180d
+				)
+			}
+		}
 	}
 
 	// 触发事件
@@ -253,7 +318,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
 
 	// Set response headers
@@ -326,11 +391,14 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 func (srv *Service) incrementGetObjectMetering(ctx *common.UserInfoCtx, obj *do.ObjectDo, transmittedBytes int64) common.Errno {
 	bucket, err := srv.bucketRepo.GetByID(ctx, obj.BucketID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucket == nil {
+		return common.BucketNotFoundErr
 	}
 
 	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, 0, transmittedBytes, 1, 0, 0); err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 	return common.OK
 }
@@ -370,35 +438,38 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 	// ── Step 1: 读操作移出事务，各用独立连接 ──────────────────
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
 
 	bucket, err := srv.bucketRepo.GetByUserAndName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 
 	// ── Step 2: 业务校验在事务外，不占连接 ────────────────────
+	if bucket == nil {
+		return common.BucketNotFoundErr
+	}
 	if obj.BucketID != bucket.ID {
 		return common.AuthErr
 	}
 
-	err = srv.txManger.RunInTx(ctx, func(tx tx.Tx) error {
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 
-		if err := srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
+		if err := srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
 			return err
 		}
 
-		if err := srv.objRepo.WithTx(tx).DeleteObject(ctx, bucketName, objectKey, versionID); err != nil {
+		if err := srv.objRepo.WithTx(tx).DeleteObject(ctx1, bucketName, objectKey, versionID); err != nil {
 			return err
 		}
 
-		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, -obj.Size); err != nil {
+		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -obj.Size); err != nil {
 			return err
 		}
 
 		if obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
-			if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx, ctx.UserID, *obj.UploadID); err != nil {
+			if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *obj.UploadID); err != nil {
 				return err
 			}
 		}
@@ -407,18 +478,18 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 	})
 
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	// 对文件进行删除
 	// TODO 需要引入一个sanbox 异步执行删除，避免删除文件的慢操作影响用户体验，目前mvp 先同步删除，后续优化
 	if obj != nil && obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
 		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
-			logger.GetLogger().Error("failed to delete multipart storage parts", zap.String("upload_id", *obj.UploadID), zap.Error(err))
+			srv.logger.Error("failed to delete multipart storage parts", zap.String("upload_id", *obj.UploadID), zap.Error(err))
 		}
 	} else if obj != nil && obj.StoragePath != nil {
 		if err := srv.storage.Delete(ctx, *obj.StoragePath); err != nil {
-			logger.GetLogger().Error("failed to delete object storage file", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
+			srv.logger.Error("failed to delete object storage file", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
 		}
 	}
 
@@ -441,7 +512,7 @@ func (srv *Service) streamMultipartObject(ctx *common.UserInfoCtx, obj *do.Objec
 	// 获取所有分片
 	parts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, *obj.UploadID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if len(parts) == 0 {

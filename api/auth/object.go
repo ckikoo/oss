@@ -16,7 +16,9 @@ type ObjectCtrl struct {
 	object *object.Service
 }
 
-func NewObjectCtrl(adaptor adaptor.IAdaptor) *ObjectCtrl {
+var _ IObjectHandler = (*ObjectCtrl)(nil)
+
+func NewObjectCtrl(adaptor adaptor.IAdaptor) IObjectHandler {
 	return &ObjectCtrl{object: object.NewService(adaptor)}
 }
 

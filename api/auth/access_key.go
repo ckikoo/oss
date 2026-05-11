@@ -15,7 +15,9 @@ type Ctrl struct {
 	auth *accesskey.Service
 }
 
-func NewCtrl(adaptor adaptor.IAdaptor) *Ctrl {
+var _ IAccessKeyHandler = (*Ctrl)(nil)
+
+func NewCtrl(adaptor adaptor.IAdaptor) IAccessKeyHandler {
 	return &Ctrl{auth: accesskey.NewService(adaptor)}
 }
 

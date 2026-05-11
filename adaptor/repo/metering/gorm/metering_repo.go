@@ -8,6 +8,7 @@ import (
 	"oss/adaptor/repo/metering"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 
 	"gorm.io/gorm"
@@ -31,7 +32,7 @@ func (r *MeteringRepo) UpdateDailyMetrics(ctx context.Context, userID int64, buc
 		return fmt.Errorf("user_id must be positive")
 	}
 	if err := r.upsertDailyMetrics(ctx, r.db.WithContext(ctx), userID, bucketID, statDate, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount); err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 	if bucketID != nil {
 		return r.upsertDailyMetrics(ctx, r.db.WithContext(ctx), userID, nil, statDate, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount)
@@ -44,7 +45,7 @@ func (r *MeteringRepo) UpdateDailyMetricsWithTx(tx *gorm.DB, ctx context.Context
 		return fmt.Errorf("user_id must be positive")
 	}
 	if err := r.upsertDailyMetrics(ctx, tx.WithContext(ctx), userID, bucketID, statDate, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount); err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 	if bucketID != nil {
 		return r.upsertDailyMetrics(ctx, tx.WithContext(ctx), userID, nil, statDate, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount)
@@ -77,7 +78,7 @@ func (r *MeteringRepo) upsertDailyMetrics(ctx context.Context, db *gorm.DB, user
 		deltaPutRequestCount,
 		deltaDelRequestCount,
 	)
-	return result.Error
+	return repoerr.Wrap(result.Error)
 }
 
 func (r *MeteringRepo) ListDailyMetrics(ctx context.Context, userID int64, bucketID int64, hasBucketID bool, dateFrom, dateTo *time.Time) ([]*model.MeteringDaily, error) {
@@ -100,5 +101,9 @@ func (r *MeteringRepo) ListDailyMetrics(ctx context.Context, userID int64, bucke
 		qs = qs.Where(q.MeteringDaily.StatDate.Lte(*dateTo))
 	}
 	qs = qs.Order(q.MeteringDaily.StatDate)
-	return qs.Find()
+	item, err := qs.Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+	return item, nil
 }

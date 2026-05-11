@@ -132,9 +132,16 @@ default:
 ```go
 // ✅ 错误包装保留调用链（模块.方法: 动作）
 if err := srv.repo.Create(ctx, obj); err != nil {
-  return fmt.Errorf("objectService.PutObject: create record: %w", err)
+  srv.logger.Error("objectService.PutObject: create record failed",
+    zap.Error(err),
+    zap.String("bucket_name", req.BucketName),
+    zap.String("object_key", req.ObjectKey),
+    zap.Int64("user_id", ctx.UserID),
+  )
+  return common.DatabaseErr.WithErr(err)
 }
 
+// ✅ 日志级别按语义选用：数据库写失败通常用 Error；非致命校验可用 Warn
 // ✅ Service boundary：只用 repoerr 哨兵，不碰任何 ORM 类型
 // repoerr 是 repo 层对外的错误契约，切库时只改 repo 实现，service 不动
 func toErrno(err error) common.Errno {
@@ -215,11 +222,8 @@ func (h *BucketHandler) CreateBucket(ctx context.Context, c *app.RequestContext)
   userCtx := middleware.MustUserInfo(c)
 
   result, errno := h.svc.CreateBucket(ctx, userCtx, &req)
-  if errno.NotOk() {
-    c.JSON(errno.HTTPCode(), resp.NewErrResp(errno))
-    return
-  }
-  c.JSON(200, resp.NewSuccessResp(result))
+
+  api.WriteResp(c, result, errno)
 }
 ```
 
@@ -351,6 +355,14 @@ type IBucketRepo interface {
   UpdateStats(ctx context.Context, userID int64, name string, objDelta, sizeDelta int64) error
   Delete(ctx context.Context, userID int64, name string) error
 }
+// consts/cache_keys.go  ← 全项目共用
+
+const cacheKeyBucket = "oss:bucket:%d:%s"
+
+func BucketCacheKey(userID int64, name string) string {
+    return fmt.Sprintf(cacheKeyBucket, userID, name)
+}
+
 
 // adaptor/repo/bucket/bucket_repo.go
 type bucketRepo struct {
@@ -380,6 +392,13 @@ func (r *bucketRepo) Create(ctx context.Context, b *do.CreateBucket) (*do.Bucket
 }
 
 func (r *bucketRepo) ExistsByName(ctx context.Context, userID int64, name string) (bool, error) {
+  key := BucketCacheKey(userID, name)
+  if exists, err := r.rds.Exists(ctx, key).Result(); err != nil {
+    return false, err
+  } else if exists == 1 {
+    return true, nil
+  }
+
   var count int64
   err := r.db.WithContext(ctx).Model(&model.Bucket{}).
     Where("user_id = ? AND bucket_name = ?", userID, name).
@@ -390,6 +409,7 @@ func (r *bucketRepo) ExistsByName(ctx context.Context, userID int64, name string
   return count > 0, nil
 }
 
+// 不使用redis 优化
 func (r *bucketRepo) ListByUser(ctx context.Context, userID int64) ([]*do.BucketDo, error) {
   var rows []model.Bucket
   if err := r.db.WithContext(ctx).

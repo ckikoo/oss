@@ -8,6 +8,7 @@ import (
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/policy"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/service/do"
 	"oss/utils/pool"
@@ -147,25 +148,25 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 
 			principals, err := localQ.PolicyPrincipal.WithContext(ctx).Where(localQ.PolicyPrincipal.PolicyID.Eq(modelPolicy.ID)).Find()
 			if err != nil {
-				setErr(err)
+				setErr(repoerr.Wrap(err))
 				return
 			}
 
 			actions, err := localQ.PolicyAction.WithContext(ctx).Where(localQ.PolicyAction.PolicyID.Eq(modelPolicy.ID)).Find()
 			if err != nil {
-				setErr(err)
+				setErr(repoerr.Wrap(err))
 				return
 			}
 
 			resources, err := localQ.PolicyResource.WithContext(ctx).Where(localQ.PolicyResource.PolicyID.Eq(modelPolicy.ID)).Find()
 			if err != nil {
-				setErr(err)
+				setErr(repoerr.Wrap(err))
 				return
 			}
 
 			conditions, err := localQ.PolicyCondition.WithContext(ctx).Where(localQ.PolicyCondition.PolicyID.Eq(modelPolicy.ID)).Find()
 			if err != nil {
-				setErr(err)
+				setErr(repoerr.Wrap(err))
 				return
 			}
 
@@ -208,7 +209,7 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 				Conditions: conditionItems,
 			}
 		}); err != nil {
-			setErr(err)
+			setErr(repoerr.Wrap(err))
 		}
 	}
 

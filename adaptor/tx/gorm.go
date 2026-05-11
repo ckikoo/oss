@@ -16,8 +16,8 @@ func NewGormTxManager(db *gorm.DB) ITxManager {
 	return &GormTxManager{db: db}
 }
 
-func (t *GormTxManager) RunInTx(ctx context.Context, fn func(tx Tx) error) error {
+func (t *GormTxManager) RunInTx(ctx context.Context, fn func(context.Context, Tx) error) error {
 	return t.db.WithContext(ctx).Transaction(func(gormTx *gorm.DB) error {
-		return fn(gormTx)
+		return fn(ctx, gormTx)
 	})
 }

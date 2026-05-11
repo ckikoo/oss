@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/event"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/service/do"
 
@@ -40,7 +41,7 @@ func (r *eventRuleRepo) CreateEventRule(ctx context.Context, rule *do.EventRuleD
 
 	err := q.WithContext(ctx).Create(model)
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 
 	return model.ID, nil
@@ -55,7 +56,7 @@ func (r *eventRuleRepo) GetByID(ctx context.Context, ruleID int64) (*do.EventRul
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	return &do.EventRuleDo{
@@ -81,7 +82,7 @@ func (r *eventRuleRepo) GetByBucketIDAndRuleName(ctx context.Context, bucketID i
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	return &do.EventRuleDo{
@@ -104,7 +105,7 @@ func (r *eventRuleRepo) ListByBucketID(ctx context.Context, bucketID int64) ([]*
 	q := query.Use(r.db).EventRule
 	list, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID)).Order(q.CreatedAt.Desc()).Find()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	rules := make([]*do.EventRuleDo, 0, len(list))
@@ -133,7 +134,7 @@ func (r *eventRuleRepo) ListActiveRulesByBucketID(ctx context.Context, bucketID 
 
 	models, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID), (q.Status.Eq(1))).Find()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	rules := make([]*do.EventRuleDo, 0, len(models))
@@ -188,7 +189,7 @@ func (r *eventRuleRepo) UpdateEventRule(ctx context.Context, ruleID int64, updat
 
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(ruleID)).Updates(model)
 	if err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 	return nil
 }
@@ -198,7 +199,7 @@ func (r *eventRuleRepo) DeleteEventRule(ctx context.Context, ruleID int64) error
 
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(ruleID)).Delete()
 	if err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 	return nil
 }

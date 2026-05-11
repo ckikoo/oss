@@ -8,14 +8,21 @@ import (
 	"oss/adaptor/repo/metering/gorm"
 	"oss/common"
 	"oss/service/dto"
+	"oss/utils/logger"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
-	repo metering.IMeteringRepo
+	repo   metering.IMeteringRepo
+	logger *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: gorm.NewMeteringRepo(adaptor.GetGORM())}
+	return &Service{
+		repo:   gorm.NewMeteringRepo(adaptor.GetGORM()),
+		logger: logger.GetLogger().With(zap.String("module", "metering")),
+	}
 }
 
 func (srv *Service) ListDailyMetrics(ctx *common.UserInfoCtx, req *dto.ListDailyMeteringReq) (*dto.ListDailyMeteringResp, common.Errno) {
@@ -39,7 +46,7 @@ func (srv *Service) ListDailyMetrics(ctx *common.UserInfoCtx, req *dto.ListDaily
 	hasBucketID := req.BucketID != 0
 	results, err := srv.repo.ListDailyMetrics(ctx, ctx.UserID, req.BucketID, hasBucketID, dateFrom, dateTo)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	items := make([]*dto.MeteringDailyItem, 0, len(results))

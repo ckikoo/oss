@@ -18,6 +18,10 @@ type ILifecycle interface {
 	GetPendingLifecycleEvents(ctx context.Context, bucketID int64, ruleID int64, prefix string, operation string) ([]string, error)
 	// 删除已处理的生命周期事件
 	DelLifecycleEvent(ctx context.Context, bucketID int64, ruleID int64, prefix string, operation string, objectKey string) error
+
+	// 新增：清除某条规则的所有 Redis 事件（规则删除/天数变更时用）
+
+	ClearRuleEvents(ctx context.Context, bucketID, ruleID int64, prefix string) error
 }
 
 type lifeCycle struct {
@@ -73,4 +77,10 @@ func (l *lifeCycle) DelLifecycleEvent(ctx context.Context, bucketID int64, ruleI
 		return err
 	}
 	return nil
+}
+
+func (l *lifeCycle) ClearRuleEvents(ctx context.Context, bucketID, ruleID int64, prefix string) error {
+	transitionKey := getRedisKey(bucketID, ruleID, prefix, "transition")
+	expirationKey := getRedisKey(bucketID, ruleID, prefix, "expiration")
+	return l.redis.Del(ctx, transitionKey, expirationKey).Err()
 }

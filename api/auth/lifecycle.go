@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 
+	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/dto"
@@ -16,8 +17,10 @@ type LifecycleCtrl struct {
 	lifecycle *lifecycle.Service
 }
 
-func NewLifecycleCtrl(service *lifecycle.Service) *LifecycleCtrl {
-	return &LifecycleCtrl{lifecycle: service}
+var _ ILifecycleHandler = (*LifecycleCtrl)(nil)
+
+func NewLifecycleCtrl(adaptor adaptor.IAdaptor) ILifecycleHandler {
+	return &LifecycleCtrl{lifecycle: lifecycle.NewService(adaptor)}
 }
 
 func (ctrl *LifecycleCtrl) CreateLifecycleRule(ctx context.Context, c *app.RequestContext) {

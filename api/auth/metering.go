@@ -12,15 +12,16 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
-type MeteringCtrl struct {
+type MeteringHandler struct {
 	service *metering.Service
 }
 
-func NewMeteringCtrl(adaptor adaptor.IAdaptor) *MeteringCtrl {
-	return &MeteringCtrl{service: metering.NewService(adaptor)}
-}
+var _ IMeteringHandler = (*MeteringHandler)(nil)
 
-func (ctrl *MeteringCtrl) GetDailyMetering(ctx context.Context, c *app.RequestContext) {
+func NewMeteringCtrl(adaptor adaptor.IAdaptor) IMeteringHandler {
+	return &MeteringHandler{service: metering.NewService(adaptor)}
+}
+func (ctrl *MeteringHandler) GetDailyMetering(ctx context.Context, c *app.RequestContext) {
 	req := &dto.ListDailyMeteringReq{}
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))

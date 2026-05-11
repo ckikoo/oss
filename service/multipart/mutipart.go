@@ -2,6 +2,7 @@ package multipart
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"oss/adaptor"
 	"oss/adaptor/redis"
@@ -17,6 +18,7 @@ import (
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/storage"
 	"oss/adaptor/tx"
 	"oss/common"
@@ -50,14 +52,15 @@ type Service struct {
 	eventService  *event.Service
 	tokenRedis    redis.IToken
 	meteringRepo  metering.IMeteringRepo
+	logger        *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		txManger:      adaptor.GetTxManager(),
 		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
-		objRepo:       gormObject.NewObjectRepo(adaptor.GetGORM()),
-		bucketRepo:    gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		objRepo:       gormObject.NewObjectRepo(adaptor),
+		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
 		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
 		rdsmultipart:  redis.NewMultipart(adaptor),
 		storage:       adaptor.GetStorage(),
@@ -66,6 +69,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		eventService:  event.NewService(adaptor),
 		tokenRedis:    redis.NewToken(adaptor),
 		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		logger:        logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -79,12 +83,15 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		return nil, common.DatabaseErr.WithMsg("bucket not found")
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucket == nil {
+		return nil, common.BucketNotFoundErr
 	}
 
 	temp, err := srv.objRepo.GetByKey(ctx, bucketName, req.ObjectKey, "")
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, common.DatabaseErr.WithErr(err)
+	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if temp != nil && req.Overwrite == false {
@@ -93,7 +100,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if uInfo.StorageQuota > 0 && uInfo.StorageUsed+req.FileSize > uInfo.StorageQuota {
@@ -136,12 +143,12 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 	}()
 
 	if _, err = srv.multipartRepo.CreateMultipartUpload(ctx, createUpload); err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, uploadID, createUpload.ExpiresAt)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.CreateMultipartUploadResp{
@@ -179,12 +186,12 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		logger.Error("UploadMultipartPart buckcetRepo.GetByName error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+		srv.logger.Error("UploadMultipartPart bucketRepo.GetByName error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
 	}
 
 	if bucket != nil {
 		if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, int64(len(data)), 0, 1, 0, 0); err != nil {
-			logger.Error("UploadMultipartPart meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+			srv.logger.Error("UploadMultipartPart meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
 		}
 	}
 
@@ -201,12 +208,15 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.FileUploadIdNotFound)
+	}
+	if upload == nil {
+		return nil, common.FileUploadIdNotFound
 	}
 
 	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
@@ -244,14 +254,14 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	_, err = srv.multipartRepo.CreateOrUpdateMultipartPart(ctx, part)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	lastActive := time.Now()
 	update := &do.UpdateMultipartUpload{LastActiveAt: &lastActive}
 
 	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.UploadMultipartPartResp{
@@ -276,12 +286,12 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.ParamErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.FileUploadIdNotFound)
 	}
 
 	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if upload.Status != consts.MultipartUploadStatusUploading {
@@ -290,7 +300,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	storedParts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if len(storedParts) == 0 {
@@ -389,13 +399,13 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		},
 	})
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	if err := srv.publishTask(ctx, consts.TaskTypePhysicalMerge, uploadID, objectID); err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	// 触发事件
@@ -445,7 +455,7 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 
 	upload, err := srv.multipartRepo.GetMultipartUploadByID(ctx, ctx.UserID, uploadID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.FileUploadIdNotFound)
 	}
 
 	if upload.Status != consts.MultipartUploadStatusUploading {
@@ -458,13 +468,13 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 		Status:       &statusAborted,
 		LastActiveAt: &lastActive,
 	}); err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
 	if err = srv.publishTask(ctx, consts.TaskTypeAbortMultipart, uploadID, 0); err != nil {
-		return common.DatabaseErr.WithErr(err)
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return common.OK

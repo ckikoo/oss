@@ -5,6 +5,7 @@ import (
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
+	"oss/consts"
 	"oss/service/bucket"
 	"oss/service/dto"
 
@@ -15,7 +16,9 @@ type BucketCtrl struct {
 	bucket *bucket.Service
 }
 
-func NewBucketCtrl(adaptor adaptor.IAdaptor) *BucketCtrl {
+var _ IBucketHandler = (*BucketCtrl)(nil)
+
+func NewBucketCtrl(adaptor adaptor.IAdaptor) IBucketHandler {
 	return &BucketCtrl{bucket: bucket.NewService(adaptor)}
 }
 
@@ -32,6 +35,7 @@ func (ctrl *BucketCtrl) CreateBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
+	req.UserID = ctx1.UserID
 	resp, errno := ctrl.bucket.CreateBucket(ctx1, req)
 	api.WriteResp(c, resp, errno)
 }
@@ -107,6 +111,19 @@ func (ctrl *BucketCtrl) DeleteBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
-	errno := ctrl.bucket.DeleteBucket(ctx1, bucketName)
+	bucket, ok := c.Get(consts.BucketContext)
+	if !ok {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket not found"))
+		return
+	}
+
+	bucketDo, ok := bucket.(*dto.BucketItem)
+	if !ok {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("invalid bucket info"))
+		return
+	}
+
+	errno := ctrl.bucket.DeleteBucket(ctx1, bucketDo.ID, bucketName)
 	api.WriteResp(c, nil, errno)
+
 }

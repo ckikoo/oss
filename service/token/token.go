@@ -12,12 +12,13 @@ import (
 	"oss/common"
 	"oss/consts"
 	"oss/service/dto"
+	"oss/utils/logger"
 	"oss/utils/tools"
 	"strings"
 	"time"
 
 	"github.com/gogf/gf/util/gconv"
-	"gorm.io/gorm"
+	"go.uber.org/zap"
 )
 
 type Service struct {
@@ -25,14 +26,16 @@ type Service struct {
 	bucket  bucket.IBucketRepo
 	access  accesskey.IAccessKeyRepo
 	rds     redis.IToken
+	logger  *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		adaptor: adaptor,
-		bucket:  gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		bucket:  gormBucket.NewBucketRepo(adaptor),
 		access:  gormAccessKey.NewAccessKeyRepo(adaptor.GetGORM()),
 		rds:     redis.NewToken(adaptor),
+		logger:  logger.GetLogger().With(zap.String("module", "token")),
 	}
 }
 
@@ -42,16 +45,18 @@ func (s *Service) CreateUploadToken(ctx *common.UserInfoCtx, req *dto.CreateUplo
 
 	accessInfo, err := s.access.GetByAccessKey(ctx, ctx.AccessKey)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		s.logger.Error("CreateUploadToken failed to get access key", zap.Error(err), zap.String("access_key", ctx.AccessKey))
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	bucketInfo, err := s.bucket.GetByName(ctx, accessInfo.UserID, req.BucketName)
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, common.DatabaseErr.WithErr(err)
+	if err != nil {
+		s.logger.Error("CreateUploadToken failed to get bucket", zap.Error(err), zap.String("bucket_name", req.BucketName))
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 
 	if bucketInfo == nil {
-		return nil, common.ParamErr.WithMsg("bucket not exist")
+		return nil, common.BucketNotFoundErr
 	}
 
 	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.UploadMethod, consts.UploadAction, expireAtUnix, ctx.SecretKey)
@@ -72,12 +77,13 @@ func (s *Service) CreateDownloadToken(ctx *common.UserInfoCtx, req *dto.CreateDo
 	expireAtUnix := expireAt.Unix()
 
 	bucketInfo, err := s.bucket.GetByName(ctx, ctx.UserID, req.BucketName)
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, common.DatabaseErr.WithErr(err)
+	if err != nil {
+		s.logger.Error("CreateDownloadToken failed to get bucket", zap.Error(err), zap.String("bucket_name", req.BucketName))
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 
 	if bucketInfo == nil {
-		return nil, common.ParamErr.WithMsg("bucket not exist")
+		return nil, common.BucketNotFoundErr
 	}
 
 	token := genToken(ctx.AccessKey, req.BucketName, req.ObjectKey, consts.DownloadMethod, consts.DownloadAction, expireAtUnix, ctx.SecretKey)

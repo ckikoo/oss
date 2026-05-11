@@ -16,7 +16,9 @@ type multipartCtrl struct {
 	object *multipart.Service
 }
 
-func NewMultipartCtrl(adaptor adaptor.IAdaptor) *multipartCtrl {
+var _ IMultipartHandler = (*multipartCtrl)(nil)
+
+func NewMultipartCtrl(adaptor adaptor.IAdaptor) IMultipartHandler {
 	return &multipartCtrl{object: multipart.NewService(adaptor)}
 }
 

@@ -64,3 +64,11 @@ type UpdateObject struct {
 	Status       *int32
 	IsMultipart  *int32
 }
+
+type ListObjectsByBucket struct {
+	BucketID   int64
+	BucketName string
+	Prefix     string
+	Offset     int
+	Limit      int
+}

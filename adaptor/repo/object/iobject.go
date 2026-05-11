@@ -15,4 +15,6 @@ type IObjectRepo interface {
 	UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error)
 	UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error
 	DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) error
+
+	ListByBucketWithPrefix(ctx context.Context, list *do.ListObjectsByBucket) ([]*do.ObjectDo, error)
 }

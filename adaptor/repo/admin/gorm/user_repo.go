@@ -5,6 +5,7 @@ import (
 	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
@@ -42,7 +43,7 @@ func (u *User) CreateUser(ctx context.Context, req *do.CreateUser) (int64, error
 
 	err := qs.WithContext(ctx).Create(user)
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 
 	return user.ID, nil
@@ -52,7 +53,7 @@ func (u *User) GetUserInfoById(ctx context.Context, id int64) (*do.UserDo, error
 
 	uinfo, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	return &do.UserDo{
@@ -70,7 +71,7 @@ func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) e
 
 	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumns(qs.StorageUsed.Add(storage))
 	if err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 
 	return nil
@@ -82,7 +83,7 @@ func (u *User) UpdateStorageUsedWithTx(tx *gorm.DB, ctx context.Context, id int6
 
 	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumns(qs.StorageUsed.Add(storage))
 	if err != nil {
-		return err
+		return repoerr.Wrap(err)
 	}
 
 	return nil

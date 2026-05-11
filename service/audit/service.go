@@ -10,14 +10,21 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/utils/logger"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
-	repo audit.IOperationLogRepo
+	repo   audit.IOperationLogRepo
+	logger *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
-	return &Service{repo: gorm.NewOperationLogRepo(adaptor.GetGORM())}
+	return &Service{
+		repo:   gorm.NewOperationLogRepo(adaptor.GetGORM()),
+		logger: logger.GetLogger().With(zap.String("module", "audit")),
+	}
 }
 
 func (srv *Service) ListOperationLogs(ctx *common.UserInfoCtx, req *dto.ListOperationLogsReq) (*dto.ListOperationLogsResp, common.Errno) {
@@ -53,7 +60,7 @@ func (srv *Service) ListOperationLogs(ctx *common.UserInfoCtx, req *dto.ListOper
 
 	logs, total, err := srv.repo.ListByFilter(ctx, filter)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	items := make([]*dto.OperationLogItem, 0, len(logs))

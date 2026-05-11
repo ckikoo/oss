@@ -2,32 +2,45 @@ package gorm
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
+	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/object"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
+	"oss/utils/logger"
 
+	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
-type ObjectRepo struct {
-	db *gorm.DB
+type objectRepo struct {
+	db  *gorm.DB
+	rds *redis.Client
 }
 
-var _ object.IObjectRepo = (*ObjectRepo)(nil)
+var _ object.IObjectRepo = (*objectRepo)(nil)
 
-func NewObjectRepo(db *gorm.DB) *ObjectRepo {
-	return &ObjectRepo{db: db}
+func NewObjectRepo(a adaptor.IAdaptor) object.IObjectRepo {
+	return &objectRepo{
+		db:  a.GetGORM(),
+		rds: a.GetRedis(),
+	}
 }
 
-func (r *ObjectRepo) WithTx(tx tx.Tx) object.IObjectRepo {
-	return &ObjectRepo{db: tx.(*gorm.DB)}
+func (r *objectRepo) WithTx(tx tx.Tx) object.IObjectRepo {
+	return &objectRepo{
+		db:  tx.(*gorm.DB),
+		rds: r.rds,
+	}
 }
-func (r *ObjectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
+func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 	return &do.ObjectDo{
 		ID:            modelObject.ID,
 		BucketID:      modelObject.BucketID,
@@ -52,7 +65,38 @@ func (r *ObjectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 	}
 }
 
-func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) (int64, error) {
+// getCachedObject retrieves object from cache
+func (r *objectRepo) getCachedObject(ctx context.Context, key string) *do.ObjectDo {
+	val, err := r.rds.Get(ctx, key).Result()
+	if err != nil {
+		return nil
+	}
+	var object do.ObjectDo
+	if err := json.Unmarshal([]byte(val), &object); err != nil {
+		// Cache corrupted, ignore
+		return nil
+	}
+	return &object
+}
+
+// setCachedObject stores object in cache with TTL
+func (r *objectRepo) setCachedObject(ctx context.Context, key string, object *do.ObjectDo) error {
+	data, err := json.Marshal(object)
+	if err != nil {
+		return repoerr.Wrap(err)
+	}
+	return repoerr.Wrap(r.rds.Set(ctx, key, data, time.Duration(consts.CacheTTLObject)*time.Second).Err())
+}
+
+// invalidateObjectCache removes related cache entries
+func (r *objectRepo) invalidateObjectCache(ctx context.Context, bucketName, objectKey, versionID string) {
+	key := consts.ObjectCacheKey(bucketName, objectKey, versionID)
+	r.rds.Del(ctx, key)
+}
+
+// repoerr.Wrap maps GORM errors to repoerr sentinels
+
+func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) (int64, error) {
 
 	var (
 		objectID int64 = 0
@@ -85,7 +129,7 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		}
 
 		if err := tx.Create(modelObject).Error; err != nil {
-			return err
+			return repoerr.Wrap(err)
 		}
 
 		objectID = modelObject.ID
@@ -95,7 +139,7 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 			qsBucket.StorageSize.ColumnName().String(): qsBucket.StorageSize.Add(object.Size),
 		})
 		if result.Error != nil {
-			return result.Error
+			return repoerr.Wrap(result.Error)
 		}
 
 		return object.CallBack(tx)
@@ -103,22 +147,28 @@ func (r *ObjectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 	})
 
 	if err != nil {
-		return 0, err
+		return 0, repoerr.Wrap(err)
 	}
 
 	return objectID, nil
 }
-func (r *ObjectRepo) GetObjectFromHashKey(ctx context.Context, req *do.GetObjectFromHashKey) (*do.ObjectDo, error) {
+func (r *objectRepo) GetObjectFromHashKey(ctx context.Context, req *do.GetObjectFromHashKey) (*do.ObjectDo, error) {
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(req.BucketName), q.Object.ObjectKeyHash.Eq(req.ObjectKeyHash))
 
 	modelObject, err := qs.First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 	return r.toObjectDo(modelObject), nil
 }
-func (r *ObjectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
+func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
+	// Try cache first
+	cacheKey := consts.ObjectCacheKey(bucketName, objectKey, versionID)
+	if cached := r.getCachedObject(ctx, cacheKey); cached != nil {
+		return cached, nil
+	}
+
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
 	if versionID != "" {
@@ -129,13 +179,20 @@ func (r *ObjectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 
 	modelObject, err := qs.First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
-	return r.toObjectDo(modelObject), nil
+	objectDo := r.toObjectDo(modelObject)
+
+	// Cache the result
+	if err := r.setCachedObject(ctx, cacheKey, objectDo); err != nil {
+		logger.GetLogger().Warn("Failed to cache object", zap.Error(err))
+	}
+
+	return objectDo, nil
 }
 
-func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
+func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.Status.Neq(consts.ObjectStatusDeleted))
 
@@ -159,7 +216,7 @@ func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 
 	modelObjects, err := qs.Order(q.Object.ObjectKey).Find()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 
 	objects := make([]*do.ObjectDo, len(modelObjects))
@@ -169,7 +226,10 @@ func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 	return objects, nil
 }
 
-func (r *ObjectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error) {
+func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error) {
+	// Invalidate cache before update
+	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
+
 	q := query.Use(r.db).Object
 
 	updates := map[string]interface{}{}
@@ -217,21 +277,31 @@ func (r *ObjectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 
 	_, err := qs.Updates(updates)
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
+
+	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
+
 	return r.GetByKey(ctx, bucketName, objectKey, versionID)
 }
 
-func (r *ObjectRepo) UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error {
+func (r *objectRepo) UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error {
+	// Invalidate cache for all versions
+	r.invalidateObjectCache(ctx, bucketName, objectKey, "") // For empty versionID
+	// Note: In a real implementation, you might need to invalidate all versions
+
 	q := query.Use(r.db).Object
 	_, err := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).Updates(map[string]interface{}{
 		q.StorageClass.ColumnName().String(): storageClass,
 		q.UpdatedAt.ColumnName().String():    time.Now(),
 	})
-	return err
+	return repoerr.Wrap(err)
 }
 
-func (r *ObjectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) error {
+func (r *objectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, versionID string) error {
+	// Invalidate cache before delete
+	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
+
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
 	if versionID != "" {
@@ -240,10 +310,10 @@ func (r *ObjectRepo) DeleteObject(ctx context.Context, bucketName, objectKey, ve
 		qs = qs.Where(q.Object.VersionID.Eq(""))
 	}
 	_, err := qs.Update(q.Object.Status, consts.ObjectStatusDeleted)
-	return err
+	return repoerr.Wrap(err)
 }
 
-func (r *ObjectRepo) GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
+func (r *objectRepo) GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
 	q := query.Use(tx)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
 	if versionID != "" {
@@ -254,12 +324,12 @@ func (r *ObjectRepo) GetByKeyWithTx(tx *gorm.DB, ctx context.Context, bucketName
 
 	modelObject, err := qs.First()
 	if err != nil {
-		return nil, err
+		return nil, repoerr.Wrap(err)
 	}
 	return r.toObjectDo(modelObject), nil
 }
 
-func (r *ObjectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) error {
+func (r *objectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucketName, objectKey, versionID string) error {
 	q := query.Use(tx)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
 	if versionID != "" {
@@ -268,5 +338,34 @@ func (r *ObjectRepo) DeleteObjectWithTx(tx *gorm.DB, ctx context.Context, bucket
 		qs = qs.Where(q.Object.VersionID.Eq(""))
 	}
 	_, err := qs.Update(q.Object.Status, consts.ObjectStatusDeleted)
-	return err
+	return repoerr.Wrap(err)
+}
+func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListObjectsByBucket) ([]*do.ObjectDo, error) {
+	q := query.Use(r.db).Object
+
+	qs := q.WithContext(ctx)
+
+	if list.BucketID != 0 {
+		qs = qs.Where(q.BucketID.Eq(list.BucketID))
+	}
+
+	if list.BucketName != "" {
+		qs = qs.Where(q.BucketName.Eq(list.BucketName))
+	}
+
+	if list.Prefix != "" {
+		qs = qs.Where(q.ObjectKey.Like(list.Prefix + "%"))
+	}
+
+	qs = qs.Offset(list.Offset).Limit(list.Limit)
+
+	modelObjects, err := qs.Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+	var objects []*do.ObjectDo
+	for _, modelObject := range modelObjects {
+		objects = append(objects, r.toObjectDo(modelObject))
+	}
+	return objects, nil
 }

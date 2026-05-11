@@ -10,22 +10,26 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/utils/logger"
 	"oss/utils/tools"
 	"strings"
 	"time"
 
 	"github.com/samber/lo"
+	"go.uber.org/zap"
 )
 
 type Service struct {
 	repo   repo.IAccessKeyRepo
 	config *config.Config
+	logger *zap.Logger
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		repo:   gorm.NewAccessKeyRepo(adaptor.GetGORM()),
 		config: adaptor.GetConfig(),
+		logger: logger.GetLogger().With(zap.String("module", "accesskey")),
 	}
 }
 
@@ -72,7 +76,7 @@ func (srv *Service) CreateAccessKey(ctx context.Context, req *dto.CreateAccessKe
 
 	id, err := srv.repo.CreateAccessKey(ctx, ak)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.CreateAccessKeyResp{
@@ -93,7 +97,7 @@ func (srv *Service) ListAccessKeys(ctx context.Context, req *dto.ListAccessKeysR
 
 	aks, err := srv.repo.ListByFilter(ctx, req.UserID, req.Status)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	items := lo.Map(aks, func(ak *do.AccessKeyDo, _ int) *dto.AccessKeyItem {
@@ -119,7 +123,7 @@ func (srv *Service) GetAccessKey(ctx context.Context, accessKey string) (*dto.Ac
 
 	ak, err := srv.repo.GetByAccessKey(ctx, accessKey)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.AccessKeyItem{
@@ -144,7 +148,7 @@ func (srv *Service) UpdateAccessKeyStatus(ctx context.Context, accessKey string,
 
 	ak, err := srv.repo.UpdateStatus(ctx, accessKey, req.Status)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.UpdateAccessKeyStatusResp{

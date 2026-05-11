@@ -1,40 +1,48 @@
 package bucket
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"oss/adaptor"
+	"oss/adaptor/redis"
 	bucketRepo "oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
 	lifecycleRepo "oss/adaptor/repo/lifecycle"
 	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
+	"oss/adaptor/repo/repoerr"
+	"oss/adaptor/tx"
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
+	"oss/utils/logger"
 
-	"gorm.io/gorm"
+	"go.uber.org/zap"
 )
 
 type Service struct {
 	repo          bucketRepo.IBucketRepo
 	lifecycleRepo lifecycleRepo.ILifecycleRepo
+	txManager     tx.ITxManager
+	logger        *zap.Logger
+
+	lifeRedis redis.ILifecycle
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:          gormBucket.NewBucketRepo(adaptor.GetGORM()),
+		repo:          gormBucket.NewBucketRepo(adaptor),
 		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
+		txManager:     adaptor.GetTxManager(),
+		logger:        logger.GetLogger().With(zap.String("module", "bucket")),
+		lifeRedis:     redis.NewLifecycle(adaptor),
 	}
 }
 
 func (srv *Service) CreateBucket(ctx *common.UserInfoCtx, req *dto.CreateBucketReq) (*dto.CreateBucketResp, common.Errno) {
-	if req.UserID <= 0 {
-		return nil, common.ParamErr.WithMsg("user_id is required")
-	}
-	if req.Name == "" {
-		return nil, common.ParamErr.WithMsg("name is required")
-	}
+
 	region := req.Region
 	if region == "" {
 		region = "cn-hz"
@@ -45,24 +53,76 @@ func (srv *Service) CreateBucket(ctx *common.UserInfoCtx, req *dto.CreateBucketR
 	}
 
 	tmp, err := srv.repo.GetByUserAndName(ctx, req.UserID, req.Name)
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, common.DatabaseErr.WithErr(err)
+	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	if tmp != nil {
 		return nil, common.DatabaseErr.WithMsg("此库已经存在")
 	}
 
-	id, err := srv.repo.CreateBucket(ctx, &do.CreateBucket{
-		UserID:       req.UserID,
-		Name:         req.Name,
-		Region:       region,
-		Acl:          req.Acl,
-		Versioning:   req.Versioning,
-		StorageClass: storageClass,
-	})
-	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+	var id int64
+
+	if err = srv.txManager.RunInTx(ctx, func(ctx context.Context, tx tx.Tx) error {
+		id, err = srv.repo.CreateBucket(ctx, &do.CreateBucket{
+			UserID:       req.UserID,
+			Name:         req.Name,
+			Region:       region,
+			Acl:          req.Acl,
+			Versioning:   req.Versioning,
+			StorageClass: storageClass,
+		})
+		if err != nil {
+			return err
+		}
+		ia := consts.StorageClassIA
+		archive := consts.StorageClassArchive
+		transitionDays30 := int32(30)
+		transitionDays90 := int32(90)
+		expirationDays180 := int32(180)
+
+		defaultRules := []*do.CreateLifecycleRule{
+			{
+				BucketID:               id,
+				RuleName:               "Default-IA-Transition",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         &transitionDays30,
+				TransitionStorageClass: &ia,
+				ExpirationDays:         nil,
+			},
+			{
+				BucketID:               id,
+				RuleName:               "Default-Archive-Transition",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         &transitionDays90,
+				TransitionStorageClass: &archive,
+				ExpirationDays:         nil,
+			},
+			{
+				BucketID:               id,
+				RuleName:               "Default-Expiration",
+				Status:                 1,
+				Prefix:                 nil,
+				TransitionDays:         nil,
+				TransitionStorageClass: nil,
+				ExpirationDays:         &expirationDays180,
+			},
+		}
+
+		for _, rule := range defaultRules {
+			ruleId, err := srv.lifecycleRepo.CreateLifecycleRule(ctx, rule)
+			if err != nil {
+				return err
+			}
+			srv.logger.Info("created default lifecycle rule for bucket", zap.Int64("bucket_id", id), zap.Int64("rule_id", ruleId))
+
+		}
+
+		return nil
+	}); err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.CreateBucketResp{
@@ -83,7 +143,7 @@ func (srv *Service) CreateBucket(ctx *common.UserInfoCtx, req *dto.CreateBucketR
 func (srv *Service) ListBuckets(ctx *common.UserInfoCtx, req *dto.ListBucketsReq) (*dto.ListBucketsResp, common.Errno) {
 	buckets, err := srv.repo.ListByFilter(ctx, ctx.UserID, req.Status)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 	items := make([]*dto.BucketItem, 0, len(buckets))
 	for _, bucketDo := range buckets {
@@ -106,12 +166,12 @@ func (srv *Service) ListBuckets(ctx *common.UserInfoCtx, req *dto.ListBucketsReq
 }
 
 func (srv *Service) GetBucket(ctx *common.UserInfoCtx, name string) (*dto.BucketItem, common.Errno) {
-	if name == "" {
-		return nil, common.ParamErr.WithMsg("bucket name is required")
-	}
 	bucketDo, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucketDo == nil {
+		return nil, common.BucketNotFoundErr
 	}
 	return &dto.BucketItem{
 		ID:           bucketDo.ID,
@@ -130,20 +190,21 @@ func (srv *Service) GetBucket(ctx *common.UserInfoCtx, name string) (*dto.Bucket
 }
 
 func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.UpdateBucketReq) (*dto.UpdateBucketResp, common.Errno) {
-	if name == "" {
-		return nil, common.ParamErr.WithMsg("bucket name is required")
-	}
 	if req.Acl == nil && req.Versioning == nil && req.Status == nil && req.StorageClass == "" {
 		return nil, common.ParamErr.WithMsg("no update fields")
 	}
 
 	// First check if bucket exists and belongs to user
-	_, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
+	info, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	bucketDo, err := srv.repo.UpdateBucket(ctx, ctx.UserID, name, &do.UpdateBucket{
+	if info == nil {
+		return nil, common.BucketNotFoundErr
+	}
+
+	bucketDo, err := srv.repo.UpdateBucket(ctx, ctx.UserID, info.ID, name, &do.UpdateBucket{
 		Acl:          req.Acl,
 		Versioning:   req.Versioning,
 		Status:       req.Status,
@@ -151,7 +212,7 @@ func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.
 	})
 
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.UpdateBucketResp{
@@ -170,17 +231,29 @@ func (srv *Service) UpdateBucket(ctx *common.UserInfoCtx, name string, req *dto.
 	}, common.OK
 }
 
-func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, name string) common.Errno {
-	// First check if bucket exists and belongs to user
-	bucketDo, err := srv.repo.GetByUserAndName(ctx, ctx.UserID, name)
+func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, bucketID int64, buckName string) common.Errno {
+
+	list, err := srv.lifecycleRepo.ListLifecycleRules(ctx, bucketID)
 	if err != nil {
-		return common.DatabaseErr.WithErr(err)
+		srv.logger.Error("failed to list lifecycle rules for bucket", zap.Int64("bucket_id", bucketID), zap.Error(err))
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
-	if bucketDo.ObjectCount > 0 {
-		return common.BucketNotEmptyErr
+
+	if err = srv.txManager.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		if err := srv.repo.DeleteBucket(ctx1, ctx.UserID, bucketID, buckName); err != nil {
+			return err
+		}
+
+		for _, rule := range list {
+			if err = srv.lifecycleRepo.DeleteLifecycleRule(ctx1, bucketID, rule.ID); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
-	if err := srv.repo.DeleteBucket(ctx, ctx.UserID, name); err != nil {
-		return common.DatabaseErr.WithErr(err)
-	}
+
 	return common.OK
 }

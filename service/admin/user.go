@@ -14,7 +14,7 @@ func (srv *Service) CreateUser(ctx context.Context, req *dto.CreateUserReq) (int
 	})
 
 	if err != nil {
-		return 0, common.DatabaseErr.WithErr(err)
+		return 0, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return id, common.OK
@@ -23,7 +23,7 @@ func (srv *Service) CreateUser(ctx context.Context, req *dto.CreateUserReq) (int
 func (srv *Service) GetUserByID(ctx context.Context, id int64) (*dto.User, error) {
 	user, err := srv.adminUser.GetUserInfoById(ctx, id)
 	if err != nil {
-		return nil, common.DatabaseErr.WithErr(err)
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.User{
