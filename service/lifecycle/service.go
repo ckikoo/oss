@@ -151,6 +151,71 @@ func (srv *Service) GetLifecycleRule(ctx *common.UserInfoCtx, bucketName string,
 	}, common.OK
 }
 
+type ruleChanges struct {
+	NeedClearRedis bool
+	NeedFullRescan bool
+	OldPrefix      string // 清 Redis 时用旧 prefix
+}
+
+func detectRuleChanges(old *do.LifecycleRuleDo, req *dto.UpdateLifecycleRuleReq) ruleChanges {
+	oldPrefix := ""
+	if old.Prefix != nil {
+		oldPrefix = *old.Prefix
+	}
+
+	daysChanged := transitionDaysChanged(old, req) || expirationDaysChanged(old, req)
+	prefixChanged := req.Prefix != nil && !prefixEqual(old.Prefix, req.Prefix)
+	statusDisabled := req.Status != nil && *req.Status == 0 && old.Status == 1
+	statusEnabled := req.Status != nil && *req.Status == 1 && old.Status == 0
+	storageClassChanged := req.TransitionStorageClass != nil &&
+		!storageClassEqual(old.TransitionStorageClass, req.TransitionStorageClass)
+
+	return ruleChanges{
+		NeedClearRedis: daysChanged || prefixChanged || statusDisabled || statusEnabled,
+		NeedFullRescan: daysChanged || prefixChanged || statusEnabled || storageClassChanged,
+		OldPrefix:      oldPrefix,
+	}
+}
+
+func prefixEqual(a *string, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func storageClassEqual(a *string, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func transitionDaysChanged(old *do.LifecycleRuleDo, req *dto.UpdateLifecycleRuleReq) bool {
+	if req.TransitionDays == nil {
+		return false // 没改
+	}
+	if old.TransitionDays == nil {
+		return true // 从无到有
+	}
+	return *old.TransitionDays != *req.TransitionDays
+}
+
+func expirationDaysChanged(old *do.LifecycleRuleDo, req *dto.UpdateLifecycleRuleReq) bool {
+	if req.ExpirationDays == nil {
+		return false
+	}
+	if old.ExpirationDays == nil {
+		return true
+	}
+	return *old.ExpirationDays != *req.ExpirationDays
+}
 func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64, req *dto.UpdateLifecycleRuleReq) (*dto.LifecycleRuleItem, common.Errno) {
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
@@ -158,9 +223,18 @@ func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
 
-	if req.RuleName == nil && req.Prefix == nil && req.TransitionDays == nil && req.TransitionStorageClass == nil && req.ExpirationDays == nil && req.Status == nil {
+	if req.RuleName == nil && req.Prefix == nil &&
+		req.TransitionDays == nil && req.TransitionStorageClass == nil &&
+		req.ExpirationDays == nil && req.Status == nil {
 		return nil, common.ParamErr.WithMsg("at least one field must be updated")
 	}
+
+	oldRule, err := srv.repo.GetLifecycleRule(ctx, bucket.ID, ruleID)
+	if err != nil {
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
+	}
+
+	changes := detectRuleChanges(oldRule, req)
 
 	update := &do.UpdateLifecycleRule{
 		RuleName:               req.RuleName,
@@ -171,19 +245,30 @@ func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 		Status:                 req.Status,
 	}
 
-	oldRule, err := srv.repo.GetLifecycleRule(ctx, bucket.ID, ruleID)
-	if err != nil {
-		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
-	}
-
 	rule, err := srv.repo.UpdateLifecycleRule(ctx, bucket.ID, ruleID, update)
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
 
-	srv.rds.ClearRuleEvents(ctx, bucket.ID, ruleID, *oldRule.Prefix)
-	// go srv.rescheduleExistingObjects(context.Background(), bucket, rule)
+	// 清 Redis（用旧 prefix，因为旧事件是按旧 prefix 存的）
+	if changes.NeedClearRedis {
+		if err := srv.rds.ClearRuleEvents(ctx, bucket.ID, ruleID, changes.OldPrefix); err != nil {
+			// 非致命，记录日志，下次扫描会兜底
+			srv.logger.Warn("failed to clear lifecycle redis events",
+				zap.Int64("bucketID", bucket.ID),
+				zap.Int64("ruleID", ruleID),
+				zap.Error(err))
+		}
+	}
+
+	if changes.NeedFullRescan {
+		go srv.rescheduleExistingObjects(context.Background(), bucket, rule)
+	}
+
 	// 2. days 变了，清旧事件
+	return toLifecycleRuleItem(rule), common.OK
+}
+func toLifecycleRuleItem(rule *do.LifecycleRuleDo) *dto.LifecycleRuleItem {
 	return &dto.LifecycleRuleItem{
 		RuleID:                 rule.ID,
 		RuleName:               rule.RuleName,
@@ -194,66 +279,115 @@ func (srv *Service) UpdateLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 		Status:                 rule.Status,
 		CreatedAt:              rule.CreatedAt.UnixMilli(),
 		UpdatedAt:              rule.UpdatedAt.UnixMilli(),
-	}, common.OK
+	}
 }
 
-func (srv *Service) rescheduleExistingObjects(ctx context.Context, bucket *do.BucketDo, rule *do.LifecycleRuleDo) {
-	// 分页扫描，避免一次性 OOM
-	var offset int = 0
-	const batchSize = 500
-	prefix := func() string {
-		if rule.Prefix == nil {
-			return ""
-		}
-		return *rule.Prefix
-	}()
+func (srv *Service) rescheduleExistingObjects(
+	ctx context.Context,
+	bucket *do.BucketDo,
+	rule *do.LifecycleRuleDo,
+) {
+	newPrefix := ""
+	if rule.Prefix != nil {
+		newPrefix = *rule.Prefix
+	}
+
+	srv.logger.Info("start reschedule existing objects",
+		zap.Int64("bucketID", bucket.ID),
+		zap.Int64("ruleID", rule.ID),
+		zap.String("prefix", newPrefix))
+
+	var cursor int64 = 0
+	const batchSize = 200
+	total := 0
 
 	for {
+		select {
+		case <-ctx.Done():
+			srv.logger.Warn("rescheduleExistingObjects cancelled",
+				zap.Int64("ruleID", rule.ID),
+				zap.Int("processed", total))
+			return
+		default:
+		}
 
-		objects, err := srv.objectRepo.ListByBucketWithPrefix(ctx, &do.ListObjectsByBucket{
-			BucketID: bucket.ID,
-			Prefix:   prefix,
+		list, err := srv.objectRepo.ListByBucketWithPrefix(ctx, &do.ListObjectsByBucket{
+			BucketID: rule.BucketID,
+			Prefix:   newPrefix,
 			Limit:    batchSize,
-			Offset:   offset,
+			Cursor:   cursor,
 		})
-		if err != nil || len(objects) == 0 {
+		if err != nil {
+			srv.logger.Error("rescheduleExistingObjects list objects failed",
+				zap.Int64("ruleID", rule.ID),
+				zap.Int64("cursor", cursor),
+				zap.Error(err))
+			return
+		}
+		if len(list) == 0 {
 			break
 		}
 
-		for _, obj := range objects {
-			now := obj.CreatedAt // 按文件创建时间算，不是当前时间
-
-			if rule.TransitionDays != nil {
-				executeTime := now.AddDate(0, 0, int(*rule.TransitionDays))
-				if executeTime.After(time.Now()) { // 还没到期才挂，已到期的跳过
-					srv.rds.SetLifecycleEvent(ctx,
-						bucket.ID, rule.ID, prefix,
-						"transition", obj.ObjectKey, executeTime)
-				}
-			}
-
-			if rule.ExpirationDays != nil {
-				executeTime := now.AddDate(0, 0, int(*rule.ExpirationDays))
-				if executeTime.After(time.Now()) {
-					srv.rds.SetLifecycleEvent(ctx,
-						bucket.ID, rule.ID, prefix,
-						"expiration", obj.ObjectKey, executeTime)
-				}
-			}
+		now := time.Now()
+		for _, obj := range list {
+			srv.scheduleObjectEvents(ctx, bucket.ID, rule, newPrefix, obj, now)
 		}
 
-		offset += batchSize
-		time.Sleep(200 * time.Millisecond) // 让出 CPU，避免打爆 DB
+		total += len(list)
+		cursor = list[len(list)-1].ID
+
+		time.Sleep(50 * time.Millisecond)
+
+		if len(list) < batchSize {
+			break
+		}
 	}
+
+	srv.logger.Info("rescheduleExistingObjects done",
+		zap.Int64("ruleID", rule.ID),
+		zap.Int("total", total))
 }
 
+// ── scheduleObjectEvents ────────────────────────────────────────────
+// PutObject 和 reschedule 共用同一个函数，逻辑收拢
+func (srv *Service) scheduleObjectEvents(
+	ctx context.Context,
+	bucketID int64,
+	rule *do.LifecycleRuleDo,
+	prefix string,
+	obj *do.ObjectDo,
+	now time.Time,
+) {
+	// rule 被禁用，不入队
+	if rule.Status == 0 {
+		return
+	}
+
+	// transition
+	if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
+		executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.TransitionDays))
+		if executeTime.After(now) { // 已过期的不入队，直接跳过
+			if err := srv.rds.SetLifecycleEvent(ctx, bucketID, rule.ID, prefix,
+				"transition", obj.ObjectKey, executeTime); err != nil {
+				srv.logger.Warn("scheduleObjectEvents set transition failed",
+					zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+			}
+		}
+	}
+
+	// expiration
+	if rule.ExpirationDays != nil && *rule.ExpirationDays > 0 {
+		executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.ExpirationDays))
+		if executeTime.After(now) {
+			if err := srv.rds.SetLifecycleEvent(ctx, bucketID, rule.ID, prefix,
+				"expiration", obj.ObjectKey, executeTime); err != nil {
+				srv.logger.Warn("scheduleObjectEvents set expiration failed",
+					zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+			}
+		}
+	}
+}
 func (srv *Service) DeleteLifecycleRule(ctx *common.UserInfoCtx, bucketName string, ruleID int64) common.Errno {
-	if strings.TrimSpace(bucketName) == "" {
-		return common.ParamErr.WithMsg("bucket_name is required")
-	}
-	if ruleID <= 0 {
-		return common.ParamErr.WithMsg("rule_id is required")
-	}
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
@@ -263,9 +397,21 @@ func (srv *Service) DeleteLifecycleRule(ctx *common.UserInfoCtx, bucketName stri
 		return common.BucketNotFoundErr
 	}
 
+	oldRule, err := srv.repo.GetLifecycleRule(ctx, bucket.ID, ruleID)
+	if err != nil {
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
+	}
+
 	if err := srv.repo.DeleteLifecycleRule(ctx, bucket.ID, ruleID); err != nil {
 		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
+
+	prefix := ""
+	if oldRule.Prefix != nil {
+		prefix = *oldRule.Prefix
+	}
+
+	srv.rds.ClearRuleEvents(ctx, bucket.ID, ruleID, prefix)
 
 	return common.OK
 }

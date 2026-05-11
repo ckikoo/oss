@@ -240,19 +240,26 @@ func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, bucketID int64, buckNa
 	}
 
 	if err = srv.txManager.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		if err := srv.repo.DeleteBucket(ctx1, ctx.UserID, bucketID, buckName); err != nil {
-			return err
-		}
-
 		for _, rule := range list {
 			if err = srv.lifecycleRepo.DeleteLifecycleRule(ctx1, bucketID, rule.ID); err != nil {
 				return err
 			}
 		}
 
+		if err := srv.repo.DeleteBucket(ctx1, ctx.UserID, bucketID, buckName); err != nil {
+			return err
+		}
+
 		return nil
 	}); err != nil {
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	for _, rule := range list {
+		// redis 相关的 lifecycle 数据也删除掉
+		if err = srv.lifeRedis.ClearRuleEvents(ctx, bucketID, rule.ID, *rule.Prefix); err != nil {
+			srv.logger.Warn("failed to delete lifecycle rules from redis", zap.Int64("bucket_id", bucketID), zap.Error(err))
+		}
 	}
 
 	return common.OK

@@ -22,6 +22,9 @@ func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
 
 	// ── 分批扫 lifecycle rules ───────────────────────────────
 	for {
+
+		// 这边的 ListAllActiveLifecycleRulesByCursor 内部已经按 ID 升序了，所以直接用最后一个 ID 作为下一轮的 cursor 就行
+
 		rules, err := repo.ListAllActiveLifecycleRulesByCursor(ctx, cursor, batchSize)
 		if err != nil {
 			log.Error("handlerScanTableLifecycleEvents: list rules", zap.Error(err))
@@ -39,13 +42,16 @@ func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
 			}
 
 			// ── 分批扫该规则下的 objects ─────────────────────
-			offset := 0 // ← 移到内层循环外
+			var objcurrsor int64 = 0 // ← 移到内层循环外
 			for {
+
+				// 优化，可以时间区域间分批，先按时间范围扫出 rule ID 列表，再根据 ID 列表扫对象，这样可以减少不必要的对象扫描
+				// 过去三天，进行重新对齐,
 				list, err := objRepo.ListByBucketWithPrefix(ctx, &do.ListObjectsByBucket{
 					BucketID: rule.BucketID,
 					Prefix:   prefix,
 					Limit:    batchSize,
-					Offset:   offset,
+					Cursor:   objcurrsor,
 				})
 				if err != nil {
 					log.Error("handlerScanTableLifecycleEvents: list objects",
@@ -74,8 +80,8 @@ func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
 					}
 				}
 
-				offset += len(list)
-				time.Sleep(50 * time.Millisecond) // 200ms 太保守，50ms 够了
+				objcurrsor = list[len(list)-1].ID
+				time.Sleep(50 * time.Millisecond)
 
 				if len(list) < batchSize {
 					break

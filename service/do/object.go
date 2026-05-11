@@ -69,6 +69,6 @@ type ListObjectsByBucket struct {
 	BucketID   int64
 	BucketName string
 	Prefix     string
-	Offset     int
+	Cursor     int64
 	Limit      int
 }

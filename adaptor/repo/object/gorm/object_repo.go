@@ -357,7 +357,9 @@ func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListOb
 		qs = qs.Where(q.ObjectKey.Like(list.Prefix + "%"))
 	}
 
-	qs = qs.Offset(list.Offset).Limit(list.Limit)
+	qs = qs.Order(q.ID.Asc()).
+		Where(q.ID.Gt(list.Cursor)).
+		Limit(list.Limit)
 
 	modelObjects, err := qs.Find()
 	if err != nil {

@@ -76,10 +76,6 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 }
 
 func (srv *Service) ListObjects(ctx *common.UserInfoCtx, req *dto.ListObjectsReq) (*dto.ListObjectsResp, common.Errno) {
-	if req.BucketName == "" {
-		return nil, common.ParamErr.WithMsg("bucket_name is required")
-	}
-
 	objects, err := srv.objRepo.ListByFilter(ctx, req.BucketName, req.Prefix, req.Delimiter, req.Marker, req.MaxKeys, req.VersionID)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
@@ -153,9 +149,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
-	if bucket == nil {
-		return nil, common.BucketNotFoundErr
-	}
+
 	bucketID := bucket.ID
 
 	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, file.Size, 0, 1, 0, 0); err != nil {
@@ -256,43 +250,16 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 	now := time.Now()
 	for _, rule := range rules {
-		if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
-			executeTime := now.AddDate(0, 0, int(*rule.TransitionDays))
-			prefix := ""
-			if rule.Prefix != nil {
-				prefix = *rule.Prefix
-			}
-			// objectKey 匹配 prefix 才挂载
-			if strings.HasPrefix(req.ObjectKey, prefix) {
-				srv.lifeRedis.SetLifecycleEvent(
-					ctx,
-					bucket.ID,
-					rule.ID,
-					prefix,
-					"transition",
-					req.ObjectKey,
-					executeTime, // now + 30d
-				)
-			}
+		prefix := ""
+		if rule.Prefix != nil {
+			prefix = *rule.Prefix
 		}
 
-		if rule.ExpirationDays != nil && *rule.ExpirationDays > 0 {
-			executeTime := now.AddDate(0, 0, int(*rule.ExpirationDays))
-			prefix := ""
-			if rule.Prefix != nil {
-				prefix = *rule.Prefix
-			}
-			if strings.HasPrefix(req.ObjectKey, prefix) {
-				srv.lifeRedis.SetLifecycleEvent(
-					ctx,
-					bucket.ID,
-					rule.ID,
-					prefix,
-					"expiration",
-					req.ObjectKey,
-					executeTime, // now + 180d
-				)
-			}
+		if strings.HasPrefix(req.ObjectKey, prefix) {
+			srv.scheduleObjectEvents(ctx, bucket.ID, rule, prefix, &do.ObjectDo{
+				ObjectKey: req.ObjectKey,
+				CreatedAt: now,
+			}, now)
 		}
 	}
 
@@ -314,7 +281,43 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		VersionID:   "",
 	}, common.OK
 }
+func (srv *Service) scheduleObjectEvents(
+	ctx context.Context,
+	bucketID int64,
+	rule *do.LifecycleRuleDo,
+	prefix string,
+	obj *do.ObjectDo,
+	now time.Time,
+) {
+	// rule 被禁用，不入队
+	if rule.Status == 0 {
+		return
+	}
 
+	// transition
+	if rule.TransitionDays != nil && *rule.TransitionDays > 0 {
+		executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.TransitionDays))
+		if executeTime.After(now) { // 已过期的不入队，直接跳过
+			if err := srv.lifeRedis.SetLifecycleEvent(ctx, bucketID, rule.ID, prefix,
+				"transition", obj.ObjectKey, executeTime); err != nil {
+				srv.logger.Warn("scheduleObjectEvents set transition failed",
+					zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+			}
+		}
+	}
+
+	// expiration
+	if rule.ExpirationDays != nil && *rule.ExpirationDays > 0 {
+		executeTime := obj.CreatedAt.AddDate(0, 0, int(*rule.ExpirationDays))
+		if executeTime.After(now) {
+			if err := srv.lifeRedis.SetLifecycleEvent(ctx, bucketID, rule.ID, prefix,
+				"expiration", obj.ObjectKey, executeTime); err != nil {
+				srv.logger.Warn("scheduleObjectEvents set expiration failed",
+					zap.String("objectKey", obj.ObjectKey), zap.Error(err))
+			}
+		}
+	}
+}
 func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
