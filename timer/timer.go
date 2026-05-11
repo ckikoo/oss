@@ -16,6 +16,7 @@ import (
 	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
 	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
+	"oss/adaptor/tx"
 
 	// "oss/adaptor/repo/multipart"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
@@ -38,17 +39,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 var log = logger.GetLogger()
 
-func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, status int32, errMsg string) {
+func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, status int32, errMsg string) error {
 	update := &do.UpdateAsyncTask{Status: status}
 	if errMsg != "" {
 		update.ErrorMsg = errMsg
 	}
-	_, _ = taskRepo.UpdateAsyncTask(ctx, taskID, update)
+	_, err := taskRepo.UpdateAsyncTask(ctx, taskID, update)
+	return err
+}
+
+func buildLockKey(keys ...string) string {
+	return strings.Join(keys, ":")
 }
 
 func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
@@ -60,10 +65,12 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	fileRepo := gormObject.NewObjectRepo(adaptor.GetGORM())
 	taskLocker := redis.NewLock(adaptor)
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
+	txManager := adaptor.GetTxManager()
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
+	locker := redis.NewLock(adaptor)
 
 	if err != nil {
-		// 处理错误（如日志记录、监控告警等）
+		log.Error("timer fail to dequeue task", zap.Error(err))
 		return
 	}
 
@@ -74,10 +81,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 		if err := p.RunGo(func() {
 			currentUUid := uuid.NewString()
-
 			ok, err := taskLocker.AcquireLock(ctx, taskID, currentUUid, time.Second*30)
 			if err != nil {
-				// 处理错误
+				log.Error("timer.handlerTask fail to acquire lock", zap.Error(err))
 				return
 			}
 			if !ok {
@@ -87,7 +93,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 			defer func() {
 				if err := taskLocker.ReleaseLock(ctx, taskID, currentUUid); err != nil {
-					// 处理释放锁时的错误（如日志记录、监控告警等）
+					log.Error("timer.handlerTask fail to release lock", zap.Error(err))
 				}
 			}()
 
@@ -117,7 +123,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 			// 根据 taskID 查询数据库获取任务详情
 			task, err := taskRepo.GetAsyncTaskByID(taskCtx, gconv.Int64(taskID))
 			if err != nil {
-				// 处理错误（如日志记录、监控告警等）
+				log.Error("timer.handlerTask fail to get async task", zap.Error(err), zap.String("taskID", taskID))
 				return
 			}
 
@@ -125,12 +131,35 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 			case consts.TaskTypePhysicalMerge:
 				info, err := multipart.GetMultipartUploadByID(taskCtx, task.UserId, task.UploadID)
 				if err != nil {
+					log.Error("timer.handlerTask fail to get multipart upload info", zap.Error(err), zap.String("taskID", taskID))
 					return
 				}
+
+				resourcekey := buildLockKey(consts.ServerName, "multipart", info.BucketName, info.ObjectKey)
+
+				get, err := locker.AcquireLock(ctx, resourcekey, currentUUid, time.Minute*10)
+				if err != nil {
+					log.Error("timer.handlerTask fail to acquire multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
+					return
+				}
+
+				if !get {
+					log.Warn("multipart lock is held by another process, skipping merge",
+						zap.String("bucket", info.BucketName),
+						zap.String("objectKey", info.ObjectKey),
+						zap.String("uploadID", info.UploadID))
+					return
+				}
+				defer func() {
+					if err := locker.ReleaseLock(ctx, resourcekey, currentUUid); err != nil {
+						log.Error("timer.handlerTask fail to release multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
+					}
+				}()
 
 				// 处理物理合并任务
 				parts, err := multipart.ListMultipartParts(taskCtx, task.UserId, task.UploadID)
 				if err != nil {
+					log.Error("timer.handlerTask ListMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
 					return
 				}
 
@@ -143,25 +172,73 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				if err != nil {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
+					log.Error("timer.handlerTask fail to merge parts", zap.Error(err), zap.String("task", gconv.String(task)))
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					return
 				}
 
-				updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
-				fileRepo.UpdateObject(taskCtx, info.BucketName, info.ObjectKey, "", &do.UpdateObject{
-					Size:        &saveInfo.Size,
-					Etag:        &saveInfo.Etag,
-					StoragePath: &saveInfo.StoragePath,
+				status := int32(consts.ObjectIsMultipartNormal)
+				txManager.RunInTx(ctx, func(tx tx.Tx) error {
+					err := updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
+					if err != nil {
+						log.Error("timer.handlerTask updateTaskStatus parts", zap.Error(err), zap.String("task", gconv.String(task)))
+						return err
+					}
+
+					_, err = fileRepo.UpdateObject(taskCtx, info.BucketName, info.ObjectKey, "", &do.UpdateObject{
+						Size:        &saveInfo.Size,
+						Etag:        &saveInfo.Etag,
+						StoragePath: &saveInfo.StoragePath,
+						IsMultipart: &(status),
+					})
+					if err != nil {
+						log.Error("timer.handlerTask UpdateObject parts", zap.Error(err), zap.String("task", gconv.String(task)))
+						return err
+					}
+					// 清理 multipart 相关数据
+					err = multipart.DeleteMultipartParts(taskCtx, task.UserId, task.UploadID)
+					if err != nil {
+						log.Error("timer.handlerTask DeleteMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
+					err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
+					if err != nil {
+						log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
+
+					return nil
 				})
 
 			case consts.TaskTypeAbortMultipart:
 				info, err := multipart.GetMultipartUploadByID(taskCtx, task.UserId, task.UploadID)
 				if err != nil {
+					log.Error("timer.handlerTask fail to get multipart upload info", zap.Error(err), zap.String("taskID", taskID))
+					return
+				}
+				resourcekey := buildLockKey(consts.ServerName, "multipart", info.BucketName, info.ObjectKey)
+
+				get, err := locker.AcquireLock(ctx, resourcekey, currentUUid, time.Minute*10)
+				if err != nil {
+					log.Error("timer.handlerTask fail to acquire multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
 					return
 				}
 
+				if !get {
+					log.Warn("multipart lock is held by another process, skipping abort",
+						zap.String("bucket", info.BucketName),
+						zap.String("objectKey", info.ObjectKey),
+						zap.String("uploadID", info.UploadID))
+					return
+				}
+				defer func() {
+					if err := locker.ReleaseLock(ctx, resourcekey, currentUUid); err != nil {
+						log.Error("timer.handlerTask fail to release multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
+					}
+				}()
 				parts, err := multipart.ListMultipartParts(taskCtx, info.UserID, info.UploadID)
 				if err != nil {
+					log.Error("timer.handlerTask ListMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
 					return
 				}
 
@@ -171,10 +248,27 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					total += int(part.Size)
 				})
 
-				multipart.DeleteMultipartParts(taskCtx, task.UserId, task.UploadID)
-				uinfoRepo.UpdateStorageUsed(taskCtx, info.UserID, -int64(total))
+				txManager.RunInTx(ctx, func(tx tx.Tx) error {
+					err := multipart.DeleteMultipartParts(taskCtx, task.UserId, task.UploadID)
+					if err != nil {
+						log.Error("timer.handlerTask DeleteMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
 
-				storage.DeleteParts(taskCtx, info.BucketName, task.UploadID)
+					err = uinfoRepo.UpdateStorageUsed(taskCtx, info.UserID, -int64(total))
+					if err != nil {
+						log.Error("timer.handlerTask UpdateStorageUsed error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
+
+					// 清理 multipart 相关数据
+					err = storage.DeleteParts(taskCtx, info.BucketName, task.UploadID)
+					if err != nil {
+						log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
+					return nil
+				})
 
 			default:
 				// 处理未知任务类型
@@ -195,6 +289,8 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	multipartRepo := gormMultipart.NewObjectRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
+	txManager := adaptor.GetTxManager()
+	locker := redis.NewLock(adaptor)
 
 	list, err := multipartRedis.GetTimeWaitMultipartCancel(ctx)
 	if err != nil {
@@ -208,9 +304,49 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 		item := item // 每次迭代创建新变量，避免闭包捕获问题
 		if err := pool.RunGo(func() {
 
-			uploadInfo, err := multipartRepo.GetMultipartUploadByID(ctx, 0, item)
+			lockKey := buildLockKey(consts.ServerName, "merge", "timeout", item)
+			currentUUid := uuid.NewString()
+			ok, err := locker.AcquireLock(ctx, lockKey, currentUUid, time.Second*30)
 			if err != nil {
-				// 处理错误
+				log.Error("timer.handlerUploadMergeTimeout fail to acquire lock", zap.Error(err), zap.String("lockKey", lockKey))
+				return
+			}
+			if !ok {
+				log.Warn("merge timeout lock is held by another process, skipping",
+					zap.String("uploadID", item))
+				return
+			}
+			defer func() {
+				if err := locker.ReleaseLock(ctx, lockKey, currentUUid); err != nil {
+					log.Error("timer.handlerUploadMergeTimeout fail to release lock", zap.Error(err), zap.String("lockKey", lockKey))
+				}
+			}()
+
+			refreshLockCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			go func() {
+
+				ticker := time.NewTicker(time.Second * 10) // 每 10 秒续期一次
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := locker.RefreshLock(ctx, lockKey, currentUUid, time.Second*30); err != nil {
+							// 续期失败说明锁已丢失，应中断任务
+							cancel()
+							return
+						}
+					}
+				}
+
+			}()
+
+			uploadInfo, err := multipartRepo.GetMultipartUploadByID(refreshLockCtx, 0, item)
+			if err != nil {
+				log.Error("timer.handlerUploadMergeTimeout fail to get multipart upload info", zap.Error(err), zap.String("uploadID", item))
 				return
 			}
 
@@ -220,22 +356,38 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 			}
 
 			total := 0
-			parts, err := multipartRepo.ListMultipartParts(ctx, uploadInfo.UserID, uploadInfo.UploadID)
+			parts, err := multipartRepo.ListMultipartParts(refreshLockCtx, uploadInfo.UserID, uploadInfo.UploadID)
 			if err != nil {
-				// 处理错误
+				log.Error("timer.handlerUploadMergeTimeout fail to list multipart parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
 				return
 			}
 
 			lo.ForEach(parts, func(item *do.MultipartPartDo, _ int) {
 				total += int(item.Size)
 			})
+			txManager.RunInTx(refreshLockCtx, func(tx tx.Tx) error {
+				// 用户状态修正
+				err := uinfoRepo.UpdateStorageUsed(refreshLockCtx, uploadInfo.UserID, -int64(total))
+				if err != nil {
+					log.Error("timer.handlerUploadMergeTimeout fail to update user storage used", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+					return err
+				}
 
-			// 本次存储删除
-			storage.DeleteParts(ctx, uploadInfo.BucketName, uploadInfo.UploadID)
-			// 用户状态修正
-			uinfoRepo.UpdateStorageUsed(ctx, uploadInfo.UserID, -int64(total))
-			// 清楚系统文件
-			multipartRepo.DeleteMultipartParts(ctx, uploadInfo.UserID, uploadInfo.UploadID)
+				// 清楚系统文件
+				err = multipartRepo.DeleteMultipartParts(refreshLockCtx, uploadInfo.UserID, uploadInfo.UploadID)
+				if err != nil {
+					log.Error("timer.handlerUploadMergeTimeout fail to delete multipart parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+					return err
+				}
+				// 存储删除
+				err = storage.DeleteParts(refreshLockCtx, uploadInfo.BucketName, uploadInfo.UploadID)
+				if err != nil {
+					log.Error("timer.handlerUploadMergeTimeout fail to delete parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+					return err
+				}
+
+				return nil
+			})
 
 		}); err != nil {
 			log.Error("failed to submit task to pool", zap.Error(err))
@@ -254,9 +406,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	bucketRepo := gormBucket.NewBucketRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
-
-	// 使用共享的 gorm DB 实例
-	gormDB := adaptor.GetGORM()
+	txManager := adaptor.GetTxManager()
 
 	// 获取所有活跃的生命周期规则
 	rules, err := lifecycleRepo.ListAllActiveLifecycleRules(ctx)
@@ -275,7 +425,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 		if err := pool.RunGo(func() {
 			bucket, err := bucketRepo.GetByID(ctx, rule.BucketID)
 			if err != nil {
-				// 处理错误
+				log.Error("failed to get bucket for lifecycle rule", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
 				return
 			}
 
@@ -283,7 +433,8 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 			handleTransitionEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo)
 
 			// 处理过期删除事件
-			handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, gormDB, storage)
+			handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, txManager, storage)
+
 		}); err != nil {
 			log.Error("failed to submit lifecycle handler task to pool", zap.Error(err))
 		}
@@ -322,20 +473,20 @@ func handleTransitionEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 	prefix := getRulePrefix(rule)
 	objects, err := lifecycleRedis.GetPendingLifecycleEvents(ctx, rule.BucketID, rule.ID, prefix, "transition")
 	if err != nil {
-		log.Error("failed to get pending transition events",
+		log.Error("timer.handleTransitionEvents failed to get pending transition events",
 			zap.Int64("bucketID", rule.BucketID),
 			zap.Int64("ruleID", rule.ID),
 			zap.String("prefix", prefix),
 			zap.Error(err))
 		return
 	}
-
+	txManager := adaptor.GetTxManager()
 	for _, objectKey := range objects {
 		// 检查对象是否仍然存在
 		obj, err := objectRepo.GetByKey(ctx, bucket.Name, objectKey, "")
 		if err != nil || obj == nil {
 			// 对象不存在，删除事件
-			log.Warn("object not found, removing lifecycle event",
+			log.Warn("timer.handleTransitionEvents object not found, removing lifecycle event",
 				zap.String("bucket", bucket.Name),
 				zap.String("objectKey", objectKey),
 				zap.Int64("bucketID", rule.BucketID),
@@ -346,32 +497,45 @@ func handleTransitionEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 
 		// 验证存储类有效性
 		if rule.TransitionStorageClass != nil && consts.ValidStorageClass(*rule.TransitionStorageClass) {
-			err = objectRepo.UpdateObjectStorageClass(ctx, bucket.Name, objectKey, *rule.TransitionStorageClass)
-			if err != nil {
-				log.Error("failed to update object storage class",
+			txManager.RunInTx(ctx, func(tx tx.Tx) error {
+				err = objectRepo.UpdateObjectStorageClass(ctx, bucket.Name, objectKey, *rule.TransitionStorageClass)
+				if err != nil {
+					log.Error("timer.handleTransitionEvents failed to update object storage class",
+						zap.String("bucket", bucket.Name),
+						zap.String("objectKey", objectKey),
+						zap.String("storageClass", *rule.TransitionStorageClass),
+						zap.Error(err))
+					return err
+				}
+				log.Info("timer.handleTransitionEvents successfully transitioned object storage class",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
-					zap.String("storageClass", *rule.TransitionStorageClass),
-					zap.Error(err))
-				continue
-			}
-			log.Info("successfully transitioned object storage class",
-				zap.String("bucket", bucket.Name),
-				zap.String("objectKey", objectKey),
-				zap.String("fromClass", obj.StorageClass),
-				zap.String("toClass", *rule.TransitionStorageClass))
-		}
+					zap.String("fromClass", obj.StorageClass),
+					zap.String("toClass", *rule.TransitionStorageClass))
 
-		// 删除已处理的事件
-		lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "transition", objectKey)
+				// 删除已处理的事件
+				err = lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "transition", objectKey)
+				if err != nil {
+					log.Error("timer.handleTransitionEvents failed to delete lifecycle event",
+						zap.String("bucket", bucket.Name),
+						zap.String("objectKey", objectKey),
+						zap.Int64("bucketID", rule.BucketID),
+						zap.Int64("ruleID", rule.ID),
+						zap.Error(err))
+				}
+
+				return nil
+			})
+		}
 	}
 }
 
 // handleExpirationEvents 处理对象过期删除事件
 func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.LifecycleRuleDo, bucket *do.BucketDo,
 	lifecycleRedis redis.ILifecycle, objectRepo object.IObjectRepo, bucketRepo bucket.IBucketRepo,
-	uinfoRepo admin.IUser, gormDB *gorm.DB, storage storage.IStorage) {
+	uinfoRepo admin.IUser, txManager tx.ITxManager, storage storage.IStorage) {
 
+	locker := redis.NewLock(adaptor)
 	if rule.ExpirationDays == nil || *rule.ExpirationDays <= 0 {
 		return
 	}
@@ -379,7 +543,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 	prefix := getRulePrefix(rule)
 	objects, err := lifecycleRedis.GetPendingLifecycleEvents(ctx, rule.BucketID, rule.ID, prefix, "expiration")
 	if err != nil {
-		log.Error("failed to get pending expiration events",
+		log.Error("timer.handleExpirationEvents failed to get pending expiration events",
 			zap.Int64("bucketID", rule.BucketID),
 			zap.Int64("ruleID", rule.ID),
 			zap.String("prefix", prefix),
@@ -388,18 +552,67 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 	}
 
 	for _, objectKey := range objects {
-		var storagePath *string
-		var objectSize int64
+
+		currentWorkId := uuid.NewString()
+		lockKey := buildLockKey(consts.ServerName, "event", "expire", objectKey)
+
+		pass, err := locker.AcquireLock(ctx, lockKey, currentWorkId, time.Second*30)
+		if err != nil {
+			log.Error("timer.handleExpirationEvents failed to acquire lock",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+				zap.Int64("bucketID", rule.BucketID),
+				zap.Int64("ruleID", rule.ID),
+				zap.Error(err))
+			continue
+		}
+
+		if !pass {
+			log.Warn("timer.handleExpirationEvents lock is held by another process, skipping",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+			)
+			continue
+		}
+
+		defer func() {
+			err := locker.ReleaseLock(ctx, lockKey, currentWorkId)
+			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to release lock",
+					zap.Error(err),
+					zap.String("lockKey", lockKey),
+				)
+			}
+		}()
+
+		cancelCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			ticker := time.NewTicker(time.Second * 10) // 每 10 秒续期一次
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+
+				case <-ticker.C:
+					err := locker.RefreshLock(ctx, lockKey, currentWorkId, time.Second*30)
+					if err != nil {
+						cancel() // 续期失败说明锁已丢失，应中断任务
+					}
+				}
+			}
+		}()
 		var eventDeleted bool
 
 		// 在事务内部处理删除，避免竞态条件
-		err = gormDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err = txManager.RunInTx(cancelCtx, func(tx tx.Tx) error {
 			// 在事务内部重新检查对象是否存在
 
 			obj, err := objectRepo.WithTx(tx).GetByKey(ctx, bucket.Name, objectKey, "")
 			if err != nil || obj == nil {
 				// 对象不存在，删除事件
-				log.Warn("object not found in transaction, removing lifecycle event",
+				log.Warn("timer.handleExpirationEvents object not found in transaction, removing lifecycle event",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
 					zap.Int64("bucketID", rule.BucketID),
@@ -409,55 +622,58 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return nil // 不算错误，继续处理
 			}
 
-			storagePath = obj.StoragePath
-			objectSize = obj.Size
-
 			// 删除对象记录
 			err = objectRepo.WithTx(tx).DeleteObject(ctx, bucket.Name, objectKey, "")
 			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to delete object",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.Int64("bucketID", rule.BucketID),
+					zap.Int64("ruleID", rule.ID),
+					zap.Error(err))
 				return err
 			}
 
 			// 更新bucket统计
 			err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, -obj.Size)
 			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to update bucket stats",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.Int64("bucketID", rule.BucketID),
+					zap.Int64("ruleID", rule.ID),
+					zap.Error(err))
 				return err
 			}
 
 			// 更新用户存储使用量
 			err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, -obj.Size)
 			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to update user storage used",
+					zap.Error(err),
+					zap.Int64("userId", (bucket.UserID)),
+					zap.Int64("userId", (bucket.UserID)),
+				)
 				return err
 			}
 
-			return nil
-		})
+			switch obj.IsMultipart {
+			case consts.ObjectIsMultipartMerged:
+				if obj.UploadID == nil {
+					logger.Error("multipart object missing upload_id", zap.Int64("obj_id", obj.ID))
+					return err
+				}
+				err = storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID)
 
-		if err != nil {
-			log.Error("failed to delete expired object",
-				zap.String("bucket", bucket.Name),
-				zap.String("objectKey", objectKey),
-				zap.Int64("bucketID", rule.BucketID),
-				zap.Int64("ruleID", rule.ID),
-				zap.Error(err))
-			continue
-		}
-
-		// 删除物理文件信息在事务外执行，避免文件系统操作影响事务
-		if storagePath != nil {
-			if err := storage.Delete(ctx, *storagePath); err != nil {
-				log.Error("failed to delete physical file",
-					zap.String("bucket", bucket.Name),
-					zap.String("objectKey", objectKey),
-					zap.String("storagePath", *storagePath),
-					zap.Error(err))
-			} else {
-				log.Info("successfully deleted expired object",
-					zap.String("bucket", bucket.Name),
-					zap.String("objectKey", objectKey),
-					zap.Int64("size", objectSize))
+			case consts.ObjectIsMultipartNormal:
+				if obj.StoragePath == nil {
+					logger.Error("normal object missing storage_path", zap.Int64("obj_id", obj.ID))
+					return err
+				}
+				err = storage.Delete(ctx, *obj.StoragePath)
 			}
-		}
+			return err
+		})
 
 		// 删除已处理的事件
 		if !eventDeleted {
@@ -534,6 +750,7 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	startTimerTaskLoop(ctx, "handlerTask", taskInterval, taskDone, func() {
 		handlerTask(ctx, adaptor)
 	})
+
 	startTimerTaskLoop(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, timeoutDone, func() {
 		handlerUploadMergeTimeout(ctx, adaptor)
 	})

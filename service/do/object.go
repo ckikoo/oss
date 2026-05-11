@@ -62,4 +62,5 @@ type UpdateObject struct {
 	Acl          *int32
 	Metadata     *string
 	Status       *int32
+	IsMultipart  *int32
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"oss/adaptor"
+	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
 	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/bucket"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/gogf/gf/util/gconv"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -45,6 +47,7 @@ type Service struct {
 	meteringRepo  metering.IMeteringRepo
 	storage       storage.IStorage
 	eventService  *event.Service
+	locker        redis.ILock
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -141,7 +144,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	}
 	bucketID := bucket.ID
 
-	srv.meteringRepo.UpdateDailyMetrics()
 	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, file.Size, 0, 1, 0, 0); err != nil {
 		logger.Error("object PutObject meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("req", gconv.String(req)), zap.Int64("uploadSize", (file.Size)))
 	}
@@ -349,6 +351,22 @@ func (w *countingWriter) Count() int64 {
 
 func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) common.Errno {
 
+	// ── Step 1: 对象级别分布式锁，读之前加，防并发双删 ──────────
+	// key 精确到对象，不同对象互不阻塞
+	lockKey := fmt.Sprintf("lock:obj:del:%s/%s:%s", bucketName, objectKey, versionID)
+	currentWorkdId := uuid.NewString()
+
+	locked, err := srv.locker.AcquireLock(ctx, lockKey, currentWorkdId, 15*time.Second)
+	if err != nil {
+		return common.ServerErr.WithErr(err)
+	}
+
+	if !locked {
+		// 拿不到锁说明同一对象正在被另一个请求删除，直接告知客户端
+		return common.ConflictErr.WithMsg("object is being deleted, please retry later")
+	}
+	defer srv.locker.ReleaseLock(ctx, lockKey, currentWorkdId) // 函数退出时释放，无论成功还是失败
+
 	// ── Step 1: 读操作移出事务，各用独立连接 ──────────────────
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
@@ -393,6 +411,7 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 	}
 
 	// 对文件进行删除
+	// TODO 需要引入一个sanbox 异步执行删除，避免删除文件的慢操作影响用户体验，目前mvp 先同步删除，后续优化
 	if obj != nil && obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
 		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
 			logger.GetLogger().Error("failed to delete multipart storage parts", zap.String("upload_id", *obj.UploadID), zap.Error(err))

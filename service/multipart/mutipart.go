@@ -208,6 +208,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 	if err != nil {
 		return nil, common.DatabaseErr.WithErr(err)
 	}
+
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
 	if upload.Status != consts.MultipartPartStatusUploading {
 		return nil, common.FileUploadIdStatusNotOnUpload

@@ -170,42 +170,49 @@ func (r *ObjectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 }
 
 func (r *ObjectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error) {
+	q := query.Use(r.db).Object
+
 	updates := map[string]interface{}{}
 	if update.Size != nil {
-		updates["size"] = *update.Size
+		updates[q.Size.ColumnName().String()] = *update.Size
 	}
 	if update.Etag != nil {
-		updates["etag"] = *update.Etag
+		updates[q.Etag.ColumnName().String()] = *update.Etag
 	}
 	if update.ContentType != nil {
-		updates["content_type"] = *update.ContentType
+		updates[q.ContentType.ColumnName().String()] = *update.ContentType
 	}
 	if update.StorageClass != nil {
-		updates["storage_class"] = *update.StorageClass
+		updates[q.StorageClass.ColumnName().String()] = *update.StorageClass
 	}
 	if update.StoragePath != nil {
-		updates["storage_path"] = *update.StoragePath
+		updates[q.StoragePath.ColumnName().String()] = *update.StoragePath
 	}
 	if update.Acl != nil {
-		updates["acl"] = *update.Acl
+		updates[q.Acl.ColumnName().String()] = *update.Acl
 	}
 	if update.Metadata != nil {
-		updates["metadata"] = *update.Metadata
+		updates[q.Metadata.ColumnName().String()] = *update.Metadata
 	}
 	if update.Status != nil {
-		updates["status"] = *update.Status
+		updates[q.Status.ColumnName().String()] = *update.Status
 	}
+
+	if update.IsMultipart != nil {
+		updates[q.IsMultipart.ColumnName().String()] = *update.IsMultipart
+	}
+
 	if len(updates) == 0 {
 		return nil, gorm.ErrInvalidData
 	}
-	updates["updated_at"] = time.Now()
 
-	q := query.Use(r.db)
-	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
+	updates[q.UpdatedAt.ColumnName().String()] = time.Now()
+
+	qs := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey))
 	if versionID != "" {
-		qs = qs.Where(q.Object.VersionID.Eq(versionID))
+		qs = qs.Where(q.VersionID.Eq(versionID))
 	} else {
-		qs = qs.Where(q.Object.VersionID.Eq(""))
+		qs = qs.Where(q.VersionID.Eq(""))
 	}
 
 	_, err := qs.Updates(updates)

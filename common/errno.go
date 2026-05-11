@@ -59,4 +59,5 @@ var (
 	EventRuleNotFound             = Errno{Code: 14001, Msg: "Event Rule Not Found"}
 	ErrInvalidParams              = Errno{Code: 400, Msg: "Invalid Parameters"}
 	ErrInternalServer             = Errno{Code: 500, Msg: "Internal Server Error"}
+	ConflictErr                   = Errno{Code: 409, Msg: "Conflict"}
 )
