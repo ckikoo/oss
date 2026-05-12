@@ -16,6 +16,7 @@ import (
 	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/storage"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -32,7 +33,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	objectRepo := gormObject.NewObjectRepo(adaptor)
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	storage := adaptor.GetStorage()
-	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 
 	var currentId int64 = 0
@@ -47,14 +48,27 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 		poolSize := getLifecyclePoolSize()
 		pool := pool.NewPoolWithSize(poolSize)
-
 		for _, rule := range rules {
 			rule := rule
 
 			if err := pool.RunGo(func() {
+				// TODO 可以优化下，批量获取bucket 然后调用map 去映射
+
 				bucket, err := bucketRepo.GetByID(ctx, rule.BucketID)
 				if err != nil {
+					if err == repoerr.ErrNotFound {
+						return
+					}
+
 					log.Error("failed to get bucket for lifecycle rule", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
+					return
+				}
+				if err != nil {
+					log.Error("failed to get bucket for lifecycle rule", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
+					return
+				}
+
+				if bucket == nil {
 					return
 				}
 
@@ -238,7 +252,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return nil
 			}
 
-			err = objectRepo.WithTx(tx).DeleteObject(ctx, bucket.Name, objectKey, "")
+			err = objectRepo.WithTx(tx).DeleteObject(ctx, bucket.Name, objectKey, obj.VersionID)
 			if err != nil {
 				log.Error("timer.handleExpirationEvents failed to delete object",
 					zap.String("bucket", bucket.Name),

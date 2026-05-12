@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 func GenerateRandomKey(length int) (string, error) {
@@ -16,4 +18,8 @@ func GenerateRandomKey(length int) (string, error) {
 		return "", err
 	}
 	return strings.ToUpper(hex.EncodeToString(buf)), nil
+}
+
+func UUIDHex() string {
+	return strings.ReplaceAll(uuid.New().String(), "-", "")
 }

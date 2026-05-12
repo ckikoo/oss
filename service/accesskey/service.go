@@ -27,7 +27,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:   gorm.NewAccessKeyRepo(adaptor.GetGORM()),
+		repo:   gorm.NewAccessKeyRepo(adaptor),
 		config: adaptor.GetConfig(),
 		logger: logger.GetLogger().With(zap.String("module", "accesskey")),
 	}

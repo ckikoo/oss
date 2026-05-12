@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"oss/adaptor"
 	"oss/adaptor/repo/bucket"
 	"oss/adaptor/repo/model"
@@ -13,6 +15,7 @@ import (
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
+	"oss/utils/cache"
 	"oss/utils/logger"
 
 	"github.com/go-redis/redis/v8"
@@ -22,23 +25,29 @@ import (
 )
 
 type BucketRepo struct {
-	db  *gorm.DB
-	rds *redis.Client
+	db           *gorm.DB
+	rds          *redis.Client
+	cacheManager cache.IManager // 只是持有
+	g            *singleflight.Group
 }
 
 var _ bucket.IBucketRepo = (*BucketRepo)(nil)
 
 func NewBucketRepo(a adaptor.IAdaptor) *BucketRepo {
 	return &BucketRepo{
-		db:  a.GetGORM(),
-		rds: a.GetRedis(),
+		db:           a.GetGORM(),
+		rds:          a.GetRedis(),
+		g:            &singleflight.Group{},
+		cacheManager: a.GetCache(),
 	}
 }
 
 func (r *BucketRepo) WithTx(tx tx.Tx) bucket.IBucketRepo {
 	return &BucketRepo{
-		db:  tx.(*gorm.DB),
-		rds: r.rds, // Reuse redis client in tx context
+		db:           tx.(*gorm.DB),
+		rds:          r.rds, // Reuse redis client in tx context
+		g:            r.g,
+		cacheManager: r.cacheManager,
 	}
 }
 
@@ -60,8 +69,8 @@ func (r *BucketRepo) toBucketDo(modelBucket *model.Bucket) *do.BucketDo {
 }
 
 // ─── Cache Helpers ────────────────────────────────────────────────────
-// getCachedBucket retrieves bucket from cache, returns nil if not found
-func (r *BucketRepo) getCachedBucket(ctx context.Context, key string) *do.BucketDo {
+// getCachedRedis retrieves bucket from Redis cache, returns nil if not found
+func (r *BucketRepo) getCachedRedis(ctx context.Context, key string) *do.BucketDo {
 	val, err := r.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -75,7 +84,7 @@ func (r *BucketRepo) getCachedBucket(ctx context.Context, key string) *do.Bucket
 }
 
 // setCachedBucket stores bucket in cache with TTL
-func (r *BucketRepo) setCachedBucket(ctx context.Context, key string, bucket *do.BucketDo) error {
+func (r *BucketRepo) setCachedRedis(ctx context.Context, key string, bucket *do.BucketDo) error {
 	data, err := json.Marshal(bucket)
 	if err != nil {
 		return repoerr.Wrap(err)
@@ -83,15 +92,92 @@ func (r *BucketRepo) setCachedBucket(ctx context.Context, key string, bucket *do
 	return repoerr.Wrap(r.rds.Set(ctx, key, data, time.Duration(consts.CacheTTLBucket)*time.Second).Err())
 }
 
-// invalidateBucketCache removes related cache entries
+// setAllCaches 本地 + Redis 同时写入
+func (r *BucketRepo) setAllCaches(ctx context.Context, keys []string, b *do.BucketDo) {
+	for _, key := range keys {
+		r.cacheManager.Set(key, b, 0) // TTL=0 使用 manager 默认值
+
+		if err := r.setCachedRedis(ctx, key, b); err != nil {
+			logger.Warn("failed to set bucket redis cache",
+				zap.Error(err),
+				zap.String("key", key),
+				zap.String("bucket", gconv.String(b)),
+			)
+		}
+	}
+}
+
+// invalidateBucketCache 删本地 + 删 Redis + 广播其他实例
 func (r *BucketRepo) invalidateBucketCache(ctx context.Context, userID, bucketID int64, bucketName string) {
 	keys := []string{
 		consts.BucketCacheKeyByName(userID, bucketName),
+		consts.BucketCacheKeyByID(bucketID),
+	}
+	// 删 Redis
+	r.rds.Del(ctx, keys...)
+
+	// 删本地
+	r.cacheManager.Remove(keys...)
+
+	// 广播其他实例删本地
+	if err := r.cacheManager.Publish(ctx, keys...); err != nil {
+		logger.Warn("failed to publish bucket cache invalidation",
+			zap.Error(err),
+			zap.Strings("keys", keys),
+		)
+	}
+}
+
+// ─── 三层查询核心 ────────────────────────────────────────────────────────────
+
+// getByKey 统一的三层缓存查询：本地 → Redis → singleflight → DB
+func (r *BucketRepo) getByKey(
+	ctx context.Context,
+	cacheKey string,
+	queryFn func() (*do.BucketDo, error),
+) (*do.BucketDo, error) {
+
+	// ① 本地缓存
+	if entry, ok := r.cacheManager.Get(cacheKey); ok {
+		return entry.Data.(*do.BucketDo), nil
 	}
 
-	keys = append(keys, consts.BucketCacheKeyByID(bucketID))
-	r.rds.Del(ctx, keys...)
+	// ② Redis 缓存
+	if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
+		r.cacheManager.Set(cacheKey, cached, 0) // 回填本地
+		return cached, nil
+	}
+
+	// ③ singleflight → DB（同实例并发合并，防击穿）
+	result, err, _ := r.g.Do(cacheKey, func() (interface{}, error) {
+		// double-check Redis（可能其他实例刚写入）
+		if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
+			return cached, nil
+		}
+
+		b, err := queryFn()
+		if err != nil {
+			return nil, err
+		}
+
+		// 回填 Redis + 本地
+		r.setAllCaches(ctx, []string{cacheKey}, b)
+		return b, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	b := result.(*do.BucketDo)
+
+	// singleflight 共享结果时也要回填本地（其他等待的 goroutine 没有走 setAllCaches）
+	r.cacheManager.Set(cacheKey, b, 0)
+
+	return b, nil
 }
+
+// REPO
 func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) (int64, error) {
 	var err error
 
@@ -123,51 +209,36 @@ func (r *BucketRepo) GetByName(ctx context.Context, userID int64, name string) (
 }
 
 func (r *BucketRepo) GetByUserAndName(ctx context.Context, userID int64, name string) (*do.BucketDo, error) {
-	// Try cache first
+
 	cacheKey := consts.BucketCacheKeyByName(userID, name)
-	if cached := r.getCachedBucket(ctx, cacheKey); cached != nil {
-		return cached, nil
-	}
 
-	// Cache miss, query database
-	q := query.Use(r.db)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
-	if err != nil {
-		return nil, repoerr.Wrap(err)
-	}
+	return r.getByKey(ctx, cacheKey, func() (*do.BucketDo, error) {
+		// Cache miss, query database
+		q := query.Use(r.db)
+		modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
+		if err != nil {
+			return nil, repoerr.Wrap(err)
+		}
 
-	bucket := r.toBucketDo(modelBucket)
-
-	// Cache the result
-	if err := r.setCachedBucket(ctx, cacheKey, bucket); err != nil {
-		logger.Warn("failed to set bucket cache", zap.Error(err), zap.String("key", cacheKey), zap.String("bucket", gconv.String(bucket)))
-	}
-
-	return bucket, nil
+		return r.toBucketDo(modelBucket), nil
+	})
 }
 
 func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error) {
 	// Try cache first
 	cacheKey := consts.BucketCacheKeyByID(id)
-	if cached := r.getCachedBucket(ctx, cacheKey); cached != nil {
-		return cached, nil
-	}
 
-	// Cache miss, query database
-	q := query.Use(r.db)
-	modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.ID.Eq(id)).First()
-	if err != nil {
-		return nil, repoerr.Wrap(err)
-	}
+	return r.getByKey(ctx, cacheKey, func() (*do.BucketDo, error) {
+		// Cache miss, query database
+		q := query.Use(r.db)
+		modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.ID.Eq(id)).First()
+		if err != nil {
+			return nil, repoerr.Wrap(err)
+		}
 
-	bucket := r.toBucketDo(modelBucket)
+		return r.toBucketDo(modelBucket), nil
+	})
 
-	// Cache the result
-	if err := r.setCachedBucket(ctx, cacheKey, bucket); err != nil {
-		logger.Warn("failed to set bucket cache", zap.Error(err), zap.String("key", cacheKey), zap.String("bucket", gconv.String(bucket)))
-	}
-
-	return bucket, nil
 }
 
 func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.BucketDo, error) {
@@ -210,8 +281,9 @@ func (r *BucketRepo) UpdateBucket(ctx context.Context, userID int64, id int64, n
 		updates[qs.StorageClass.ColumnName().String()] = update.StorageClass
 	}
 	if len(updates) == 0 {
-		return nil, gorm.ErrInvalidData
+		return nil, repoerr.Wrap(gorm.ErrInvalidData) // No fields to update
 	}
+
 	updates[qs.UpdatedAt.ColumnName().String()] = time.Now()
 
 	if _, err := qs.WithContext(ctx).Where(qs.UserID.Eq(userID), qs.Name.Eq(name)).Updates(updates); err != nil {
@@ -231,11 +303,13 @@ func (r *BucketRepo) UpdateBucket(ctx context.Context, userID int64, id int64, n
 func (r *BucketRepo) DeleteBucket(ctx context.Context, userID int64, id int64, name string) error {
 	q := query.Use(r.db)
 	_, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).Update(q.Bucket.Status, consts.BucketStatusDeleted)
-
+	if err != nil {
+		return repoerr.Wrap(err) // ← 失败直接返回，不失效缓存
+	}
 	// Invalidate cache after delete
-	r.invalidateBucketCache(ctx, userID, id, name) // bucketID unknown, but list cache will be cleared
+	r.invalidateBucketCache(ctx, userID, id, name)
 
-	return repoerr.Wrap(err)
+	return nil
 }
 
 func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucketName string, deltaCount, deltaSize int64) error {
@@ -244,15 +318,27 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucket
 		return repoerr.Wrap(err)
 	}
 
-	q := query.Use(r.db)
-	_, err = q.Bucket.WithContext(ctx).
-		Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(bucketName)).
-		Updates(map[string]interface{}{
-			q.Bucket.ObjectCount.ColumnName().String(): q.Bucket.ObjectCount.Add(deltaCount),
-			q.Bucket.StorageSize.ColumnName().String(): q.Bucket.StorageSize.Add(deltaSize),
-		})
+	q := query.Use(r.db).Bucket
+
+	updateMap := map[string]interface{}{}
+
+	if deltaCount != 0 {
+		updateMap[q.ObjectCount.ColumnName().String()] = q.ObjectCount.Add(deltaCount)
+	}
+	if deltaSize != 0 {
+		updateMap[q.StorageSize.ColumnName().String()] = q.StorageSize.Add(deltaSize)
+	}
+
+	if len(updateMap) == 0 {
+		return nil
+	}
 
 	r.invalidateBucketCache(ctx, userID, bucketInfo.ID, bucketName)
 
+	_, err = q.WithContext(ctx).
+		Where(q.UserID.Eq(userID), q.Name.Eq(bucketName)).
+		Updates(updateMap)
+
+	r.invalidateBucketCache(ctx, userID, bucketInfo.ID, bucketName)
 	return repoerr.Wrap(err)
 }

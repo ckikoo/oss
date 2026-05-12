@@ -6,6 +6,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/hertz-contrib/pprof"
 )
 
 type RouterDeps struct {
@@ -52,6 +53,8 @@ func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
 	h.GET("/api/v1/access-keys", deps.AccessKeyHandler.ListAccessKeys)
 	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
 	h.PATCH("/api/v1/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
+
+	pprof.Register(h)
 }
 
 func registerAuthRoutes(authGroup *route.RouterGroup, deps RouterDeps) {

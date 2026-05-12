@@ -22,7 +22,7 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	multipartRedis := redis.NewMultipart(adaptor)
 	multipartRepo := gormMultipart.NewObjectRepo(adaptor.GetGORM())
 	storage := adaptor.GetStorage()
-	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 	locker := redis.NewLock(adaptor)
 

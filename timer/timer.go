@@ -15,7 +15,7 @@ import (
 
 var log = logger.GetLogger()
 
-func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, status int32, errMsg string) error {
+func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID string, status int32, errMsg string) error {
 	update := &do.UpdateAsyncTask{Status: status}
 	if errMsg != "" {
 		update.ErrorMsg = errMsg

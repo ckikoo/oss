@@ -22,8 +22,8 @@ const (
 )
 
 const (
-	AccessKeyStatusEnable  = 1
-	AccessKeyStatusDisable = 2
+	AccessKeyStatusEnable  = 0
+	AccessKeyStatusDisable = 1
 )
 
 const (

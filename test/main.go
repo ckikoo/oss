@@ -38,9 +38,9 @@ type ApiResponse struct {
 // 配置区：修改这里
 // ============================================================
 
-const (
-	accessKey = "40C34413888EBD0D8C2358B3CC7605C2"
-	secretKey = "B9C72FAE566F6FD06D20E2C3561A0493"
+var (
+	accessKey = ""
+	secretKey = ""
 	baseURL   = "http://localhost:8080"
 )
 
@@ -51,6 +51,7 @@ const (
 // parseResponse 从 ApiResponse 中解析数据
 func parseResponse(respBody string, target interface{}) error {
 	var apiResp ApiResponse
+	fmt.Printf("respBody: %v\n", respBody)
 	if err := json.Unmarshal([]byte(respBody), &apiResp); err != nil {
 		return fmt.Errorf("解析响应失败: %v", err)
 	}
@@ -107,6 +108,7 @@ func buildAuth(method, path, query, host, contentType, body string) string {
 	timestamp := time.Now().Unix()
 
 	stringToSign := buildStringToSign(method, path, query, host, contentType, body)
+	fmt.Printf("stringToSign: %v\n", stringToSign)
 
 	signature := tools.HmacSHA256(stringToSign, secretKey)
 
@@ -291,7 +293,6 @@ func createUploadToken() {
 
 func createBucket() {
 	req := dto.CreateBucketReq{
-		UserID: 2,
 		Name:   "test-bucket1",
 		Region: "cn-east",
 	}
@@ -331,6 +332,7 @@ func doCompleteMultipartUpload(fileContent, fileName, bucketName, objectKey stri
 		ContentType: "application/octet-stream",
 		TotalChunk:  int32(math.Ceil(float64(totalSize) / chunkSize)), // 会动态计算
 		Overwrite:   true,
+		FileSize:    int64(totalSize),
 	}
 
 	body := gconv.String(createReq)
@@ -423,56 +425,212 @@ func doCompleteMultipartUpload(fileContent, fileName, bucketName, objectKey stri
 	fmt.Printf("分片上传完成，ObjectID: %d, ObjectKey: %s\n", completeResp.ObjectID, completeResp.ObjectKey)
 }
 
-// func domultipartUpload() {
-// 	createReq := dto.CreateMultipartUploadReq{
-// 		ObjectKey:   "text.txt",
-// 		ContentType: "txt",
-// 		TotalChunk:  4,
-// 		Overwrite:   true,
-// 		CallbackUrl: "https://baidu.com",
-// 	}
+func domultipartUpload() {
+	createReq := dto.CreateMultipartUploadReq{
+		ObjectKey:   "text.txt",
+		ContentType: "txt",
+		TotalChunk:  4,
+		Overwrite:   true,
+		CallbackUrl: "https://baidu.com",
+	}
 
-//		doRequest("POST", "/api/v1/buckets/test-bucket/multipart/uploads", "", gconv.String(createReq), "application/json")
-//	}
+	doRequest("POST", "/api/v1/buckets/test-bucket/multipart/uploads", "", gconv.String(createReq), "application/json")
+}
+
+func createAk() *dto.CreateAccessKeyResp {
+	req := dto.CreateAccessKeyReq{
+		UserID: 1,
+	}
+
+	str, err := sendRequest("POST", "/api/v1/access-keys", "", gconv.String(req), "application/json")
+	if err != nil {
+		fmt.Println("创建AK失败:", err)
+		return nil
+	}
+
+	var apiResp ApiResponse
+	if err := json.Unmarshal([]byte(str), &apiResp); err != nil {
+		fmt.Println("解析响应失败:", err)
+		return nil
+	}
+
+	if apiResp.Code != 200 {
+		fmt.Println("API错误:", apiResp.Msg)
+		return nil
+	}
+
+	res := &dto.CreateAccessKeyResp{}
+	if err := json.Unmarshal(apiResp.Data, res); err != nil {
+		fmt.Println("解析数据失败:", err)
+		return nil
+	}
+
+	fmt.Printf("创建AK成功: AccessKey=%s\n", res.AccessKey)
+	return res
+}
+
+func getAccessKey(accessKey string) {
+	urlPath := fmt.Sprintf("/api/v1/access-keys/%s", accessKey)
+	doRequest("GET", urlPath, "", "", "")
+}
+
+func listAccessKeys() {
+	doRequest("GET", "/api/v1/access-keys", "", "", "")
+}
+
+func deactivateAccessKey(accessKey string) {
+	urlPath := fmt.Sprintf("/api/v1/access-keys/%s/status", accessKey)
+	req := dto.UpdateAccessKeyStatusReq{
+		Status: int32(consts.AccessKeyStatusDisable),
+	}
+	doRequest("PATCH", urlPath, "", gconv.String(req), "application/json")
+}
+
+func uploadObject(bucketName, objectKey, content string) {
+	urlPath := fmt.Sprintf("/api/v1/buckets/%s/objects/%s", bucketName, objectKey)
+	doUploadFile("PUT", urlPath, content, objectKey)
+}
+
+func getObject(bucketName, objectKey string) {
+	urlPath := fmt.Sprintf("/api/v1/buckets/%s/objects/%s", bucketName, objectKey)
+	doRequest("GET", urlPath, "", "", "")
+}
+
+func listObjects(bucketName string) {
+	urlPath := fmt.Sprintf("/api/v1/buckets/%s/objects", bucketName)
+	doRequest("GET", urlPath, "", "", "")
+}
+
+func deleteObject(bucketName, objectKey string) {
+	urlPath := fmt.Sprintf("/api/v1/buckets/%s/objects/%s", bucketName, objectKey)
+	doRequest("DELETE", urlPath, "", "", "")
+}
+
+func runAutomatedTests() {
+	fmt.Println("=== 开始自动化测试 ===")
+
+	// 1. 创建AK
+	fmt.Println("\n--- 步骤1: 创建Access Key ---")
+	akResp := createAk()
+	if akResp == nil {
+		fmt.Println("创建AK失败，终止测试")
+		return
+	}
+	testAccessKey := akResp.AccessKey
+
+	// 更新全局变量以使用新创建的AK
+	accessKey = akResp.AccessKey
+	secretKey = akResp.SecretKey
+	fmt.Printf("已更新全局凭据: AccessKey=%s\n", accessKey)
+
+	// 2. 查询AK
+	fmt.Println("\n--- 步骤2: 查询Access Key ---")
+	getAccessKey(testAccessKey)
+
+	// 3. 列出AK
+	fmt.Println("\n--- 步骤3: 列出Access Keys ---")
+	listAccessKeys()
+
+	// 4. 创建桶（如果不存在）
+	fmt.Println("\n--- 步骤4: 创建Bucket ---")
+	createBucket()
+
+	// 5. 列出桶
+	fmt.Println("\n--- 步骤5: 列出Buckets ---")
+	ListBucket()
+
+	// 6. 普通上传对象
+	fmt.Println("\n--- 步骤6: 普通上传对象 ---")
+	uploadObject("test-bucket1", "test-object.txt", "Hello, this is a test object!")
+
+	// 7. 获取对象
+	fmt.Println("\n--- 步骤7: 获取对象 ---")
+	getObject("test-bucket1", "test-object.txt")
+
+	// 8. 列出对象
+	fmt.Println("\n--- 步骤8: 列出对象 ---")
+	listObjects("test-bucket1")
+
+	// 9. 分片上传
+	fmt.Println("\n--- 步骤9: 分片上传 ---")
+	largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
+	doCompleteMultipartUpload(largeContent, "large-multipart.txt", "test-bucket1", "large-multipart.txt")
+
+	// 10. 再次列出对象
+	fmt.Println("\n--- 步骤10: 再次列出对象 ---")
+	listObjects("test-bucket1")
+
+	// 11. 删除对象
+	fmt.Println("\n--- 步骤11: 删除对象 ---")
+	deleteObject("test-bucket1", "test-object.txt")
+	deleteObject("test-bucket1", "large-multipart.txt")
+
+	// 12. 停用AK
+	fmt.Println("\n--- 步骤12: 停用Access Key ---")
+	deactivateAccessKey(testAccessKey)
+
+	fmt.Println("\n=== 自动化测试完成 ===")
+}
 
 func main() {
-	// createUploadToken()
+	// 运行自动化测试
+	runAutomatedTests()
+
+	// fmt.Println("\n--- 步骤1: 创建Access Key ---")
+	// akResp := createAk()
+	// if akResp == nil {
+	// 	fmt.Println("创建AK失败，终止测试")
+	// 	return
+	// }
+
+	// // 更新全局变量以使用新创建的AK
+	// accessKey = akResp.AccessKey
+	// secretKey = akResp.SecretKey
+	// fmt.Printf("accessKey: %v\n", accessKey)
+	// fmt.Printf("secretKey: %v\n", secretKey)
 	// createBucket()
-	// ListBucket()
-	// UpdateBucket()
-	// DeleteBucket()
-	// ListBucket()
 
-	// ---- 简单上传 ----
-	// doUploadFile("PUT", "/api/v1/buckets/test-bucket/objects/test.txt", "hello world", "test.txt")
+	// doUploadFile("PUT", "/api/v1/buckets/test-bucket/objects/test1.txt", "hello world", "test1.txt")
 
-	// ---- 获取对象 ----
-	// doRequest("GET", "/api/v1/buckets/test-bucket/objects/test.txt", "", "", "")
+	// 以下是原有代码，可以取消注释单独测试
+	/*
+		// createUploadToken()
+		// createBucket()
+		// ListBucket()
+		// UpdateBucket()
+		// DeleteBucket()
+		// ListBucket()
 
-	// ---- 列出对象 ----
-	// doRequest("GET", "/api/v1/buckets/test-bucket/objects", "", "", "")
+		// ---- 简单上传 ----
 
-	// ---- 删除对象 ----
-	// doRequest("DELETE", "/api/v1/buckets/test-bucket/objects/test.txt", "", "", "")
-	// doRequest("GET", "/api/v1/buckets/test-bucket/objects", "", "", "")
-	// ---- 生成上传 Token ----
-	// doRequest("POST", "/api/v1/upload/tokens", "", `{"bucket_name":"test-bucket","object_key":"test.txt","expires_in":3600}`, "application/json")
+		// ---- 获取对象 ----
+		// doRequest("GET", "/api/v1/buckets/test-bucket/objects/test1.txt", "", "", "")
 
-	// ---- 生成下载 Token ----
-	doRequest("POST", "/api/v1/download/tokens", "", `{"bucket_name":"test-bucket","object_key":"large.txt","expires_in":3600}`, "application/json")
+		// ---- 列出对象 ----
+		// doRequest("GET", "/api/v1/buckets/test-bucket/objects", "", "", "")
 
-	// ---- 初始化分片上传 ----
-	// domultipartUpload()
+		// ---- 删除对象 ----
+		// doRequest("DELETE", "/api/v1/buckets/test-bucket/objects/test.txt", "", "", "")
+		// doRequest("GET", "/api/v1/buckets/test-bucket/objects", "", "", "")
+		// ---- 生成上传 Token ----
+		// doRequest("POST", "/api/v1/upload/tokens", "", `{"bucket_name":"test-bucket","object_key":"test.txt","expires_in":3600}`, "application/json")
 
-	// ---- 完整分片上传 ----
-	// largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
-	// doCompleteMultipartUpload(largeContent, "large.txt", "test-bucket", "large.txt")
+		// ---- 生成下载 Token ----
+		// doRequest("POST", "/api/v1/download/tokens", "", `{"bucket_name":"test-bucket","object_key":"large.txt","expires_in":3600}`, "application/json")
 
-	// ---- 默认跑一个测试 ----
-	fmt.Println("请取消注释 main() 中需要测试的接口")
+		// ---- 初始化分片上传 ----
+		// domultipartUpload()
 
-	// 快速生成一个 Authorization Header（不发请求，只打印）
-	printAuthHeader("GET", "/api/v1/buckets", "", "", "")
+		// ---- 完整分片上传 ----
+		largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
+		doCompleteMultipartUpload(largeContent, "large.txt", "test-bucket", "large.txt")
+
+		// ---- 默认跑一个测试 ----
+		// fmt.Println("请取消注释 main() 中需要测试的接口")
+
+		// 快速生成一个 Authorization Header（不发请求，只打印）
+		// printAuthHeader("GET", "/api/v1/buckets", "", "", "")
+	*/
 }
 
 // 只打印 Authorization，不发请求，方便 curl / postman 使用

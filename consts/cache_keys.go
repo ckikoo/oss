@@ -12,12 +12,15 @@ const (
 	CacheKeyAccessKey = "oss:accesskey:%s" // accessKey string
 
 	// Object cache (use cautiously due to volume)
-	CacheKeyObjectByKey = "oss:object:%s:%s:%s" // bucket:objectKey:versionID
+	CacheKeyObjectByKey         = "oss:object:%s:%s:%s"     // bucket:objectKey:versionID
+	CacheKeyObjectLatestVersion = "oss:object:latest:%s:%s" // bucket:objectKey
+	CacheKeyUserByID            = "oss:user:id:%d"          // userID
 
 	// Cache TTLs (seconds)
 	CacheTTLBucket    = 3600 // 1 hour for bucket data
 	CacheTTLAccessKey = 1800 // 30 minutes for access key
 	CacheTTLObject    = 300  // 5 minutes for object metadata
+	CacheTTLUser      = 3600 // 1 hour for user data
 	CacheTTLList      = 600  // 10 minutes for list results
 )
 
@@ -38,4 +41,12 @@ func AccessKeyCacheKey(accessKey string) string {
 // Object cache key generator
 func ObjectCacheKey(bucketName, objectKey, versionID string) string {
 	return fmt.Sprintf(CacheKeyObjectByKey, bucketName, objectKey, versionID)
+}
+
+func ObjectLatestVersionCacheKey(bucketName, objectKey string) string {
+	return fmt.Sprintf(CacheKeyObjectLatestVersion, bucketName, objectKey)
+}
+
+func UserCacheKeyByID(userID int64) string {
+	return fmt.Sprintf(CacheKeyUserByID, userID)
 }

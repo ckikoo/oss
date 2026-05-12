@@ -33,7 +33,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		adaptor: adaptor,
 		bucket:  gormBucket.NewBucketRepo(adaptor),
-		access:  gormAccessKey.NewAccessKeyRepo(adaptor.GetGORM()),
+		access:  gormAccessKey.NewAccessKeyRepo(adaptor),
 		rds:     redis.NewToken(adaptor),
 		logger:  logger.GetLogger().With(zap.String("module", "token")),
 	}
