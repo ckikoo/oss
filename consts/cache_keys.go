@@ -21,7 +21,6 @@ const (
 	CacheTTLAccessKey = 1800 // 30 minutes for access key
 	CacheTTLObject    = 300  // 5 minutes for object metadata
 	CacheTTLUser      = 3600 // 1 hour for user data
-	CacheTTLList      = 600  // 10 minutes for list results
 )
 
 // Bucket cache key generators

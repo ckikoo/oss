@@ -118,7 +118,11 @@ func (m *Manager) Publish(ctx context.Context, keys ...string) error {
 // ---- ISubscriber ----
 
 func (m *Manager) Start(ctx context.Context) error {
-	// 每个实例用 workerID 作为独立 group，确保收到全量消息
+	if err := m.cleanStaleGroups(ctx); err != nil {
+		m.logger.Warn("clean stale groups failed", zap.Error(err))
+		// 不影响主流程，继续
+	}
+
 	err := m.rds.XGroupCreateMkStream(ctx, m.cfg.StreamName, m.workerID, "$").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("cache subscriber create group: %w", err)
@@ -201,4 +205,44 @@ func (m *Manager) handle(ctx context.Context, msg redis.XMessage) {
 	}
 
 	m.Remove(payload.Keys...)
+}
+
+func (m *Manager) cleanStaleGroups(ctx context.Context) error {
+	// 获取所有 group
+	groups, err := m.rds.XInfoGroups(ctx, m.cfg.StreamName).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, group := range groups {
+		// 跳过自己
+		if group.Name == m.workerID {
+			continue
+		}
+
+		// 获取该 group 下的消费者
+		consumers, err := m.rds.XInfoConsumers(ctx, m.cfg.StreamName, group.Name).Result()
+		if err != nil {
+			continue
+		}
+
+		// 判断是否僵尸：没有消费者 or 所有消费者超过 5 分钟没活跃
+		isStale := len(consumers) == 0
+		if !isStale {
+			allIdle := true
+			for _, c := range consumers {
+				if time.Duration(c.Idle)*time.Millisecond < 5*time.Minute {
+					allIdle = false
+					break
+				}
+			}
+			isStale = allIdle
+		}
+
+		if isStale {
+			m.rds.XGroupDestroy(ctx, m.cfg.StreamName, group.Name)
+			m.logger.Info("destroyed stale group", zap.String("group", group.Name))
+		}
+	}
+	return nil
 }
