@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -113,6 +114,7 @@ func HmacSHA256(stringToSign, secretKey string) string {
 
 // 验签（用 hmac.Equal 防时序攻击）
 func HmacSHA256Verify(stringToSign, secretKey, signature string) bool {
+
 	expected := HmacSHA256(stringToSign, secretKey)
 	sig, err := hex.DecodeString(signature)
 	if err != nil {
@@ -121,7 +123,9 @@ func HmacSHA256Verify(stringToSign, secretKey, signature string) bool {
 
 	expectedBytes, err := hex.DecodeString(expected)
 	if err != nil {
+		fmt.Printf("err: %v\n", err)
 		return false
 	}
+
 	return hmac.Equal(expectedBytes, sig)
 }

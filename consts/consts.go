@@ -6,6 +6,7 @@ const (
 	AccessKeyContext = "access_key"
 	SecretKeyContext = "secret_key"
 	BucketContext    = "bucket"
+	TokenGranted     = "token_granted"
 )
 
 const (
@@ -22,8 +23,8 @@ const (
 )
 
 const (
-	AccessKeyStatusEnable  = 1
-	AccessKeyStatusDisable = 2
+	AccessKeyStatusEnable  = 0
+	AccessKeyStatusDisable = 1
 )
 
 const (

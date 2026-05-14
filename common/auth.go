@@ -14,8 +14,9 @@ type UserInfoCtx struct {
 	SecretKey string
 }
 
-func SetContextWithUserInfo(ctx context.Context, userInfo *UserInfoCtx) context.Context {
-	return context.WithValue(ctx, consts.UserInfoContext, userInfo)
+func SetContextWithUserInfo(ctx context.Context, c *app.RequestContext, userInfo *UserInfoCtx) context.Context {
+	c.Set(consts.UserInfoContext, userInfo)
+	return ctx
 }
 
 func GetUserInfoFromContext(ctx context.Context, c *app.RequestContext) (*UserInfoCtx, bool) {
@@ -42,8 +43,9 @@ func GetUserInfoFromContext(ctx context.Context, c *app.RequestContext) (*UserIn
 
 const currentActionToken = "current_action_token_"
 
-func SetTokenWithContext(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, currentActionToken, token)
+func SetTokenWithContext(ctx context.Context, c *app.RequestContext, token string) context.Context {
+	c.Set(currentActionToken, token)
+	return ctx
 }
 
 func GetTokenFromContext(ctx context.Context, c *app.RequestContext) (string, bool) {

@@ -2,11 +2,12 @@ package adaptor
 
 import (
 	"database/sql"
+
 	"oss/adaptor/storage"
 	"oss/adaptor/storage/local"
 	"oss/adaptor/tx"
 	"oss/config"
-	"oss/utils/logger"
+	"oss/utils/cache"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -21,6 +22,10 @@ type IAdaptor interface {
 	GetStorage() storage.IStorage
 	GetGORM() *gorm.DB
 	GetTxManager() tx.ITxManager
+
+	GetCache() cache.IManager  // repo 依赖
+	GetSub() cache.ISubscriber // main 启动用于监听事件
+	GetLogger() *zap.Logger
 }
 
 type Adaptor struct {
@@ -30,9 +35,21 @@ type Adaptor struct {
 	storage   storage.IStorage
 	gormDB    *gorm.DB
 	txManager tx.ITxManager
+	cm        *cache.Manager
+	logger    *zap.Logger
 }
 
-func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client) *Adaptor {
+func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, logger *zap.Logger) *Adaptor {
+	// gormLogger := gormlogger.New(
+	// 	log.New(os.Stdout, "", log.LstdFlags),
+	// 	gormlogger.Config{
+	// 		SlowThreshold:             time.Second,
+	// 		LogLevel:                  gormlogger.Info,
+	// 		IgnoreRecordNotFoundError: true,
+	// 		Colorful:                  true,
+	// 	},
+	// )
+
 	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: db}), &gorm.Config{})
 	if err != nil {
 		logger.Error("failed to connect to database with gorm", zap.Error(err))
@@ -46,6 +63,8 @@ func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client) *Adaptor {
 		storage:   local.New(conf.Server.SaveDir),
 		gormDB:    gormDB,
 		txManager: tx.NewGormTxManager(gormDB),
+		cm:        cache.NewManager(redis, logger),
+		logger:    logger,
 	}
 }
 
@@ -71,4 +90,9 @@ func (a *Adaptor) GetGORM() *gorm.DB {
 
 func (a *Adaptor) GetTxManager() tx.ITxManager {
 	return a.txManager
+}
+func (a *Adaptor) GetCache() cache.IManager  { return a.cm }
+func (a *Adaptor) GetSub() cache.ISubscriber { return a.cm }
+func (a *Adaptor) GetLogger() *zap.Logger {
+	return a.logger
 }

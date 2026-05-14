@@ -1,14 +1,11 @@
 package object
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +16,8 @@ import (
 	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	eventI "oss/adaptor/repo/event"
+	gormEvent "oss/adaptor/repo/event/gorm"
 	"oss/adaptor/repo/lifecycle"
 	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
 	"oss/adaptor/repo/metering"
@@ -59,13 +58,15 @@ type Service struct {
 	logger        *zap.Logger
 	lifecycleRepo lifecycle.ILifecycleRepo
 	lifeRedis     redis.ILifecycle
+	eventRepo     eventI.IEventDeliveryRepo
+	eventQueue    redis.IEventQueue
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		txManger:      adaptor.GetTxManager(),
 		adaptor:       adaptor,
-		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
+		userRepo:      gormAdmin.NewUserRepo(adaptor),
 		objRepo:       gormObject.NewObjectRepo(adaptor),
 		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
 		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
@@ -75,6 +76,9 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		logger:        logger.GetLogger().With(zap.String("module", "object")),
 		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
 		lifeRedis:     redis.NewLifecycle(adaptor),
+		locker:        redis.NewLock(adaptor),
+		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:    redis.NewEventQueue(adaptor),
 	}
 }
 
@@ -177,7 +181,6 @@ func (srv *Service) GetObjectVersions(ctx *common.UserInfoCtx, bucketName, objec
 }
 
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
-
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
@@ -202,7 +205,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	}
 
 	// Handle versioning
-	versionID := uuid.New().String()
+	versionID := tools.UUIDHex()
 	if bucket.Versioning == consts.BucketVersioningEnabled { // 版本控制开启，生成新的versionID，保留旧版本
 		// Generate UUID for version ID when versioning is enabled
 	} else { // 旧的版本
@@ -213,10 +216,9 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 		// If versioning is disabled and object exists, delete the old one
 		if cacheFile != nil {
-
 			err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 				// Mark old object as deleted
-				if err := srv.objRepo.DeleteObject(ctx1, req.BucketName, req.ObjectKey, cacheFile.VersionID); err != nil {
+				if err := srv.objRepo.WithTx(tx).DeleteObject(ctx1, req.BucketName, req.ObjectKey, cacheFile.VersionID); err != nil {
 					srv.logger.Error("PutObject DeleteObject ",
 						zap.String("bucket", req.BucketName),
 						zap.String("objectKey", req.ObjectKey),
@@ -226,7 +228,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 					return err
 				}
 
-				if err := srv.multipartRepo.DeleteMultipartParts(ctx1, ctx.UserID, *cacheFile.UploadID); err != nil {
+				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *cacheFile.UploadID); err != nil {
 					srv.logger.Error("PutObject DeleteMultipartParts ",
 						zap.String("bucket", req.BucketName),
 						zap.String("objectKey", req.ObjectKey),
@@ -235,7 +237,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 					return err
 				}
 
-				if err := srv.userRepo.UpdateStorageUsed(ctx1, ctx.UserID, -cacheFile.Size); err != nil {
+				if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -cacheFile.Size); err != nil {
 					srv.logger.Error("service.PutObject UpdateStorageUsed",
 						zap.String("bucket", req.BucketName),
 						zap.String("objectKey", req.ObjectKey),
@@ -320,20 +322,23 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			return &req.Metadata
 		}(),
 		CallBack: func(tx *gorm.DB) error {
-
 			return nil
 		},
 	}
 
 	var id int64
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		if err := srv.objRepo.UpdateObjectNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey, createObj.VersionID); err != nil {
+		if err := srv.objRepo.WithTx(tx).UpdateObjectNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey, createObj.VersionID); err != nil {
 			return err
 		}
 
-		id, err = srv.objRepo.CreateObject(ctx1, createObj)
+		id, err = srv.objRepo.WithTx(tx).CreateObject(ctx1, createObj)
 		if err != nil {
-			srv.storage.Delete(ctx1, putResult.StoragePath)
+			return err
+		}
+
+		err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, req.BucketName, 1, putResult.Size)
+		if err != nil {
 			return err
 		}
 
@@ -341,6 +346,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	})
 
 	if err != nil {
+		srv.storage.Delete(ctx, putResult.StoragePath)
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
@@ -360,7 +366,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		}
 	}
 
-	// 触发事件
 	go srv.eventService.TriggerEvent(ctx, bucketID, consts.EventTypePutObject, req.ObjectKey, map[string]interface{}{
 		"bucket_name":   req.BucketName,
 		"object_key":    req.ObjectKey,
@@ -371,19 +376,21 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	})
 
 	if req.CallbackUrl != "" {
-		callbackURL := req.CallbackUrl
 		callbackPayload := map[string]interface{}{
-			"event_type":  "multipart_complete",
-			"bucket_name": req.BucketName,
-			"object_key":  req.ObjectKey,
-			"upload_id":   createObj.UploadID,
-			"object_id":   id,
-			"version_id":  createObj.VersionID,
-			"size":        createObj.Size,
-			"etag":        createObj.Etag,
-			"status":      "completed",
+			"callback_url": req.CallbackUrl,
+			"event_type":   "multipart_complete",
+			"bucket_name":  req.BucketName,
+			"object_key":   req.ObjectKey,
+			"upload_id":    createObj.UploadID,
+			"object_id":    id,
+			"version_id":   createObj.VersionID,
+			"size":         createObj.Size,
+			"etag":         createObj.Etag,
+			"status":       "completed",
 		}
-		go srv.sendMultipartCompleteCallback(callbackURL, callbackPayload)
+
+		srv.dispatchCallback(ctx, req.CallbackUrl, callbackPayload)
+
 	}
 
 	return &dto.PutObjectResp{
@@ -394,44 +401,26 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		VersionID:   versionID, // Return the version ID set during creation
 	}, common.OK
 }
-
-func (srv *Service) sendMultipartCompleteCallback(callbackURL string, payload map[string]interface{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	bodyBytes, err := json.Marshal(payload)
+func (srv *Service) dispatchCallback(ctx context.Context, url string, payload map[string]interface{}) {
+	// 1. 写 event_deliveries（rule_id = nil，改表允许 NULL）
+	deliveryID, err := srv.eventRepo.CreateEventDelivery(ctx, &do.EventDeliveryDo{
+		RuleID:    0,
+		EventType: "multipart_complete",
+		ObjectKey: &url,
+		Payload:   gconv.String(payload),
+		Status:    consts.EventDeliveryStatusPending,
+	})
 	if err != nil {
-		srv.logger.Error("failed to marshal multipart callback payload", zap.Error(err), zap.String("callback_url", callbackURL))
+		srv.logger.Error("failed to create event delivery", zap.Error(err))
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		srv.logger.Error("failed to create multipart callback request", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
+	// 2. 入 Redis 队列，timer 接管后续投递和重试
+	if err := srv.eventQueue.EnqueueDeliveryID(ctx, deliveryID); err != nil {
+		srv.logger.Error("failed to enqueue delivery", zap.Int64("id", deliveryID), zap.Error(err))
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		srv.logger.Error("multipart callback request failed", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		srv.logger.Error("multipart callback returned non-success status",
-			zap.String("callback_url", callbackURL),
-			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(respBody)))
-		return
-	}
-
-	srv.logger.Info("multipart callback delivered successfully", zap.String("callback_url", callbackURL), zap.String("upload_id", fmt.Sprintf("%v", payload["upload_id"])))
 }
-
 func (srv *Service) scheduleObjectEvents(
 	ctx context.Context,
 	bucketID int64,
@@ -608,49 +597,91 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 		return common.AuthErr
 	}
 
-	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+	var versionIDs []string = nil
+	var mutilpartUploads []string = nil
+	var storagePaths []string = nil
+	var totalSize int64 = 0
+	var totalNum int64 = 0
 
-		if err := srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), -obj.Size, -1, 0, 0, 0, 0, 1); err != nil {
-			return err
+	if versionID == "" {
+
+		// 如果删除的是最新版本，找出全部版本
+		list, err := srv.objRepo.ListVersionsByFilter(ctx, obj.BucketName, obj.ObjectKey)
+		if err != nil {
+			return common.ErrnoFromRepoError(err, common.DatabaseErr)
+		}
+		mutilpartUploads = make([]string, 0, len(list))
+		versionIDs = make([]string, 0, len(list))
+		storagePaths = make([]string, 0, len(list))
+		for _, item := range list {
+			versionIDs = append(versionIDs, item.VersionID)
+			totalSize += item.Size
+			if item.IsMultipart == consts.ObjectIsMultipartMerged {
+				mutilpartUploads = append(mutilpartUploads, *item.UploadID)
+			} else {
+				storagePaths = append(storagePaths, *item.StoragePath)
+			}
 		}
 
-		if err := srv.objRepo.WithTx(tx).DeleteObject(ctx1, bucketName, objectKey, versionID); err != nil {
-			return err
-		}
+		totalNum = int64(len(versionIDs))
+	}
 
-		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -obj.Size); err != nil {
-			return err
-		}
+	if versionIDs == nil {
+		versionIDs = []string{versionID}
+		totalSize = obj.Size
+		totalNum = 1
+		mutilpartUploads = []string{}
+		storagePaths = []string{}
 
 		if obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
-			if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *obj.UploadID); err != nil {
-				return err
-			}
+			mutilpartUploads = []string{*obj.UploadID}
+		} else {
+			storagePaths = []string{*obj.StoragePath}
+		}
+
+	}
+
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+
+		if err = srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), -totalSize, -totalNum, 0, 0, 0, 0, totalNum); err != nil {
+			return err
+		}
+
+		if err = srv.objRepo.WithTx(tx).DeleteObject(ctx1, bucketName, objectKey, versionIDs...); err != nil {
+			fmt.Printf("err: %v\n", err)
+			return err
+		}
+
+		if err = srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -totalSize); err != nil {
+			return err
+		}
+
+		if err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, -totalSize, -totalNum); err != nil {
+			return err
 		}
 
 		return nil
 	})
-
 	if err != nil {
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	// 对文件进行删除
-	// TODO 需要引入一个sanbox 异步执行删除，避免删除文件的慢操作影响用户体验，目前mvp 先同步删除，后续优化
-	if obj != nil && obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
-		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
-			srv.logger.Error("failed to delete multipart storage parts", zap.String("upload_id", *obj.UploadID), zap.Error(err))
+	for _, uploadId := range mutilpartUploads {
+		if err := srv.storage.DeleteParts(ctx, bucketName, uploadId); err != nil {
+			srv.logger.Error("failed to delete multipart storage", zap.String("upload_id", uploadId), zap.Error(err))
 		}
-	} else if obj != nil && obj.StoragePath != nil {
-		if err := srv.storage.Delete(ctx, *obj.StoragePath); err != nil {
-			srv.logger.Error("failed to delete object storage file", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
+	}
+
+	for _, storagePath := range storagePaths {
+		if err := srv.storage.Delete(ctx, storagePath); err != nil {
+			srv.logger.Error("failed to delete storage", zap.String("storage_path", storagePath), zap.Error(err))
 		}
 	}
 
 	go srv.eventService.TriggerEvent(context.TODO(), obj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
 		"bucket_name": bucketName,
 		"object_key":  objectKey,
-		"size":        obj.Size,
+		"size":        totalSize,
 		"etag":        obj.Etag,
 	})
 

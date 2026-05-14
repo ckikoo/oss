@@ -36,6 +36,8 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 		Progress:   task.Progress,
 		RetryCount: task.RetryCount,
 		MaxRetry:   task.MaxRetry,
+		UploadID:   &task.UploadID,
+		ObjectID:   &task.ObjectID,
 		StartedAt:  &task.StartedAt,
 		UserID:     task.UserId,
 		CreatedAt:  time.Now(),
@@ -50,9 +52,9 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 	return modelTask.ID, nil
 }
 
-func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do.AsyncTaskDo, error) {
+func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID string) (*do.AsyncTaskDo, error) {
 	q := query.Use(r.db)
-	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.ID.Eq(taskID)).First()
+	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.TaskID.Eq(taskID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -107,7 +109,7 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do
 	}, nil
 }
 
-func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error) {
+func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID string, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error) {
 	q := query.Use(r.db).AsyncTask
 
 	// 构建更新字段
@@ -139,7 +141,7 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, updat
 	updates[q.UpdatedAt.ColumnName().String()] = time.Now()
 
 	// 执行更新
-	_, err := q.WithContext(ctx).Where(q.ID.Eq(taskID)).Updates(updates)
+	_, err := q.WithContext(ctx).Where(q.TaskID.Eq(taskID)).Updates(updates)
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}

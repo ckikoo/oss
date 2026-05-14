@@ -13,6 +13,7 @@ type MultipartUploadDo struct {
 	TotalChunk    int32
 	UploadedChunk int32
 	Status        int32
+	VersionID     string
 	StorageClass  *string
 	ContentType   *string
 	Metadata      *string
@@ -32,6 +33,7 @@ type CreateMultipartUpload struct {
 	TotalChunk    int32
 	UploadedChunk int32
 	Status        int32
+	VersionID     string
 	StorageClass  *string
 	ContentType   *string
 	Metadata      *string

@@ -28,18 +28,17 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	multipart := gormMultipart.NewObjectRepo(adaptor.GetGORM())
 	fileRepo := gormObject.NewObjectRepo(adaptor)
 	taskLocker := redis.NewLock(adaptor)
-	uinfoRepo := gormAdmin.NewUserRepo(adaptor.GetGORM())
+	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
-	locker := redis.NewLock(adaptor)
-
 	if err != nil {
 		log.Error("timer fail to dequeue task", zap.Error(err))
 		return
 	}
 
-	p := pool.NewPoolWithSize(5)
+	locker := redis.NewLock(adaptor)
 
+	p := pool.NewPoolWithSize(5)
 	for _, taskID := range taskIDs {
 		taskID := taskID // 每次迭代创建新变量
 
@@ -85,7 +84,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 			}()
 
 			// 根据 taskID 查询数据库获取任务详情
-			task, err := taskRepo.GetAsyncTaskByID(taskCtx, gconv.Int64(taskID))
+			task, err := taskRepo.GetAsyncTaskByID(taskCtx, taskID)
 			if err != nil {
 				log.Error("timer.handlerTask fail to get async task", zap.Error(err), zap.String("taskID", taskID))
 				return
@@ -132,29 +131,31 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					partPaths[i] = part.StoragePath
 				}
 
-				saveInfo, err := storage.MergeParts(taskCtx, info.BucketName, info.ObjectKey, partPaths)
+				// TODO: 这里的 MergeParts 可能耗时较长，是否需要放在事务外执行？如果放在事务内，可能会导致长时间占用数据库连接和锁；如果放在事务外，则需要考虑合并过程中数据的一致性问题。
+				saveInfo, err := storage.MergeParts(taskCtx, info.BucketName, info.ObjectKey, info.VersionID, partPaths)
 				if err != nil {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					log.Error("timer.handlerTask fail to merge parts", zap.Error(err), zap.String("task", gconv.String(task)))
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
 					return
 				}
 
 				status := int32(consts.ObjectIsMultipartNormal)
 				err = txManager.RunInTx(taskCtx, func(ctx context.Context, tx tx.Tx) error {
-					err := updateTaskStatus(ctx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
+					err := updateTaskStatus(ctx, taskRepo, task.TaskID, consts.TaskStatusCompleted, "")
 					if err != nil {
 						log.Error("timer.handlerTask updateTaskStatus parts", zap.Error(err), zap.String("task", gconv.String(task)))
 						return err
 					}
 
-					_, err = fileRepo.UpdateObject(ctx, info.BucketName, info.ObjectKey, "", &do.UpdateObject{
+					_, err = fileRepo.UpdateObject(ctx, info.BucketName, info.ObjectKey, info.VersionID, &do.UpdateObject{
 						Size:        &saveInfo.Size,
 						Etag:        &saveInfo.Etag,
 						StoragePath: &saveInfo.StoragePath,
 						IsMultipart: &(status),
 					})
+
 					if err != nil {
 						log.Error("timer.handlerTask UpdateObject parts", zap.Error(err), zap.String("task", gconv.String(task)))
 						return err

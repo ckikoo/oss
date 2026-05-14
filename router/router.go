@@ -6,6 +6,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/hertz-contrib/pprof"
 )
 
 type RouterDeps struct {
@@ -37,8 +38,9 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 }
 
 func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) {
-	registerPublicRoutes(h, deps)
+	h.Use(globalCORSMiddleware())
 
+	registerPublicRoutes(h, deps)
 	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor), NewOperationLogMiddleware(adaptor))
 	registerAuthRoutes(authGroup, deps)
 	registerBucketRoutes(authGroup, deps, adaptor)
@@ -52,6 +54,8 @@ func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
 	h.GET("/api/v1/access-keys", deps.AccessKeyHandler.ListAccessKeys)
 	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
 	h.PATCH("/api/v1/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
+
+	pprof.Register(h)
 }
 
 func registerAuthRoutes(authGroup *route.RouterGroup, deps RouterDeps) {
@@ -83,7 +87,7 @@ func registerBucketRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor
 }
 
 func registerObjectRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor adaptor.IAdaptor) {
-	objectGroup := authGroup.Group("", NewObjectACLMiddleware(adaptor))
+	objectGroup := authGroup.Group("", NewPolicyMiddleware(adaptor), NewObjectACLMiddleware(adaptor))
 	objectGroup.GET("/buckets/:bucket_name/objects", deps.ObjectHandler.ListObjects)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", deps.ObjectHandler.GetObjectMetadata)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/versions", deps.ObjectHandler.GetObjectVersions)

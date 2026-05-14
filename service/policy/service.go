@@ -25,7 +25,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		repo:       gormPolicy.NewPolicyRepo(adaptor.GetGORM()),
+		repo:       gormPolicy.NewPolicyRepo(adaptor),
 		bucketRepo: gormBucket.NewBucketRepo(adaptor),
 		logger:     logger.GetLogger().With(zap.String("module", "policy")),
 	}

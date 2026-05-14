@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"oss/adaptor"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/policy"
 	"oss/adaptor/repo/query"
@@ -22,8 +23,8 @@ type PolicyRepo struct {
 
 var _ policy.IPolicyRepo = (*PolicyRepo)(nil)
 
-func NewPolicyRepo(db *gorm.DB) *PolicyRepo {
-	return &PolicyRepo{db: db}
+func NewPolicyRepo(adaptor adaptor.IAdaptor) *PolicyRepo {
+	return &PolicyRepo{db: adaptor.GetGORM()}
 }
 
 func (r *PolicyRepo) WithTx(tx tx.Tx) policy.IPolicyRepo {
@@ -96,7 +97,7 @@ func (r *PolicyRepo) CreateBucketPolicy(ctx context.Context, bucketID int64, pol
 				conditionModels = append(conditionModels, &model.PolicyCondition{
 					PolicyID: policyID,
 					Type:     condition.Type,
-					CondKey:  condition.CondKey,
+					CondKey:  &condition.CondKey,
 					Value:    condition.Value,
 				})
 			}
@@ -187,7 +188,7 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 
 			conditionItems := make([]*do.PolicyConditionDo, 0, len(conditions))
 			for _, condition := range conditions {
-				conditionItems = append(conditionItems, &do.PolicyConditionDo{Type: condition.Type, CondKey: condition.CondKey, Value: condition.Value})
+				conditionItems = append(conditionItems, &do.PolicyConditionDo{Type: condition.Type, CondKey: *condition.CondKey, Value: condition.Value})
 			}
 
 			name := ""
@@ -219,4 +220,86 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 	}
 
 	return policies, nil
+}
+
+func (r *PolicyRepo) ListPoliciesWithSubTablesByBucketID(ctx context.Context, bucketID int64) ([]*do.BucketPolicyDo, error) {
+
+	q := query.Use(r.db)
+
+	records, err := q.BucketPolicy.WithContext(ctx).
+		Where(q.BucketPolicy.BucketID.Eq(bucketID)).
+		Where(q.BucketPolicy.Status.Eq(1)).
+		Find()
+	if err != nil || len(records) == 0 {
+		return nil, repoerr.Wrap(err)
+	}
+	policyIDs := make([]int64, len(records))
+	policyMap := make(map[int64]*do.BucketPolicyDo, len(records))
+	for i, r := range records {
+		policyIDs[i] = r.ID
+		policyMap[r.ID] = &do.BucketPolicyDo{
+			ID:       r.ID,
+			BucketID: r.BucketID,
+			Effect:   r.Effect,
+			Name:     *r.Name,
+			Status:   r.Status,
+		}
+	}
+
+	p := pool.NewPoolWithSize(4)
+	defer p.Release()
+	var (
+		principals []*model.PolicyPrincipal
+		actions    []*model.PolicyAction
+		resources  []*model.PolicyResource
+		conditions []*model.PolicyCondition
+		errs       [4]error
+	)
+
+	p.RunGo(func() {
+		principals, errs[0] = q.PolicyPrincipal.WithContext(ctx).
+			Where(q.PolicyPrincipal.PolicyID.In(policyIDs...)).Find()
+	})
+	p.RunGo(func() {
+		actions, errs[1] = q.PolicyAction.WithContext(ctx).
+			Where(q.PolicyAction.PolicyID.In(policyIDs...)).Find()
+	})
+	p.RunGo(func() {
+		resources, errs[2] = q.PolicyResource.WithContext(ctx).
+			Where(q.PolicyResource.PolicyID.In(policyIDs...)).Find()
+	})
+	p.RunGo(func() {
+		conditions, errs[3] = q.PolicyCondition.WithContext(ctx).
+			Where(q.PolicyCondition.PolicyID.In(policyIDs...)).Find()
+	})
+	p.Wait()
+
+	for _, e := range errs {
+		if e != nil {
+			return nil, repoerr.Wrap(e)
+		}
+	}
+
+	// 3. 组装回 policyMap
+	for _, item := range principals {
+		policyMap[item.PolicyID].Principals = append(policyMap[item.PolicyID].Principals,
+			&do.PolicyPrincipalDo{Type: item.Type, Value: item.Value})
+	}
+	for _, item := range actions {
+		policyMap[item.PolicyID].Actions = append(policyMap[item.PolicyID].Actions, item.Action)
+	}
+	for _, item := range resources {
+		policyMap[item.PolicyID].Resources = append(policyMap[item.PolicyID].Resources, item.Resource)
+	}
+	for _, item := range conditions {
+		policyMap[item.PolicyID].Conditions = append(policyMap[item.PolicyID].Conditions,
+			&do.PolicyConditionDo{Type: item.Type, CondKey: *item.CondKey, Value: item.Value})
+	}
+
+	// 4. 转成切片返回
+	result := make([]*do.BucketPolicyDo, 0, len(policyMap))
+	for _, v := range policyMap {
+		result = append(result, v)
+	}
+	return result, nil
 }

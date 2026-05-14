@@ -37,7 +37,7 @@ func buildStringToSign(method, path, query, host, contentType, body string, time
 	return sb.String()
 }
 func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
-	repo := gorm.NewAccessKeyRepo(adaptor.GetGORM())
+	repo := gorm.NewAccessKeyRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
 
 		// 特定接口处理
@@ -80,7 +80,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			c.Set(consts.UserInfoContext, userInfo)
 			c.Set(consts.AccessKeyContext, ak)
 			c.Set(consts.SecretKeyContext, string(sec))
-
+			c.Set(consts.TokenGranted, true)
 			c.Next(ctx)
 			return
 		}
@@ -126,7 +126,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				c.Set(consts.UserInfoContext, userInfo)
 				c.Set(consts.AccessKeyContext, ak)
 				c.Set(consts.SecretKeyContext, string(sec))
-
+				c.Set(consts.TokenGranted, true)
 				c.Next(ctx)
 				return
 			}

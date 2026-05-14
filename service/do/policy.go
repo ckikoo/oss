@@ -3,14 +3,22 @@ package do
 import "time"
 
 type PolicyPrincipalDo struct {
-	Type  string `gorm:"-"`
-	Value string `gorm:"-"`
+	Type  string
+	Value string
 }
 
 type PolicyConditionDo struct {
-	Type    string  `gorm:"-"`
-	CondKey *string `gorm:"-"`
-	Value   string  `gorm:"-"`
+	Type    string
+	CondKey string
+	Value   string
+}
+
+type EvaluateReq struct {
+	BucketID   int64
+	Principals []string // ["user:42", "ak:AKXXXXXXXX"]
+	Action     string   // "GetObject"
+	Resource   string   // "arn:oss:::my-bucket/dir/file.jpg"
+	SourceIP   string
 }
 
 type CreateBucketPolicy struct {

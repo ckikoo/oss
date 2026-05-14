@@ -61,13 +61,13 @@ Content-Type: application/json
 ### 2. Upload Parts
 ```http
 PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}
-X-Access-Key: AK
-X-Secret-Key: SK
+Authorization: OSS <access_key>:<timestamp>:<signature>
 Content-Type: multipart/form-data
 
 [file data]
 ```
 
+需要使用 `Authorization: OSS <access_key>:<timestamp>:<signature>` 进行 API 签名认证。
 **Response:**
 ```json
 {

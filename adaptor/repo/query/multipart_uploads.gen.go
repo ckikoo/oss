@@ -43,6 +43,7 @@ func newMultipartUpload(db *gorm.DB, opts ...gen.DOOption) multipartUpload {
 	_multipartUpload.LastActiveAt = field.NewTime(tableName, "last_active_at")
 	_multipartUpload.CreatedAt = field.NewTime(tableName, "created_at")
 	_multipartUpload.UpdatedAt = field.NewTime(tableName, "updated_at")
+	_multipartUpload.VersionID = field.NewString(tableName, "version_id")
 
 	_multipartUpload.fillFieldMap()
 
@@ -70,6 +71,7 @@ type multipartUpload struct {
 	LastActiveAt  field.Time   // 最后活跃时间(用于ZSET score)
 	CreatedAt     field.Time
 	UpdatedAt     field.Time
+	VersionID     field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -102,6 +104,7 @@ func (m *multipartUpload) updateTableName(table string) *multipartUpload {
 	m.LastActiveAt = field.NewTime(table, "last_active_at")
 	m.CreatedAt = field.NewTime(table, "created_at")
 	m.UpdatedAt = field.NewTime(table, "updated_at")
+	m.VersionID = field.NewString(table, "version_id")
 
 	m.fillFieldMap()
 
@@ -130,7 +133,7 @@ func (m *multipartUpload) GetFieldByName(fieldName string) (field.OrderExpr, boo
 }
 
 func (m *multipartUpload) fillFieldMap() {
-	m.fieldMap = make(map[string]field.Expr, 16)
+	m.fieldMap = make(map[string]field.Expr, 17)
 	m.fieldMap["id"] = m.ID
 	m.fieldMap["upload_id"] = m.UploadID
 	m.fieldMap["bucket_id"] = m.BucketID
@@ -147,6 +150,7 @@ func (m *multipartUpload) fillFieldMap() {
 	m.fieldMap["last_active_at"] = m.LastActiveAt
 	m.fieldMap["created_at"] = m.CreatedAt
 	m.fieldMap["updated_at"] = m.UpdatedAt
+	m.fieldMap["version_id"] = m.VersionID
 }
 
 func (m multipartUpload) clone(db *gorm.DB) multipartUpload {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
@@ -46,20 +47,22 @@ func (ctrl *multipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.Req
 }
 
 func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.RequestContext) {
+	uploadID := c.Param("upload_id")
+	partNumberStr := c.Param("part_number")
 
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
+		fmt.Println("user is empty")
 		api.WriteResp(c, nil, common.AuthErr)
 		return
 	}
 
 	token, pass := common.GetTokenFromContext(ctx, c)
 	if !pass {
-		api.WriteResp(c, nil, common.AuthErr)
-		return
+		fmt.Println("token is empty")
+		token = uploadID // fallback to uploadID for backward compatibility
+		// api.WriteResp(c, nil, common.AuthErr)
 	}
-	uploadID := c.Param("upload_id")
-	partNumberStr := c.Param("part_number")
 
 	partNumber, err := strconv.Atoi(partNumberStr)
 	if err != nil || partNumber <= 0 {

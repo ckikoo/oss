@@ -45,6 +45,7 @@ func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.Creat
 		StorageClass:  upload.StorageClass,
 		ContentType:   upload.ContentType,
 		Metadata:      upload.Metadata,
+		VersionID:     upload.VersionID,
 		ExpiresAt:     upload.ExpiresAt,
 		LastActiveAt:  upload.LastActiveAt,
 	}
@@ -71,6 +72,7 @@ func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userId int64, u
 		ID:            modelUpload.ID,
 		UploadID:      modelUpload.UploadID,
 		BucketID:      modelUpload.BucketID,
+		VersionID:     modelUpload.VersionID,
 		BucketName:    modelUpload.BucketName,
 		ObjectKey:     modelUpload.ObjectKey,
 		ObjectKeyHash: modelUpload.ObjectKeyHash,

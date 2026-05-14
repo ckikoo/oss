@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"oss/adaptor"
 	"oss/config"
@@ -30,17 +31,27 @@ func main() {
 	handleErr(err)
 	logger.Debug("redis connect success")
 
-	startServer(config, db, redisClient)
+	startServer(context.Background(), config, db, redisClient, logger.GetLogger())
 
+	defer func() {
+		logger.GetLogger().Sync()
+		redisClient.FlushDBAsync(context.Background())
+	}()
 }
 
-func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
-	newAdaptor := adaptor.NewAdaptor(conf, db, redis)
+func startServer(ctx context.Context, conf *config.Config, db *sql.DB, redis *redis.Client, logger *zap.Logger) {
+	newAdaptor := adaptor.NewAdaptor(conf, db, redis, logger)
 
 	if newAdaptor == nil {
 		logger.Error("failed to initialize adaptor")
 		return
 	}
+
+	if err := newAdaptor.GetSub().Start(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	defer newAdaptor.GetSub().Stop()
 
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
 	h := server.Default(server.WithHostPorts(address))
@@ -48,14 +59,13 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 	deps := router.NewRouterDeps(newAdaptor)
 	router.RegisterRoutes(h, deps, newAdaptor)
 
-	// 启动后台定时任务，并在异常退出时重启
-	ctx := context.Background()
+	// // 启动后台定时任务，并在异常退出时重启
 	go func() {
 		for {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						logger.GetLogger().Error("timer goroutine panic", zap.Any("panic", r), zap.Stack("stack"))
+						logger.Error("timer goroutine panic", zap.Any("panic", r), zap.Stack("stack"))
 					}
 				}()
 				timer.StartTimer(ctx, newAdaptor)
@@ -71,8 +81,8 @@ func startServer(conf *config.Config, db *sql.DB, redis *redis.Client) {
 	}()
 
 	h.Spin()
-
 }
+
 func initMysql(conf *config.Mysql) (*sql.DB, error) {
 	conf.MaxIdle = max(conf.MaxIdle, 5)
 	conf.MaxOpen = max(conf.MaxOpen, 10)

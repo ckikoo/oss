@@ -163,12 +163,6 @@ type IFileLock interface {
 
 当前实现中，`ListBucketPolicies` 会并发加载每条策略的主体、操作、资源和条件子表，使用 `oss/utils/pool` 控制并发数量，避免在策略数量多时出现大量串行查询。
 
-### presigned_urls
-- `token`, `bucket_id`, `object_key`, `method`
-- `single_use`, `used`, `expires_at`
-
-用途：临时访问的预签名 URL。
-
 ### lifecycle_rules
 - `rule_name`, `prefix`, `transition_days`, `expiration_days`
 

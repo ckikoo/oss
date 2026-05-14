@@ -13,6 +13,8 @@ import (
 	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	eventI "oss/adaptor/repo/event"
+	gormEvent "oss/adaptor/repo/event/gorm"
 	"oss/adaptor/repo/metering"
 	gormMetering "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/multipart"
@@ -34,12 +36,7 @@ import (
 	"strings"
 	"time"
 
-	"encoding/json"
-	"io"
-	"net/http"
-
 	"github.com/gogf/gf/util/gconv"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -57,12 +54,14 @@ type Service struct {
 	tokenRedis    redis.IToken
 	meteringRepo  metering.IMeteringRepo
 	logger        *zap.Logger
+	eventRepo     eventI.IEventDeliveryRepo
+	eventQueue    redis.IEventQueue
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
 		txManger:      adaptor.GetTxManager(),
-		userRepo:      gormAdmin.NewUserRepo(adaptor.GetGORM()),
+		userRepo:      gormAdmin.NewUserRepo(adaptor),
 		objRepo:       gormObject.NewObjectRepo(adaptor),
 		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
 		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
@@ -73,6 +72,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		eventService:  event.NewService(adaptor),
 		tokenRedis:    redis.NewToken(adaptor),
 		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
 		logger:        logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
@@ -115,7 +115,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		return nil, common.StorageQuotaOver
 	}
 
-	uploadID := uuid.NewString()
+	uploadID := tools.UUIDHex()
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 	storageClass := req.StorageClass
 	if storageClass == "" {
@@ -130,6 +130,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		ObjectKeyHash: objectKeyHash,
 		UserID:        bucket.UserID,
 		TotalChunk:    req.TotalChunk,
+		VersionID:     tools.UUIDHex(),
 		UploadedChunk: 0,
 		Status:        consts.MultipartUploadStatusUploading,
 		StorageClass:  &storageClass,
@@ -189,17 +190,6 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		return nil, common.RedisErr.WithErr(err)
 	}
 
-	if limitMap[redis.FieldExpiresIn] != "" {
-		expiresIn, err := strconv.ParseInt(limitMap[redis.FieldExpiresIn], 10, 64)
-		if err != nil {
-			return nil, common.ErrInternalServer.WithErr(err)
-		}
-
-		if time.Now().Unix() > expiresIn {
-			return nil, common.TokenExpired
-		}
-	}
-
 	bucketName := limitMap[redis.FieldBucketName]
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
@@ -213,7 +203,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		}
 	}
 
-	if limitMap[redis.FieldSizeLimit] != "" {
+	if limitMap[redis.FieldSizeLimit] != "" && limitMap[redis.FieldSizeLimit] != "0" {
 		limit, err := strconv.ParseInt(limitMap[redis.FieldSizeLimit], 10, 64)
 		if err != nil {
 			return nil, common.ErrInternalServer.WithErr(err)
@@ -232,11 +222,6 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
-	if err != nil {
-		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
-	}
-
 	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
 	if upload.Status != consts.MultipartPartStatusUploading {
 		return nil, common.FileUploadIdStatusNotOnUpload
@@ -244,6 +229,11 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	if partNumber <= 0 || partNumber > upload.TotalChunk {
 		return nil, common.ParamErr.WithMsg("part_number exceeds total_chunk")
+	}
+
+	uinfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	dataSize := int64(len(data))
@@ -270,18 +260,34 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		Status:      consts.MultipartPartStatusConfirmed,
 	}
 
-	_, err = srv.multipartRepo.CreateOrUpdateMultipartPart(ctx, part)
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		_, err = srv.multipartRepo.CreateOrUpdateMultipartPart(ctx, part)
+		if err != nil {
+			return err
+		}
+
+		lastActive := time.Now()
+		update := &do.UpdateMultipartUpload{LastActiveAt: &lastActive}
+
+		if _, err = srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+			return err
+		}
+
+		if err = srv.userRepo.UpdateStorageUsed(ctx, ctx.UserID, dataSize); err != nil {
+			return err
+		}
+
+		if err = srv.bucketRepo.UpdateBucketStats(ctx, ctx.UserID, bucketName, 0, dataSize); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
 	if err != nil {
+		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
-
-	lastActive := time.Now()
-	update := &do.UpdateMultipartUpload{LastActiveAt: &lastActive}
-
-	if _, err := srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
-		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
-	}
-
 	return &dto.UploadMultipartPartResp{
 		PartNumber: partNumber,
 		Etag:       res.Etag,
@@ -289,8 +295,6 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		Status:     consts.MultipartPartStatusConfirmed,
 	}, common.OK
 }
-
-// TODO 回调机制，以及 允许覆盖策略
 
 // 先做的是伪合并逻辑， 任务放入redis ，由后台工作线程异步执行真正的合并，合并完成后更新状态为已合并
 func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID string, bucketName string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
@@ -448,7 +452,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		BucketName:    upload.BucketName,
 		ObjectKey:     upload.ObjectKey,
 		ObjectKeyHash: upload.ObjectKeyHash,
-		VersionID:     uploadID,
+		VersionID:     upload.VersionID,
 		Size:          totalSize,
 		Etag:          resultEtag,
 		ContentType:   &contentType,
@@ -461,8 +465,10 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	var objectID int64
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		if err := srv.objRepo.UpdateObjectNotLatest(ctx1, bucketName, oldObject.ObjectKey, createObj.VersionID); err != nil {
-			return err
+		if oldObject != nil {
+			if err := srv.objRepo.UpdateObjectNotLatest(ctx1, bucketName, oldObject.ObjectKey, createObj.VersionID); err != nil {
+				return err
+			}
 		}
 
 		objectID, err = srv.objRepo.WithTx(tx).CreateObject(ctx, createObj)
@@ -474,7 +480,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 			return err
 		}
 
-		if err = srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx, ctx.UserID, totalSize); err != nil {
+		if err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx, ctx.UserID, bucketName, 1, 0); err != nil {
 			return err
 		}
 
@@ -495,18 +501,19 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if createReqMap[redis.FieldCallbackURL] != "" {
 		callbackURL := createReqMap[redis.FieldCallbackURL]
 		callbackPayload := map[string]interface{}{
-			"event_type":  "multipart_complete",
-			"bucket_name": upload.BucketName,
-			"object_key":  upload.ObjectKey,
-			"upload_id":   uploadID,
-			"object_id":   objectID,
-			"version_id":  uploadID,
-			"size":        totalSize,
-			"etag":        resultEtag,
-			"parts_count": len(sortedParts),
-			"status":      "completed",
+			"callback_url": callbackURL,
+			"event_type":   "multipart_complete",
+			"bucket_name":  upload.BucketName,
+			"object_key":   upload.ObjectKey,
+			"upload_id":    uploadID,
+			"object_id":    objectID,
+			"version_id":   uploadID,
+			"size":         totalSize,
+			"etag":         resultEtag,
+			"parts_count":  len(sortedParts),
+			"status":       "completed",
 		}
-		go srv.sendMultipartCompleteCallback(callbackURL, callbackPayload)
+		srv.dispatchCallback(ctx, callbackURL, callbackPayload)
 	}
 
 	// 触发事件
@@ -527,41 +534,24 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	}, common.OK
 }
 
-func (srv *Service) sendMultipartCompleteCallback(callbackURL string, payload map[string]interface{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	bodyBytes, err := json.Marshal(payload)
+func (srv *Service) dispatchCallback(ctx context.Context, url string, payload map[string]interface{}) {
+	// 1. 写 event_deliveries（rule_id = nil，改表允许 NULL）
+	deliveryID, err := srv.eventRepo.CreateEventDelivery(ctx, &do.EventDeliveryDo{
+		RuleID:    0,
+		EventType: "multipart_complete",
+		ObjectKey: &url,
+		Payload:   gconv.String(payload),
+		Status:    consts.EventDeliveryStatusPending,
+	})
 	if err != nil {
-		srv.logger.Error("failed to marshal multipart callback payload", zap.Error(err), zap.String("callback_url", callbackURL))
+		srv.logger.Error("failed to create event delivery", zap.Error(err))
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		srv.logger.Error("failed to create multipart callback request", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
+	// 2. 入 Redis 队列，timer 接管后续投递和重试
+	if err := srv.eventQueue.EnqueueDeliveryID(ctx, deliveryID); err != nil {
+		srv.logger.Error("failed to enqueue delivery", zap.Int64("id", deliveryID), zap.Error(err))
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		srv.logger.Error("multipart callback request failed", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		srv.logger.Error("multipart callback returned non-success status",
-			zap.String("callback_url", callbackURL),
-			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(respBody)))
-		return
-	}
-
-	srv.logger.Info("multipart callback delivered successfully", zap.String("callback_url", callbackURL), zap.String("upload_id", fmt.Sprintf("%v", payload["upload_id"])))
 }
 
 func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, uploadID string, objectID int64) error {
@@ -571,20 +561,22 @@ func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, upload
 
 	// 1. 先写 MySQL（持久化保证）
 	task := &do.CreateAsyncTask{
-		UserId:   ctx.UserID,
-		TaskID:   uuid.NewString(),
-		TaskType: taskType,
-		UploadID: uploadID,
-		ObjectID: objectID,
-		Status:   consts.TaskStatusPending,
-		MaxRetry: 3,
+		UserId:    ctx.UserID,
+		TaskID:    tools.UUIDHex(),
+		TaskType:  taskType,
+		UploadID:  uploadID,
+		ObjectID:  objectID,
+		Status:    consts.TaskStatusPending,
+		MaxRetry:  3,
+		StartedAt: time.Now(),
 	}
 	if _, err := srv.asyncRepo.CreateAsyncTask(ctx, task); err != nil {
 		return err
 	}
 
 	// 2. 再推 Redis（加速消费，失败不影响正确性）
-	_ = srv.asyncRedis.EnqueueTask(ctx, task.TaskID)
+	err := srv.asyncRedis.EnqueueTask(ctx, task.TaskID)
+	fmt.Printf("err: %v\n", err)
 	// 忽略 Redis 错误，兜底扫描会补偿
 	return nil
 }

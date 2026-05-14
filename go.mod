@@ -10,10 +10,14 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/gogf/gf v1.16.9
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/hertz-contrib/pprof v0.1.2
 	github.com/panjf2000/ants/v2 v2.12.0
 	github.com/samber/lo v1.53.0
 	github.com/spf13/viper v1.21.0
 	go.uber.org/zap v1.28.0
+	golang.org/x/net v0.49.0
+	golang.org/x/sync v0.19.0
 	gorm.io/driver/mysql v1.5.4
 	gorm.io/gen v0.3.25
 	gorm.io/gorm v1.25.7-0.20240204074919-46816ad31dde
@@ -29,7 +33,9 @@ require (
 	github.com/cloudwego/gopkg v0.1.4 // indirect
 	github.com/cloudwego/netpoll v0.7.2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/felixge/fgprof v0.9.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/pprof v0.0.0-20211214055906-6f57359322fd // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -50,9 +56,7 @@ require (
 	go.uber.org/multierr v1.10.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/mod v0.31.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect

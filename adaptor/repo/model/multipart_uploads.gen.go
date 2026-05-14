@@ -28,6 +28,7 @@ type MultipartUpload struct {
 	LastActiveAt  time.Time `gorm:"column:last_active_at;not null;comment:最后活跃时间(用于ZSET score)" json:"last_active_at"`   // 最后活跃时间(用于ZSET score)
 	CreatedAt     time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt     time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	VersionID     string    `gorm:"column:version_id;not null" json:"version_id"`
 }
 
 // TableName MultipartUpload's table name
