@@ -33,6 +33,11 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	if len(deliveryIDs) == 0 {
+		log.Info("no pending event deliveries")
+		return
+	}
+
+	if len(deliveryIDs) == 0 {
 		deliveries, err := eventDeliveryRepo.GetPendingDeliveries(ctx, 50)
 		if err != nil {
 			log.Error("failed to scan pending event deliveries", zap.Error(err))
@@ -40,17 +45,6 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 		}
 
 		for _, delivery := range deliveries {
-			if delivery.Status == consts.EventDeliveryStatusFailed {
-				pending := int32(consts.EventDeliveryStatusPending)
-				if err := eventDeliveryRepo.UpdateEventDelivery(ctx, delivery.ID, &do.UpdateEventDelivery{
-					Status:      &pending,
-					NextRetryAt: nil,
-				}); err != nil {
-					log.Error("failed to reset failed delivery to pending", zap.Int64("deliveryID", delivery.ID), zap.Error(err))
-					continue
-				}
-			}
-
 			if err := eventQueue.EnqueueDeliveryID(ctx, delivery.ID); err != nil {
 				log.Error("failed to enqueue pending delivery ID", zap.Int64("deliveryID", delivery.ID), zap.Error(err))
 			}
@@ -74,10 +68,13 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 			continue
 		}
 
-		rule, err := eventRuleRepo.GetByID(ctx, delivery.RuleID)
-		if err != nil || rule == nil {
-			log.Error("failed to get event rule", zap.Int64("ruleID", delivery.RuleID), zap.Error(err))
-			continue
+		var rule *do.EventRuleDo
+		if delivery.RuleID != 0 {
+			rule, err := eventRuleRepo.GetByID(ctx, delivery.RuleID)
+			if err != nil || rule == nil {
+				log.Error("failed to get event rule", zap.Int64("ruleID", delivery.RuleID), zap.Error(err))
+				continue
+			}
 		}
 
 		err = deliverEvent(ctx, adaptor, rule, delivery)
@@ -106,8 +103,23 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 		}
 	}
 }
+func deliverWebhookDirect(ctx context.Context, delivery *do.EventDeliveryDo) error {
+	if delivery.ObjectKey == nil {
+		return fmt.Errorf("no target url")
+	}
 
+	// 复用已有的 webhook 逻辑，构造一个临时 rule
+	tempRule := &do.EventRuleDo{
+		TargetType: consts.EventTargetTypeWebhook,
+		TargetURL:  delivery.ObjectKey,
+	}
+	return deliverWebhook(ctx, tempRule, delivery)
+}
 func deliverEvent(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.EventRuleDo, delivery *do.EventDeliveryDo) error {
+	if rule == nil {
+		return deliverWebhookDirect(ctx, delivery)
+	}
+
 	switch rule.TargetType {
 	case consts.EventTargetTypeWebhook:
 		return deliverWebhook(ctx, rule, delivery)

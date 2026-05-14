@@ -28,13 +28,19 @@
 
 ## API 认证
 
-所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证：
+所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证或临时令牌访问。
 
-- **Header 方式**: 
-  - `X-Access-Key`: Access Key
-  - `X-Secret-Key`: Secret Key
-- **Authorization 方式**: 
-  - `Authorization: AccessKey AK:SK`
+- **Authorization 方式**:
+  - `Authorization: OSS <access_key>:<timestamp>:<signature>`
+  - timestamp 与服务器时间允许误差不超过 30 秒
+- **临时 token 方式**:
+  - `GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}`
+  - token 可通过 `POST /api/v1/download/tokens` 创建
+
+可用的临时 token 生成接口：
+
+- `POST /api/v1/upload/tokens`
+- `POST /api/v1/download/tokens`
 
 ## Bucket Policy API
 

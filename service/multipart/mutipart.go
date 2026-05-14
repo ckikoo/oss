@@ -13,6 +13,8 @@ import (
 	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	eventI "oss/adaptor/repo/event"
+	gormEvent "oss/adaptor/repo/event/gorm"
 	"oss/adaptor/repo/metering"
 	gormMetering "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/multipart"
@@ -34,10 +36,6 @@ import (
 	"strings"
 	"time"
 
-	"encoding/json"
-	"io"
-	"net/http"
-
 	"github.com/gogf/gf/util/gconv"
 	"go.uber.org/zap"
 )
@@ -56,6 +54,8 @@ type Service struct {
 	tokenRedis    redis.IToken
 	meteringRepo  metering.IMeteringRepo
 	logger        *zap.Logger
+	eventRepo     eventI.IEventDeliveryRepo
+	eventQueue    redis.IEventQueue
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -72,6 +72,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		eventService:  event.NewService(adaptor),
 		tokenRedis:    redis.NewToken(adaptor),
 		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
 		logger:        logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
@@ -295,8 +296,6 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 	}, common.OK
 }
 
-// TODO 回调机制，以及 允许覆盖策略
-
 // 先做的是伪合并逻辑， 任务放入redis ，由后台工作线程异步执行真正的合并，合并完成后更新状态为已合并
 func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID string, bucketName string, req *dto.CompleteMultipartUploadReq) (*dto.CompleteMultipartUploadResp, common.Errno) {
 	if len(req.Parts) == 0 {
@@ -502,18 +501,19 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if createReqMap[redis.FieldCallbackURL] != "" {
 		callbackURL := createReqMap[redis.FieldCallbackURL]
 		callbackPayload := map[string]interface{}{
-			"event_type":  "multipart_complete",
-			"bucket_name": upload.BucketName,
-			"object_key":  upload.ObjectKey,
-			"upload_id":   uploadID,
-			"object_id":   objectID,
-			"version_id":  uploadID,
-			"size":        totalSize,
-			"etag":        resultEtag,
-			"parts_count": len(sortedParts),
-			"status":      "completed",
+			"callback_url": callbackURL,
+			"event_type":   "multipart_complete",
+			"bucket_name":  upload.BucketName,
+			"object_key":   upload.ObjectKey,
+			"upload_id":    uploadID,
+			"object_id":    objectID,
+			"version_id":   uploadID,
+			"size":         totalSize,
+			"etag":         resultEtag,
+			"parts_count":  len(sortedParts),
+			"status":       "completed",
 		}
-		go srv.sendMultipartCompleteCallback(callbackURL, callbackPayload)
+		srv.dispatchCallback(ctx, callbackURL, callbackPayload)
 	}
 
 	// 触发事件
@@ -534,41 +534,24 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	}, common.OK
 }
 
-func (srv *Service) sendMultipartCompleteCallback(callbackURL string, payload map[string]interface{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	bodyBytes, err := json.Marshal(payload)
+func (srv *Service) dispatchCallback(ctx context.Context, url string, payload map[string]interface{}) {
+	// 1. 写 event_deliveries（rule_id = nil，改表允许 NULL）
+	deliveryID, err := srv.eventRepo.CreateEventDelivery(ctx, &do.EventDeliveryDo{
+		RuleID:    0,
+		EventType: "multipart_complete",
+		ObjectKey: &url,
+		Payload:   gconv.String(payload),
+		Status:    consts.EventDeliveryStatusPending,
+	})
 	if err != nil {
-		srv.logger.Error("failed to marshal multipart callback payload", zap.Error(err), zap.String("callback_url", callbackURL))
+		srv.logger.Error("failed to create event delivery", zap.Error(err))
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		srv.logger.Error("failed to create multipart callback request", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
+	// 2. 入 Redis 队列，timer 接管后续投递和重试
+	if err := srv.eventQueue.EnqueueDeliveryID(ctx, deliveryID); err != nil {
+		srv.logger.Error("failed to enqueue delivery", zap.Int64("id", deliveryID), zap.Error(err))
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		srv.logger.Error("multipart callback request failed", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		srv.logger.Error("multipart callback returned non-success status",
-			zap.String("callback_url", callbackURL),
-			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(respBody)))
-		return
-	}
-
-	srv.logger.Info("multipart callback delivered successfully", zap.String("callback_url", callbackURL), zap.String("upload_id", fmt.Sprintf("%v", payload["upload_id"])))
 }
 
 func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, uploadID string, objectID int64) error {

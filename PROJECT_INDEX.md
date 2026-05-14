@@ -34,9 +34,6 @@ adaptor/repo/
 ├── policy/
 │   ├── policy_repo.go          ✅ 权限策略CRUD
 │   └── ipolicy.go              ✅ 接口定义
-├── presigned/                  ✅ 新增
-│   ├── presigned_repo.go       ✅ 预签名URL CRUD
-│   └── ipresigned.go           ✅ 接口定义
 ├── lifecycle/                  ✅ 新增
 │   ├── lifecycle_repo.go       ✅ 生命周期规则CRUD
 │   └── ilifecycle.go           ✅ 接口定义
@@ -112,13 +109,6 @@ adaptor/redis/
   - policy_principals / policy_actions / policy_resources / policy_conditions (子表)
   - 使用 oss/utils/pool 控制并发加载，避免N+1查询
 
-#### `service/presigned/` - 预签名URL服务 (新增)
-- `service.go`: 生成临时URL、撤销、查询
-- **流程**:
-  - 生成16位随机token
-  - 存储在presigned_urls表，带expiration_at
-  - 支持单次使用标记 (single_use)
-
 #### `service/lifecycle/` - 生命周期规则服务 (新增)
 - `service.go`: CRUD lifecycle规则
 - **规则模型**:
@@ -135,7 +125,6 @@ do/
 ├── object.go       - ObjectDo / CreateObject / UpdateObject
 ├── multipart.go    - MultipartUploadDo / MultipartPartDo
 ├── policy.go       - BucketPolicyDo / CreateBucketPolicy
-├── presigned.go    - PresignedURLDo / CreatePresignedURL
 └── lifecycle.go    - LifecycleRuleDo / CreateLifecycleRule / UpdateLifecycleRule
 ```
 
@@ -147,7 +136,6 @@ dto/
 ├── object.go
 ├── multipart.go
 ├── policy.go
-├── presigned.go    - CreatePresignedUrlReq / CreatePresignedUrlResp
 └── lifecycle.go    - CreateLifecycleRuleReq / ListLifecycleRulesResp
 ```
 
@@ -158,33 +146,27 @@ dto/
 #### `api/auth/` - 认证API和中间件
 ```
 api/auth/
-├── middleware.go         ✅ AK/SK验证中间件
-│   └── NewAccessKeyMiddleware() - 验证Authorization头或X-Access-Key/X-Secret-Key
-├── routes.go             ✅ 所有API路由注册
-│   ├── /api/v1/access-keys (POST/GET/PATCH)
-│   ├── /api/v1/buckets/** (POST/GET/PATCH/DELETE)
-│   ├── /api/v1/buckets/:bucket_name/objects/** (PUT/GET/DELETE)
-│   ├── /api/v1/buckets/:bucket_name/multipart/** (POST/PUT/DELETE)
-│   ├── /api/v1/buckets/:bucket_name/policies (POST/GET)
-│   ├── /api/v1/buckets/:bucket_name/lifecycle/** (POST/GET/PUT/DELETE) ✅ 新增
-│   └── /api/v1/presigned-urls (POST/DELETE) ✅ 新增
 ├── access_key.go        ✅ Access Key 控制器
 ├── bucket.go            ✅ Bucket 控制器
 ├── object.go            ✅ Object 控制器
 ├── multipart.go         ✅ Multipart 控制器
 ├── policy.go            ✅ Policy 控制器
-├── presigned.go         ✅ Presigned URL 控制器 (新增)
-└── lifecycle.go         ✅ Lifecycle 控制器 (新增)
+├── lifecycle.go         ✅ Lifecycle 控制器 (新增)
+├── token.go             ✅ Upload/Download Token 控制器 (新增)
+└── event.go             ✅ 事件规则控制器
+
+路由与认证
+├── router/auth.go        ✅ AK/SK 验证与下载 token 处理
+├── router/router.go      ✅ 所有 API 路由注册
 ```
 
 **认证方式**:
 ```
-方式1 - Header:
-  X-Access-Key: {access_key}
-  X-Secret-Key: {secret_key}
+方式1 - Authorization:
+  Authorization: OSS <access_key>:<timestamp>:<signature>
 
-方式2 - Authorization:
-  Authorization: AccessKey {access_key}:{secret_key}
+方式2 - 临时下载 token:
+  GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}
 ```
 
 #### `api/admin/` - 管理API
@@ -322,16 +304,18 @@ PUT /api/v1/buckets/{bucket}/objects/{object_key}
 ## 🔐 认证流程
 
 ```
-请求包含: X-Access-Key: {AK}, X-Secret-Key: {SK}
-         或 Authorization: AccessKey {AK}:{SK}
+请求包含: Authorization: OSS <access_key>:<timestamp>:<signature>
+         或 GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}
   ↓
-middleware.NewAccessKeyMiddleware()
-  ├─ 提取AK和SK
-  ├─ repo.GetByAccessKey(AK)      // 从数据库查询
-  ├─ tools.Sha256Hash(SK)         // 计算SK的SHA256
-  ├─ 与数据库中的secret_key_hash比对
-  ├─ 若相同: c.Set(UserKeyContext, user_id)
-  └─ 若不同: 返回401 AuthErr
+router.NewAccessKeyMiddleware()
+  ├─ 解析 Authorization 头
+  ├─ 读取 AK 信息并解密 SecretKey
+  ├─ 构建 StringToSign 并校验 HMAC-SHA256 签名
+  ├─ timestamp 与服务器时间允许误差不超过 30 秒
+  ├─ 若签名合法: c.Set(UserKeyContext, user_id)
+  ├─ 若 query token 用于 GET object, 直接校验 token 并读取对应 AK
+  └─ 否则: 返回401 AuthErr
+```
 ```
 
 **重要**:
@@ -356,8 +340,7 @@ users (用户账户)
   │  │  ├─ policy_actions (动作)
   │  │  ├─ policy_resources (资源)
   │  │  └─ policy_conditions (条件)
-  │  ├─ lifecycle_rules (生命周期规则) ✅ 新增
-  │  └─ presigned_urls (预签名URL) ✅ 新增
+  │  ├─ lifecycle_rules (生命周期规则) 
   ├─ metering_daily (日统计)
   │  ├─ storage_size
   │  ├─ object_count
@@ -408,24 +391,14 @@ go build -o oss ./main.go
 ## ⚠️ 已知问题和待办事项
 
 ### 🔴 高优先级 - 缺失核心功能
-| 问题 | 状态 | 说明 |
-|------|------|------|
-| 生命周期规则执行器 | ✅ 已实现 | `timer/scan_lifecycle.go` 后台扫描并生成lifecycle事件 |
-| 事件消费者 | ✅ 已实现 | `timer/lifecycle.go` 消费Redis中的lifecycle事件 |
-| 对象转移逻辑 | ✅ 已实现 | `timer/lifecycle.go` 中 `handleTransitionEvents` 实现STANDARD→IA→ARCHIVE转换 |
-| 过期删除逻辑 | ✅ 已实现 | `timer/lifecycle.go` 中 `handleExpirationEvents` 实现自动删除过期对象 |
+当前无高优先级核心功能缺失。
 
 ### 🟡 中优先级 - 功能增强
-| 问题 | 状态 | 说明 |
-|------|------|------|
-| 版本控制 | ✅ 已实现 | `service/object/service.go` PutObject 中实现版本控制逻辑 |
-| 分片清理 | ✅ 已实现 | `timer/upload_timeout.go` 定期清理超时的分片上传 | 
-| 指标收集 | ✅ 已实现 | `metering_daily` 支持 PUT/GET/DELETE 请求计数和真实下行字节数 |
+当前无中优先级功能缺失。
 
 ### 🟢 低优先级 - 优化
 | 问题 | 建议 |
 |------|------|
-| 缓存层 | 使用Redis缓存热点bucket/policy |
 | 查询优化 | 对象列表支持更多过滤条件 |
 | 监控告警 | 集成prometheus指标 |
 
@@ -434,7 +407,6 @@ go build -o oss ./main.go
 ## 📝 编译状态 (2026-05-11)
 - ✅ `go build ./...` - **通过**
 - ✅ `go test ./...` - **通过** (35个包，无编译错误)
-- ✅ Presigned URL 服务 - **已实现**
 - ✅ Lifecycle 规则服务 - **已实现**
 - ✅ 默认生命周期规则 - **已实现** (CreateBucket时自动创建)
 - ✅ 分布式文件锁 - **已实现** (Redis原子操作)
@@ -470,6 +442,3 @@ go build -o oss ./main.go
 - ✅ 分片超时清理
 - ✅ 日统计指标收集（PUT/GET/DELETE 请求计数、上下行流量）
 - ✅ 版本控制（Bucket versioning 和自动生成 version_id）
-
-**待完成特性**:
-- ❌ 事件通知

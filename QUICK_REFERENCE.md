@@ -84,7 +84,6 @@
 | **Object** | `service/object/` | 上传、下载、删除对象 | ✅ 完成 |
 | **Multipart** | `service/multipart/` | 分片上传（虚拟合并） | ✅ 完成 |
 | **Policy** | `service/policy/` | 权限策略管理 | ✅ 完成 |
-| **Presigned** | `service/presigned/` | 预签名URL | ✅ 完成 |
 | **Lifecycle** | `service/lifecycle/` | 规则管理 | ✅ 完成 |
 | **执行器** | `timer/` | 后台任务执行器（异步 multipart 合并、超时清理） | ✅ 完成 |
 
@@ -102,16 +101,18 @@
 → [api/auth/lifecycle.go](api/auth/lifecycle.go) `ListLifecycleRules()`  
 → [service/lifecycle/service.go](service/lifecycle/service.go) `ListLifecycleRules()`
 
-#### ...生成预签名URL
-→ [api/auth/presigned.go](api/auth/presigned.go) `CreatePresignedUrl()`  
-→ [service/presigned/service.go](service/presigned/service.go) `CreatePresignedUrl()`
-
 #### ...了解认证流程
-→ [api/auth/middleware.go](api/auth/middleware.go) `NewAccessKeyMiddleware()`
+→ [router/auth.go](router/auth.go) `NewAccessKeyMiddleware()`
 - 认证头格式为 `Authorization: OSS <access_key>:<timestamp>:<signature>`
+- GET object 下载还支持 `?token={token}` 查询参数
 
 #### ...添加新API端点
-→ [api/auth/routes.go](api/auth/routes.go) 注册路由  
+→ [router/auth.go](router/auth.go) `NewAccessKeyMiddleware()`
+- 认证头格式为 `Authorization: OSS <access_key>:<timestamp>:<signature>`
+- GET object 下载还支持 `?token={token}` 查询参数
+
+#### ...添加新API端点
+→ [router/router.go](router/router.go) 注册路由  
 → [api/auth/object.go](api/auth/object.go) 添加控制器  
 → [service/object/service.go](service/object/service.go) 添加业务逻辑
 
@@ -174,19 +175,15 @@ oss/
 │   ├── repo/lifecycle/
 │   │   ├── ✅ lifecycle_repo.go      规则CRUD
 │   │   ├── ✅ ilifecycle.go          接口
-│   │   └── (presigned类似)
 │   └── redis/
 │       └── ✅ lifecycle.go           【已修复】missing return
 ├── service/
 │   ├── bucket/
 │   │   └── ✅ service.go             【已增强】自动默认规则
-│   ├── presigned/
-│   │   └── ✅ service.go             预签名URL
 │   └── lifecycle/
 │       └── ✅ service.go             规则管理
 ├── api/auth/
 │   ├── ✅ lifecycle.go               【新增】Lifecycle端点
-│   ├── ✅ presigned.go               【新增】Presigned端点
 │   └── ✅ routes.go                  【已更新】路由注册
 └── main.go
     ├── ✅ 编译通过
@@ -209,8 +206,7 @@ go test ./...
 
 # 3. 创建bucket测试
 POST http://localhost:8080/api/v1/buckets
-X-Access-Key: {AK}
-X-Secret-Key: {SK}
+Authorization: OSS <access_key>:<timestamp>:<signature>
 {
   "user_id": 1,
   "name": "test-bucket-2",
@@ -264,9 +260,9 @@ consts.BucketStatusDeleted = 3  // 已删除
 3. 重新编译
 
 ### 调试认证问题
-1. 检查X-Access-Key和X-Secret-Key是否正确
-2. 在 [api/auth/middleware.go](api/auth/middleware.go) 添加日志
-3. 验证数据库中access_keys表的secret_key_hash值
+1. 检查 `Authorization: OSS <access_key>:<timestamp>:<signature>` 是否正确
+2. 在 [router/auth.go](router/auth.go) 添加日志
+3. 验证数据库中 access_keys 表的 secret_key_hash 值
 
 ---
 
@@ -280,4 +276,4 @@ consts.BucketStatusDeleted = 3  // 已删除
 | 初始化DB | `mysql -uroot -p < init.sql` |
 | 查看日志 | `utils/logger/logger.go` 配置 |
 | 修改常数 | `consts/consts.go` |
-| 添加路由 | `api/auth/routes.go` |
+| 添加路由 | `router/router.go` |

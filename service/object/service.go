@@ -1,14 +1,11 @@
 package object
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +16,8 @@ import (
 	gormAdmin "oss/adaptor/repo/admin/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	eventI "oss/adaptor/repo/event"
+	gormEvent "oss/adaptor/repo/event/gorm"
 	"oss/adaptor/repo/lifecycle"
 	gormLifecycle "oss/adaptor/repo/lifecycle/gorm"
 	"oss/adaptor/repo/metering"
@@ -59,6 +58,8 @@ type Service struct {
 	logger        *zap.Logger
 	lifecycleRepo lifecycle.ILifecycleRepo
 	lifeRedis     redis.ILifecycle
+	eventRepo     eventI.IEventDeliveryRepo
+	eventQueue    redis.IEventQueue
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -76,6 +77,8 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
 		lifeRedis:     redis.NewLifecycle(adaptor),
 		locker:        redis.NewLock(adaptor),
+		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:    redis.NewEventQueue(adaptor),
 	}
 }
 
@@ -178,7 +181,6 @@ func (srv *Service) GetObjectVersions(ctx *common.UserInfoCtx, bucketName, objec
 }
 
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
-	fmt.Printf("req: %+v\n", req)
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
@@ -288,8 +290,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	fmt.Printf("putResult: %+v\n", putResult)
-
 	// Default values
 	storageClass := req.StorageClass
 	if storageClass == "" {
@@ -366,8 +366,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		}
 	}
 
-	// 需要引入异步任务池， 避免gorountine 满天飞
-	// 触发事件
 	go srv.eventService.TriggerEvent(ctx, bucketID, consts.EventTypePutObject, req.ObjectKey, map[string]interface{}{
 		"bucket_name":   req.BucketName,
 		"object_key":    req.ObjectKey,
@@ -378,19 +376,21 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	})
 
 	if req.CallbackUrl != "" {
-		callbackURL := req.CallbackUrl
 		callbackPayload := map[string]interface{}{
-			"event_type":  "multipart_complete",
-			"bucket_name": req.BucketName,
-			"object_key":  req.ObjectKey,
-			"upload_id":   createObj.UploadID,
-			"object_id":   id,
-			"version_id":  createObj.VersionID,
-			"size":        createObj.Size,
-			"etag":        createObj.Etag,
-			"status":      "completed",
+			"callback_url": req.CallbackUrl,
+			"event_type":   "multipart_complete",
+			"bucket_name":  req.BucketName,
+			"object_key":   req.ObjectKey,
+			"upload_id":    createObj.UploadID,
+			"object_id":    id,
+			"version_id":   createObj.VersionID,
+			"size":         createObj.Size,
+			"etag":         createObj.Etag,
+			"status":       "completed",
 		}
-		go srv.sendMultipartCompleteCallback(callbackURL, callbackPayload)
+
+		srv.dispatchCallback(ctx, req.CallbackUrl, callbackPayload)
+
 	}
 
 	return &dto.PutObjectResp{
@@ -401,44 +401,26 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		VersionID:   versionID, // Return the version ID set during creation
 	}, common.OK
 }
-
-func (srv *Service) sendMultipartCompleteCallback(callbackURL string, payload map[string]interface{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	bodyBytes, err := json.Marshal(payload)
+func (srv *Service) dispatchCallback(ctx context.Context, url string, payload map[string]interface{}) {
+	// 1. 写 event_deliveries（rule_id = nil，改表允许 NULL）
+	deliveryID, err := srv.eventRepo.CreateEventDelivery(ctx, &do.EventDeliveryDo{
+		RuleID:    0,
+		EventType: "multipart_complete",
+		ObjectKey: &url,
+		Payload:   gconv.String(payload),
+		Status:    consts.EventDeliveryStatusPending,
+	})
 	if err != nil {
-		srv.logger.Error("failed to marshal multipart callback payload", zap.Error(err), zap.String("callback_url", callbackURL))
+		srv.logger.Error("failed to create event delivery", zap.Error(err))
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		srv.logger.Error("failed to create multipart callback request", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
+	// 2. 入 Redis 队列，timer 接管后续投递和重试
+	if err := srv.eventQueue.EnqueueDeliveryID(ctx, deliveryID); err != nil {
+		srv.logger.Error("failed to enqueue delivery", zap.Int64("id", deliveryID), zap.Error(err))
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		srv.logger.Error("multipart callback request failed", zap.Error(err), zap.String("callback_url", callbackURL))
-		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		srv.logger.Error("multipart callback returned non-success status",
-			zap.String("callback_url", callbackURL),
-			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(respBody)))
-		return
-	}
-
-	srv.logger.Info("multipart callback delivered successfully", zap.String("callback_url", callbackURL), zap.String("upload_id", fmt.Sprintf("%v", payload["upload_id"])))
 }
-
 func (srv *Service) scheduleObjectEvents(
 	ctx context.Context,
 	bucketID int64,

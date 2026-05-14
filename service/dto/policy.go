@@ -6,9 +6,9 @@ type PolicyPrincipalItem struct {
 }
 
 type PolicyConditionItem struct {
-	Type    string  `json:"type"`
-	CondKey *string `json:"cond_key,omitempty"`
-	Value   string  `json:"value"`
+	Type    string `json:"type"`
+	CondKey string `json:"cond_key,omitempty"`
+	Value   string `json:"value"`
 }
 
 type CreateBucketPolicyReq struct {

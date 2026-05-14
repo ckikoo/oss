@@ -80,7 +80,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			c.Set(consts.UserInfoContext, userInfo)
 			c.Set(consts.AccessKeyContext, ak)
 			c.Set(consts.SecretKeyContext, string(sec))
-
+			c.Set(consts.TokenGranted, true)
 			c.Next(ctx)
 			return
 		}
@@ -126,7 +126,7 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 				c.Set(consts.UserInfoContext, userInfo)
 				c.Set(consts.AccessKeyContext, ak)
 				c.Set(consts.SecretKeyContext, string(sec))
-
+				c.Set(consts.TokenGranted, true)
 				c.Next(ctx)
 				return
 			}

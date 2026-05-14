@@ -171,7 +171,7 @@ CREATE TABLE  IF NOT EXISTS  multipart_parts (
 CREATE TABLE  IF NOT EXISTS  async_tasks (
     id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
     task_id         VARCHAR(64)     NOT NULL                COMMENT '任务唯一ID',
-    task_type       VARCHAR(32)     NOT NULL                COMMENT 'PHYSICAL_MERGE/TRANSCODE/IMG_PROCESS',
+    task_type       VARCHAR(32)     NOT NULL                COMMENT 'PHYSICAL_MERGE/TRANSCODE/IMG_PROCESS/DELETE_FILE',
     upload_id       VARCHAR(64)                             COMMENT '关联分片会话ID',
     object_id       BIGINT                                  COMMENT '关联对象ID',
     status          TINYINT         NOT NULL DEFAULT 0      COMMENT '0=待执行 1=执行中 2=完成 3=失败',
@@ -417,7 +417,6 @@ CREATE TABLE  IF NOT EXISTS  event_deliveries (
 -- policy_actions.policy_id    → bucket_policies.id
 -- policy_resources.policy_id  → bucket_policies.id
 -- policy_conditions.policy_id → bucket_policies.id
--- presigned_urls.bucket_id  → buckets.id
 -- lifecycle_rules.bucket_id → buckets.id
 -- event_rules.bucket_id     → buckets.id
 -- event_deliveries.rule_id  → event_rules.id

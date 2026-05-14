@@ -6,6 +6,7 @@ const (
 	AccessKeyContext = "access_key"
 	SecretKeyContext = "secret_key"
 	BucketContext    = "bucket"
+	TokenGranted     = "token_granted"
 )
 
 const (
