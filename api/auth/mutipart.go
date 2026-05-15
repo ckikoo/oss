@@ -73,7 +73,7 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 		return
 	}
 
-	if contentLength > consts.DefaultMaxKeys {
+	if contentLength > consts.MaxPartSize {
 		api.WriteResp(c, nil, common.FilePartSizeOutLimit)
 		return
 	}

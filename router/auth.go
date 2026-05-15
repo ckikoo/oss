@@ -202,7 +202,13 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		}
 
 		ak := fields[0]
-		timestamp, _ := strconv.ParseInt(fields[1], 10, 64)
+		timestamp, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || timestamp <= 0 {
+			api.WriteResp(c, nil, common.AuthErr.WithMsg("invalid timestamp"))
+			c.Abort()
+			return
+		}
+
 		signature := fields[2]
 
 		// 2. 防重放：时间戳偏差不超过 30s
@@ -247,8 +253,8 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		query := canonicalQuery(rawQuery)
 		stringToSign := buildStringToSign(
 			string(c.Method()),
-			string(query),
-			string(c.GetRequest().QueryString()),
+			string(c.Path()),
+			query,
 			string(c.Host()),
 			contentType,
 			body,

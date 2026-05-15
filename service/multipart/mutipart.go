@@ -417,7 +417,9 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if upload.Status != consts.MultipartUploadStatusUploading {
 		return nil, common.FileUploadIdStatusNotOnUpload
 	}
-
+	if int32(len(req.Parts)) != upload.TotalChunk {
+		return nil, common.ParamErr.WithMsg("parts count not match total_chunk")
+	}
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
