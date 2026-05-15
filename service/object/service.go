@@ -42,7 +42,6 @@ import (
 	"github.com/gogf/gf/util/gconv"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -328,9 +327,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 			}
 			return &req.Metadata
 		}(),
-		CallBack: func(tx *gorm.DB) error {
-			return nil
-		},
 	}
 
 	var id int64
