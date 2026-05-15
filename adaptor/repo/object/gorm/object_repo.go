@@ -201,50 +201,34 @@ func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		objectID int64 = 0
 		err      error
 	)
+	now := time.Now()
+	modelObject := &model.Object{
+		BucketID:      object.BucketID,
+		BucketName:    object.BucketName,
+		ObjectKey:     object.ObjectKey,
+		ObjectKeyHash: object.ObjectKeyHash,
+		VersionID:     object.VersionID,
+		Size:          object.Size,
+		Etag:          object.Etag,
+		ContentType:   object.ContentType,
+		StorageClass:  object.StorageClass,
+		IsMultipart:   object.IsMultipart,
+		UploadID:      object.UploadID,
+		StoragePath:   object.StoragePath,
+		Acl:           object.Acl,
+		Metadata:      object.Metadata,
+		Status:        consts.ObjectStatusNormal,
+		IsLatest:      &[]int32{1}[0],
+		AccessCount:   0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
 
-	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		modelObject := &model.Object{
-			BucketID:      object.BucketID,
-			BucketName:    object.BucketName,
-			ObjectKey:     object.ObjectKey,
-			ObjectKeyHash: object.ObjectKeyHash,
-			VersionID:     object.VersionID,
-			Size:          object.Size,
-			Etag:          object.Etag,
-			ContentType:   object.ContentType,
-			StorageClass:  object.StorageClass,
-			IsMultipart:   object.IsMultipart,
-			UploadID:      object.UploadID,
-			StoragePath:   object.StoragePath,
-			Acl:           object.Acl,
-			Metadata:      object.Metadata,
-			Status:        consts.ObjectStatusNormal,
-			IsLatest:      &[]int32{1}[0],
-			AccessCount:   0,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}
-
-		if err := tx.Create(modelObject).Error; err != nil {
-			return err
-		}
-
-		objectID = modelObject.ID
-
-		if object.CallBack != nil {
-			if err := object.CallBack(tx); err != nil {
-				return err
-			}
-		}
-
-		return nil
-
-	})
-
-	if err != nil {
+	if err = query.Use(r.db).Object.WithContext(ctx).Create(modelObject); err != nil {
 		return 0, repoerr.Wrap(err)
 	}
+
+	objectID = modelObject.ID
 
 	return objectID, nil
 }

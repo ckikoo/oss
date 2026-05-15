@@ -17,7 +17,7 @@ import (
 // LocalStorage 本地磁盘存储实现
 // 目录结构：
 //
-//	{baseDir}/{bucket}/{objectKey}                               ← 普通对象
+//	{baseDir}/{bucket}/{objectKey}_{version}                               ← 普通对象
 //	{baseDir}/{bucket}/multipart/{uploadID}/part_{partNumber}   ← 分片
 type LocalStorage struct {
 	baseDir string
@@ -83,7 +83,7 @@ func (s *LocalStorage) DeleteParts(ctx context.Context, bucket, uploadID string)
 }
 
 // MergeParts：用 MultiReader 把分片串成单流，复用 saveAndHash
-func (s *LocalStorage) MergeParts(ctx context.Context, bucket, objectKey string, partPaths []string) (*storage.PutResult, error) {
+func (s *LocalStorage) MergeParts(ctx context.Context, bucket, objectKey string, version string, partPaths []string) (*storage.PutResult, error) {
 	if len(partPaths) == 0 {
 		return nil, fmt.Errorf("no part paths provided")
 	}
@@ -106,7 +106,7 @@ func (s *LocalStorage) MergeParts(ctx context.Context, bucket, objectKey string,
 	}
 
 	// 多个文件 → 一个流，saveAndHash 完全不用改
-	return saveAndHash(io.MultiReader(files...), s.BuildObjectPath(ctx, bucket, objectKey, ""))
+	return saveAndHash(io.MultiReader(files...), s.BuildObjectPath(ctx, bucket, objectKey, version))
 }
 
 // BuildObjectPath 返回普通对象的完整磁盘路径（供外部记录到 DB）

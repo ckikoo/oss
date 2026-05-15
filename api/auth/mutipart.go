@@ -2,10 +2,10 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
+	"oss/consts"
 	"oss/service/dto"
 	"oss/service/multipart"
 	"strconv"
@@ -52,16 +52,13 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
-		fmt.Println("user is empty")
 		api.WriteResp(c, nil, common.AuthErr)
 		return
 	}
 
 	token, pass := common.GetTokenFromContext(ctx, c)
 	if !pass {
-		fmt.Println("token is empty")
-		token = uploadID // fallback to uploadID for backward compatibility
-		// api.WriteResp(c, nil, common.AuthErr)
+		token = uploadID
 	}
 
 	partNumber, err := strconv.Atoi(partNumberStr)
@@ -69,16 +66,28 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("invalid part_number"))
 		return
 	}
+
+	contentLength := c.Request.Header.ContentLength()
+	if contentLength <= 0 {
+		api.WriteResp(c, nil, common.ReadBodyError)
+		return
+	}
+
+	if contentLength > consts.DefaultMaxKeys {
+		api.WriteResp(c, nil, common.FilePartSizeOutLimit)
+		return
+	}
+
 	// 读取 body 中的二进制数据
-	body := c.GetRawData()
-	if len(body) == 0 {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("body is empty"))
+	bodyReader := c.Request.BodyStream()
+	if bodyReader == nil {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("body stream is empty"))
 		return
 	}
 
 	etag := c.Request.Header.Get("Content-MD5")
 
-	resp, errno := ctrl.object.UploadMultipartPart(ctx1, token, etag, uploadID, int32(partNumber), body)
+	resp, errno := ctrl.object.UploadMultipartPart(ctx1, token, etag, uploadID, int32(partNumber), bodyReader, int64(contentLength))
 	api.WriteResp(c, resp, errno)
 }
 

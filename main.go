@@ -26,16 +26,24 @@ func main() {
 
 	db, err := initMysql(&config.Mysql)
 	handleErr(err)
+	defer db.Close()
+
 	logger.Debug("mysql connect success")
 	redisClient, err := initRedis(&config.Redis)
 	handleErr(err)
+	defer redisClient.Close()
+
 	logger.Debug("redis connect success")
 
 	startServer(context.Background(), config, db, redisClient, logger.GetLogger())
 
 	defer func() {
+		if config.Server.Env == "dev" {
+			redisClient.FlushDBAsync(context.Background())
+		}
+
 		logger.GetLogger().Sync()
-		redisClient.FlushDBAsync(context.Background())
+
 	}()
 }
 

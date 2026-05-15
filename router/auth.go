@@ -3,12 +3,15 @@ package router
 import (
 	"context"
 	"math"
+	"net/url"
 	"oss/adaptor"
 	"oss/adaptor/repo/accesskey/gorm"
+	"oss/api"
 	"oss/api/auth"
 	"oss/common"
 	"oss/consts"
 	"oss/utils/tools"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,22 +22,64 @@ import (
 func buildStringToSign(method, path, query, host, contentType, body string, timestamp int64) string {
 	var sb strings.Builder
 
-	sb.WriteString(method + " " + path)
+	sb.WriteString(method)
+	sb.WriteString(" ")
+	sb.WriteString(path)
+
 	if query != "" {
-		sb.WriteString("?" + query)
+		sb.WriteString("?")
+		sb.WriteString(query)
 	}
-	sb.WriteString("\nHost: " + host)
+
+	sb.WriteString("\nHost: ")
+	sb.WriteString(host)
+
 	if contentType != "" {
-		sb.WriteString("\nContent-Type: " + contentType)
+		sb.WriteString("\nContent-Type: ")
+		sb.WriteString(contentType)
 	}
+
+	sb.WriteString("\nX-OSS-Timestamp: ")
+	sb.WriteString(strconv.FormatInt(timestamp, 10))
+
 	sb.WriteString("\n\n")
 
-	// octet-stream 或无 body 直接跳过
-	if contentType != "application/octet-stream" && body != "" {
+	if body != "" {
 		sb.WriteString(body)
 	}
 
 	return sb.String()
+}
+
+func canonicalQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery
+	}
+
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	parts := make([]string, 0)
+
+	for _, key := range keys {
+		vals := values[key]
+		sort.Strings(vals)
+
+		for _, val := range vals {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(val))
+		}
+	}
+
+	return strings.Join(parts, "&")
 }
 func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	repo := gorm.NewAccessKeyRepo(adaptor)
@@ -184,16 +229,25 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		}
 
 		contentType := string(c.GetHeader("Content-Type"))
-		var body string
-		// 跳过二进制流和 multipart 请求的 body，因为 boundary 是动态的
-		if contentType != "application/octet-stream" && !strings.Contains(contentType, "multipart/") {
-			b, _ := c.Body()
+		body := ""
+
+		shouldSkipBody := strings.Contains(contentType, "application/octet-stream") ||
+			strings.Contains(contentType, "multipart/")
+
+		if !shouldSkipBody {
+			b, err := c.Body()
+			if err != nil {
+				api.WriteResp(c, nil, common.ReadBodyError)
+				c.Abort()
+				return
+			}
 			body = string(b)
 		}
-
+		rawQuery := string(c.GetRequest().QueryString())
+		query := canonicalQuery(rawQuery)
 		stringToSign := buildStringToSign(
 			string(c.Method()),
-			string(c.Path()),
+			string(query),
 			string(c.GetRequest().QueryString()),
 			string(c.Host()),
 			contentType,

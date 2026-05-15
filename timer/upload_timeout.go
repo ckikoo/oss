@@ -7,6 +7,7 @@ import (
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	gormAdmin "oss/adaptor/repo/admin/gorm"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -25,6 +26,7 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 	locker := redis.NewLock(adaptor)
+	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 
 	list, err := multipartRedis.GetTimeWaitMultipartCancel(ctx)
 	if err != nil {
@@ -72,6 +74,8 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 			}()
 
+			// 锁
+
 			uploadInfo, err := multipartRepo.GetMultipartUploadByID(refreshLockCtx, 0, item)
 			if err != nil {
 				log.Error("timer.handlerUploadMergeTimeout fail to get multipart upload info", zap.Error(err), zap.String("uploadID", item))
@@ -79,10 +83,11 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 			}
 
 			if uploadInfo.Status == consts.MultipartPartStatusVirtualMerge {
+				_ = multipartRedis.DelTimeoutMultipartCancel(ctx, uploadInfo.UploadID)
 				return
 			}
 
-			total := 0
+			var total int64
 			parts, err := multipartRepo.ListMultipartParts(refreshLockCtx, uploadInfo.UserID, uploadInfo.UploadID)
 			if err != nil {
 				log.Error("timer.handlerUploadMergeTimeout fail to list multipart parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
@@ -90,30 +95,45 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 			}
 
 			lo.ForEach(parts, func(item *do.MultipartPartDo, _ int) {
-				total += int(item.Size)
+				total += int64(item.Size)
 			})
 
 			err = txManager.RunInTx(refreshLockCtx, func(ctx context.Context, tx tx.Tx) error {
-				err := uinfoRepo.UpdateStorageUsed(ctx, uploadInfo.UserID, -int64(total))
-				if err != nil {
-					log.Error("timer.handlerUploadMergeTimeout fail to update user storage used", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
-					return err
+				if total > 0 {
+					err := uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, uploadInfo.UserID, -int64(total))
+					if err != nil {
+						log.Error("timer.handlerUploadMergeTimeout fail to update user storage used", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+						return err
+					}
+					err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, uploadInfo.UserID, uploadInfo.BucketName, 0, -int64(total))
+					if err != nil {
+						log.Error("timer.handlerUploadMergeTimeout UpdateBucketStats parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+						return err
+					}
 				}
 
-				err = multipartRepo.DeleteMultipartParts(ctx, uploadInfo.UserID, uploadInfo.UploadID)
+				err = multipartRepo.WithTx(tx).DeleteMultipartParts(ctx, uploadInfo.UserID, uploadInfo.UploadID)
 				if err != nil {
 					log.Error("timer.handlerUploadMergeTimeout fail to delete multipart parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
 					return err
 				}
 
-				err = storage.DeleteParts(ctx, uploadInfo.BucketName, uploadInfo.UploadID)
-				if err != nil {
-					log.Error("timer.handlerUploadMergeTimeout fail to delete parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
-					return err
-				}
-
 				return nil
 			})
+
+			if err != nil {
+				log.Error("timer.handlerUploadMergeTimeout fail to delete parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
+				return
+			}
+			if err := storage.DeleteParts(refreshLockCtx, uploadInfo.BucketName, uploadInfo.UploadID); err != nil {
+				log.Error("timer.handlerUploadMergeTimeout fail to delete parts",
+					zap.Error(err),
+					zap.String("uploadID", uploadInfo.UploadID),
+				)
+				return
+			}
+
+			_ = multipartRedis.DelTimeoutMultipartCancel(refreshLockCtx, uploadInfo.UploadID)
 
 		}); err != nil {
 			log.Error("failed to submit task to pool", zap.Error(err))

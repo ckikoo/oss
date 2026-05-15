@@ -9,7 +9,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/gogf/gf/util/gconv"
 	"github.com/spf13/viper"
 )
 
@@ -34,6 +33,7 @@ type Server struct {
 	EnablePprof bool   `yaml:"enable_prof"`
 	LogLevel    string `yaml:"log_level"`
 	SaveDir     string `yaml:"save_dir"`
+	Env         string `yaml:"env"`
 }
 
 type Security struct {
@@ -52,8 +52,6 @@ type Mysql struct {
 }
 
 func (m *Mysql) GetDsn() string {
-	fmt.Println(gconv.String(m))
-
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&loc=Local",
 		m.User, m.Password, m.Host, m.Port, m.DBName, m.Charset)
 }

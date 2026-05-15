@@ -1,10 +1,10 @@
 package multipart
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
@@ -25,10 +25,12 @@ import (
 	"oss/adaptor/storage"
 	"oss/adaptor/tx"
 	"oss/common"
+	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/service/event"
+	"oss/utils/ip"
 	"oss/utils/logger"
 	"oss/utils/tools"
 	"sort"
@@ -77,6 +79,13 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
+
+	if req.CallbackUrl != "" && config.GlobalConfig.Server.Env != "dev" {
+		err := ip.ValidateCallbackURL(req.CallbackUrl)
+		if err != nil {
+			return nil, common.ParamErr.WithErr(err)
+		}
+	}
 
 	if req.ObjectKey == "" {
 		return nil, common.ParamErr.WithMsg("object_key is required")
@@ -182,10 +191,24 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 
 // upload_etag 参数用于校验文件是否和用户传递的一致，防止用户上传了错误的文件
 // uploadID参数用于校验用户是否有权限上传这个文件
+func (srv *Service) UploadMultipartPart(
+	ctx *common.UserInfoCtx,
+	token string,
+	upload_etag string,
+	uploadID string,
+	partNumber int32,
+	reader io.Reader,
+	totolSize int64,
+) (*dto.UploadMultipartPartResp, common.Errno) {
 
-func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, upload_etag string, uploadID string, partNumber int32, data []byte) (*dto.UploadMultipartPartResp, common.Errno) {
-
-	limitMap, err := srv.tokenRedis.GetUploadTokenFields(ctx, token, redis.FieldSizeLimit, redis.FieldBucketName, redis.FieldObjectKey, redis.FieldExpiresIn)
+	limitMap, err := srv.tokenRedis.GetUploadTokenFields(
+		ctx,
+		token,
+		redis.FieldSizeLimit,
+		redis.FieldBucketName,
+		redis.FieldObjectKey,
+		redis.FieldExpiresIn,
+	)
 	if err != nil {
 		return nil, common.RedisErr.WithErr(err)
 	}
@@ -194,14 +217,36 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
 	if err != nil {
-		srv.logger.Error("UploadMultipartPart bucketRepo.GetByName error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+		srv.logger.Error(
+			"UploadMultipartPart bucketRepo.GetByName error",
+			zap.Error(err),
+			zap.String("redis json", gconv.String(limitMap)),
+		)
 	}
 
 	if bucket != nil {
-		if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, int64(len(data)), 0, 1, 0, 0); err != nil {
-			srv.logger.Error("UploadMultipartPart meteringRepo.UpdateDailyMetrics error", zap.Error(err), zap.String("redis json", gconv.String(limitMap)))
+		if err := srv.meteringRepo.UpdateDailyMetrics(
+			ctx,
+			bucket.UserID,
+			&bucket.ID,
+			time.Now(),
+			0,
+			0,
+			totolSize,
+			0,
+			1,
+			0,
+			0,
+		); err != nil {
+			srv.logger.Error(
+				"UploadMultipartPart meteringRepo.UpdateDailyMetrics error",
+				zap.Error(err),
+				zap.String("redis json", gconv.String(limitMap)),
+			)
 		}
 	}
+
+	newPartSize := totolSize
 
 	if limitMap[redis.FieldSizeLimit] != "" && limitMap[redis.FieldSizeLimit] != "0" {
 		limit, err := strconv.ParseInt(limitMap[redis.FieldSizeLimit], 10, 64)
@@ -209,7 +254,7 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 			return nil, common.ErrInternalServer.WithErr(err)
 		}
 
-		if int64(len(data)) > limit {
+		if newPartSize > limit {
 			return nil, common.FilePartSizeOutLimit
 		}
 	}
@@ -222,8 +267,8 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	// 只有在上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
-	if upload.Status != consts.MultipartPartStatusUploading {
+	// 只有上传中状态才允许上传分片，已完成、已中止的上传不允许再上传分片
+	if upload.Status != consts.MultipartUploadStatusUploading {
 		return nil, common.FileUploadIdStatusNotOnUpload
 	}
 
@@ -236,62 +281,124 @@ func (srv *Service) UploadMultipartPart(ctx *common.UserInfoCtx, token string, u
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	dataSize := int64(len(data))
-	if uinfo.StorageQuota > 0 && uinfo.StorageUsed+dataSize > uinfo.StorageQuota {
+	// 重点：查旧 part。
+	// 重复上传同一个 partNumber 时，只按新旧 size 差值更新容量。
+	var oldPart *do.MultipartPartDo
+	oldPartSize := int64(0)
+
+	oldPart, err = srv.multipartRepo.GetMultipartPart(ctx, ctx.UserID, uploadID, partNumber)
+	if err != nil {
+		if !errors.Is(err, repoerr.ErrNotFound) {
+			return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+		}
+	} else if oldPart != nil {
+		oldPartSize = oldPart.Size
+	}
+
+	deltaSize := newPartSize - oldPartSize
+
+	// 只有 deltaSize > 0 时才会新增占用容量。
+	// deltaSize <= 0 表示重复上传同大小 part，或者替换成更小 part。
+	if uinfo.StorageQuota > 0 &&
+		deltaSize > 0 &&
+		uinfo.StorageUsed+deltaSize > uinfo.StorageQuota {
 		return nil, common.StorageQuotaOver
 	}
 
-	res, err := srv.storage.PutPart(ctx, upload.BucketName, uploadID, partNumber, bytes.NewReader(data))
+	res, err := srv.storage.PutPart(
+		ctx,
+		upload.BucketName,
+		uploadID,
+		partNumber,
+		reader,
+	)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	if res.Etag != upload_etag {
-		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
+	// 客户端传了 Content-MD5 / ETag 才校验。
+	// 不传就跳过，否则 upload_etag 为空会导致所有分片上传失败。
+	if upload_etag != "" && res.Etag != upload_etag {
+		_ = srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
 		return nil, common.FileCheckErr
 	}
+
+	dataSize := res.Size
+	if dataSize <= 0 {
+		dataSize = newPartSize
+	}
+
+	// storage 返回的真实大小可能和 len(data) 不一致，所以这里重新算一次 delta。
+	deltaSize = dataSize - oldPartSize
 
 	part := &do.CreateMultipartPart{
 		UploadID:    uploadID,
 		PartNumber:  partNumber,
-		Size:        res.Size,
+		Size:        dataSize,
 		Etag:        res.Etag,
 		StoragePath: res.StoragePath,
 		Status:      consts.MultipartPartStatusConfirmed,
 	}
 
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		_, err = srv.multipartRepo.CreateOrUpdateMultipartPart(ctx, part)
-		if err != nil {
+		multipartRepo := srv.multipartRepo.WithTx(tx)
+		userRepo := srv.userRepo.WithTx(tx)
+		bucketRepo := srv.bucketRepo.WithTx(tx)
+
+		if _, err := multipartRepo.CreateOrUpdateMultipartPart(ctx1, part); err != nil {
 			return err
 		}
 
 		lastActive := time.Now()
-		update := &do.UpdateMultipartUpload{LastActiveAt: &lastActive}
+		update := &do.UpdateMultipartUpload{
+			LastActiveAt: &lastActive,
+		}
 
-		if _, err = srv.multipartRepo.UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+		if _, err := multipartRepo.UpdateMultipartUpload(ctx1, ctx.UserID, uploadID, update); err != nil {
 			return err
 		}
 
-		if err = srv.userRepo.UpdateStorageUsed(ctx, ctx.UserID, dataSize); err != nil {
-			return err
-		}
+		// 重点：只按差值更新容量。
+		//
+		// 第一次上传 part：
+		// oldPartSize = 0，dataSize = 5MB，deltaSize = +5MB
+		//
+		// 重复上传同大小 part：
+		// oldPartSize = 5MB，dataSize = 5MB，deltaSize = 0
+		//
+		// 替换成更大的 part：
+		// oldPartSize = 5MB，dataSize = 8MB，deltaSize = +3MB
+		//
+		// 替换成更小的 part：
+		// oldPartSize = 8MB，dataSize = 5MB，deltaSize = -3MB
+		if deltaSize != 0 {
+			if err := userRepo.UpdateStorageUsed(ctx1, ctx.UserID, deltaSize); err != nil {
+				return err
+			}
 
-		if err = srv.bucketRepo.UpdateBucketStats(ctx, ctx.UserID, bucketName, 0, dataSize); err != nil {
-			return err
+			if err := bucketRepo.UpdateBucketStats(ctx1, ctx.UserID, bucketName, 0, deltaSize); err != nil {
+				return err
+			}
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
+		// 第一次上传时，事务失败可以删掉刚写入的 part。
+		// 但是重复上传旧 part 时，不能无脑 DeletePart，
+		// 否则可能把旧 part 的物理文件也删掉，导致 DB 还指向旧 part，但存储没了。
+		if oldPart == nil {
+			_ = srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
+		}
+
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
+
 	return &dto.UploadMultipartPartResp{
 		PartNumber: partNumber,
 		Etag:       res.Etag,
-		Size:       res.Size,
+		Size:       dataSize,
 		Status:     consts.MultipartPartStatusConfirmed,
 	}, common.OK
 }
@@ -362,11 +469,6 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		return nil, common.RedisErr.WithErr(err)
 	}
 
-	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
-	if err != nil {
-		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
-	}
-
 	storedParts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, uploadID)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
@@ -381,11 +483,6 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	for _, part := range storedParts {
 		partIndex[part.PartNumber] = part
 		totalSize += part.Size
-	}
-
-	if uInfo.StorageQuota != 0 && uInfo.StorageUsed+totalSize > uInfo.StorageQuota {
-		srv.AbortMultipartUpload(ctx, uploadID)
-		return nil, common.StorageQuotaOver
 	}
 
 	for _, part := range req.Parts {
@@ -576,9 +673,8 @@ func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, upload
 
 	// 2. 再推 Redis（加速消费，失败不影响正确性）
 	err := srv.asyncRedis.EnqueueTask(ctx, task.TaskID)
-	fmt.Printf("err: %v\n", err)
 	// 忽略 Redis 错误，兜底扫描会补偿
-	return nil
+	return err
 }
 
 func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {

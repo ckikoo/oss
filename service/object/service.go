@@ -34,6 +34,7 @@ import (
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/service/event"
+	"oss/utils/ip"
 	"oss/utils/logger"
 	"oss/utils/tools"
 
@@ -181,6 +182,12 @@ func (srv *Service) GetObjectVersions(ctx *common.UserInfoCtx, bucketName, objec
 }
 
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, file *multipart.FileHeader) (*dto.PutObjectResp, common.Errno) {
+	if req.CallbackUrl != "" {
+		if err := ip.ValidateCallbackURL(req.CallbackUrl); err != nil {
+			return nil, common.ParamErr.WithErr(err)
+		}
+	}
+
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
@@ -376,6 +383,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	})
 
 	if req.CallbackUrl != "" {
+
 		callbackPayload := map[string]interface{}{
 			"callback_url": req.CallbackUrl,
 			"event_type":   "multipart_complete",
@@ -401,6 +409,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		VersionID:   versionID, // Return the version ID set during creation
 	}, common.OK
 }
+
 func (srv *Service) dispatchCallback(ctx context.Context, url string, payload map[string]interface{}) {
 	// 1. 写 event_deliveries（rule_id = nil，改表允许 NULL）
 	deliveryID, err := srv.eventRepo.CreateEventDelivery(ctx, &do.EventDeliveryDo{

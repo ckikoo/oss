@@ -2,16 +2,19 @@ package timer
 
 import (
 	"context"
+	"fmt"
 	"oss/adaptor"
 	"oss/adaptor/redis"
 	gormAdmin "oss/adaptor/repo/admin/gorm"
 	gormAsync "oss/adaptor/repo/async/gorm"
+	gormBucket "oss/adaptor/repo/bucket/gorm"
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
 	"oss/utils/pool"
+	"sort"
 	"time"
 
 	"github.com/gogf/gf/util/gconv"
@@ -29,6 +32,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	fileRepo := gormObject.NewObjectRepo(adaptor)
 	taskLocker := redis.NewLock(adaptor)
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
+	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
 	if err != nil {
@@ -126,12 +130,39 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
+				if int32(len(parts)) != info.TotalChunk {
+					err := fmt.Errorf("parts count not match total_chunk: got=%d want=%d", len(parts), info.TotalChunk)
+					log.Error("timer.handlerTask physical merge parts count mismatch",
+						zap.Error(err),
+						zap.String("taskID", taskID),
+					)
+
+					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+					cancel()
+					return
+				}
+
+				sort.Slice(parts, func(i, j int) bool {
+					return parts[i].PartNumber < parts[j].PartNumber
+				})
+
 				partPaths := make([]string, len(parts))
+
 				for i, part := range parts {
+					expected := int32(i + 1)
+					if part.PartNumber != expected {
+						err := fmt.Errorf("part number not continuous: got=%d want=%d", part.PartNumber, expected)
+						log.Error("timer.handlerTask physical merge part number invalid",
+							zap.Error(err),
+							zap.String("taskID", taskID),
+						)
+						_ = updateTaskStatus(ctx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+						return
+					}
 					partPaths[i] = part.StoragePath
 				}
 
-				// TODO: 这里的 MergeParts 可能耗时较长，是否需要放在事务外执行？如果放在事务内，可能会导致长时间占用数据库连接和锁；如果放在事务外，则需要考虑合并过程中数据的一致性问题。
 				saveInfo, err := storage.MergeParts(taskCtx, info.BucketName, info.ObjectKey, info.VersionID, partPaths)
 				if err != nil {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -143,13 +174,11 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 				status := int32(consts.ObjectIsMultipartNormal)
 				err = txManager.RunInTx(taskCtx, func(ctx context.Context, tx tx.Tx) error {
-					err := updateTaskStatus(ctx, taskRepo, task.TaskID, consts.TaskStatusCompleted, "")
-					if err != nil {
-						log.Error("timer.handlerTask updateTaskStatus parts", zap.Error(err), zap.String("task", gconv.String(task)))
-						return err
-					}
 
-					_, err = fileRepo.UpdateObject(ctx, info.BucketName, info.ObjectKey, info.VersionID, &do.UpdateObject{
+					fileTxRepo := fileRepo.WithTx(tx)
+					multipartTxRepo := multipart.WithTx(tx)
+
+					_, err = fileTxRepo.UpdateObject(ctx, info.BucketName, info.ObjectKey, info.VersionID, &do.UpdateObject{
 						Size:        &saveInfo.Size,
 						Etag:        &saveInfo.Etag,
 						StoragePath: &saveInfo.StoragePath,
@@ -161,14 +190,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						return err
 					}
 					// 清理 multipart 相关数据
-					err = multipart.DeleteMultipartParts(ctx, task.UserId, task.UploadID)
+					err = multipartTxRepo.DeleteMultipartParts(ctx, task.UserId, task.UploadID)
 					if err != nil {
 						log.Error("timer.handlerTask DeleteMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
-						return err
-					}
-					err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
-					if err != nil {
-						log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
 						return err
 					}
 
@@ -176,8 +200,37 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				})
 				if err != nil {
 					log.Error("timer.handlerTask runInTx failed", zap.Error(err), zap.Int64("taskId", gconv.Int64(task.ID)))
+					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if saveInfo.StoragePath != "" {
+						if delErr := storage.Delete(context.Background(), saveInfo.StoragePath); delErr != nil {
+							log.Error("timer.handlerTask cleanup merged file failed",
+								zap.Error(delErr),
+								zap.String("storagePath", saveInfo.StoragePath),
+								zap.String("taskID", taskID),
+							)
+						}
+					}
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+					cancel()
 					return
 				}
+				err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
+				if err != nil {
+					log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
+					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+					cancel()
+					return
+				}
+
+				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusCompleted, ""); err != nil {
+					log.Error("timer.handlerTask update physical merge task completed failed",
+						zap.Error(err),
+						zap.String("taskID", taskID),
+					)
+				}
+				cancel()
 
 			case consts.TaskTypeAbortMultipart:
 				info, err := multipart.GetMultipartUploadByID(ctx, task.UserId, task.UploadID)
@@ -205,35 +258,35 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						log.Error("timer.handlerTask fail to release multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
 					}
 				}()
+
 				parts, err := multipart.ListMultipartParts(ctx, info.UserID, info.UploadID)
 				if err != nil {
 					log.Error("timer.handlerTask ListMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
 					return
 				}
 
-				total := 0
+				var total int64
 
 				lo.ForEach(parts, func(part *do.MultipartPartDo, _ int) {
-					total += int(part.Size)
+					total += int64(part.Size)
 				})
 
 				err = txManager.RunInTx(ctx, func(ctx context.Context, tx tx.Tx) error {
-					err := multipart.DeleteMultipartParts(ctx, task.UserId, task.UploadID)
+					err := multipart.WithTx(tx).DeleteMultipartParts(ctx, task.UserId, task.UploadID)
 					if err != nil {
 						log.Error("timer.handlerTask DeleteMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
 						return err
 					}
 
-					err = uinfoRepo.UpdateStorageUsed(ctx, info.UserID, -int64(total))
+					err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, info.UserID, -(total))
 					if err != nil {
 						log.Error("timer.handlerTask UpdateStorageUsed error", zap.Error(err), zap.String("taskID", taskID))
 						return err
 					}
 
-					// 清理 multipart 相关数据
-					err = storage.DeleteParts(ctx, info.BucketName, task.UploadID)
+					err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, info.UserID, info.BucketName, 0, -(total))
 					if err != nil {
-						log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
+						log.Error("timer.handlerTask UpdateBucketStats error", zap.Error(err), zap.String("taskID", taskID))
 						return err
 					}
 
@@ -242,7 +295,32 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				})
 				if err != nil {
 					log.Error("timer.handlerTask runInTx failed", zap.Error(err), zap.Int64("taskId", gconv.Int64(task.ID)))
+					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+					cancel()
+					return
 				}
+
+				// TODO 需要再抽一层出来
+				if err := storage.DeleteParts(taskCtx, info.BucketName, task.UploadID); err != nil {
+					log.Error("timer.handlerTask DeleteParts error",
+						zap.Error(err),
+						zap.String("taskID", taskID),
+					)
+					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
+					cancel()
+					return
+				}
+
+				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusCompleted, ""); err != nil {
+					log.Error("timer.handlerTask update abort task completed failed",
+						zap.Error(err),
+						zap.String("taskID", taskID),
+					)
+				}
+				cancel()
 
 			default:
 				// 处理未知任务类型

@@ -9,9 +9,10 @@ const (
 	TokenGranted     = "token_granted"
 )
 
+const MaxPartSize = 10 << 20
+
 const (
 	// 使用签名算法
-	Request    = "oss4_request"
 	ServerName = "oss-server"
 )
 

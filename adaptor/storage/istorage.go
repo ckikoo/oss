@@ -37,7 +37,7 @@ type IStorage interface {
 	DeleteParts(ctx context.Context, bucket, uploadID string) error
 
 	// MergeParts 将已保存的分片按顺序合并成一个完整对象文件
-	MergeParts(ctx context.Context, bucket, objectKey string, partPaths []string) (*PutResult, error)
+	MergeParts(ctx context.Context, bucket, objectKey string, version string, partPaths []string) (*PutResult, error)
 
 	// BuildObjectPath 给外部（如 CompleteMultipart）查询对象最终路径用
 	BuildObjectPath(ctx context.Context, bucket, objectKey string, version string) string
