@@ -24,6 +24,7 @@ type Config struct {
 	Mysql    Mysql              `yaml:"mysql"`
 	Redis    Redis              `yaml:"redis"`
 	Security Security           `yaml:"security"`
+	CORS     CORS               `yaml:"cors"`
 	AppConf  map[string]AppConf `yaml:"app_conf"`
 }
 
@@ -39,6 +40,14 @@ type Server struct {
 type Security struct {
 	AESKey string `yaml:"aes_key"` // 32 字节 base64 编码的 AES-256 密钥
 }
+
+type CORS struct {
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	AllowedMethods []string `yaml:"allowed_methods"`
+	AllowedHeaders []string `yaml:"allowed_headers"`
+	MaxAgeSeconds  int32    `yaml:"max_age_seconds"`
+}
+
 type Mysql struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`

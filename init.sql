@@ -399,7 +399,25 @@ CREATE TABLE  IF NOT EXISTS  event_deliveries (
     INDEX idx_next_retry   (next_retry_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='事件投递记录表';
 
+-- CORS bucket 级别，一行代表一个 bucket 下允许的 origin
+CREATE TABLE IF NOT EXISTS bucket_cors_rules (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
 
+    user_id BIGINT NOT NULL,
+    bucket_name VARCHAR(128) NOT NULL,
+
+    allowed_origin VARCHAR(255) NOT NULL,
+    allowed_methods VARCHAR(128) NOT NULL,
+
+    max_age_seconds INT NOT NULL DEFAULT 600,
+    enabled TINYINT NOT NULL DEFAULT 1,
+
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+
+    UNIQUE KEY uk_bucket_origin (user_id, bucket_name, allowed_origin),
+    INDEX idx_bucket_cors_user_bucket (user_id, bucket_name)
+);
 -- ============================================================
 -- 外键关系备注（MVP 阶段不强制外键，业务层保证）
 -- ============================================================

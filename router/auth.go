@@ -84,6 +84,10 @@ func canonicalQuery(rawQuery string) string {
 func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	repo := gorm.NewAccessKeyRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
+		if string(c.Method()) == "OPTIONS" {
+			c.Next(ctx)
+			return
+		}
 
 		// 特定接口处理
 		if string(c.Method()) == "GET" && c.FullPath() == "/api/v1/buckets/:bucket_name/objects/:object_key" {

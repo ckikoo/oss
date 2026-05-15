@@ -1,8 +1,6 @@
 API Name,Group,Method,Path,Auth,Request Parameters,Request Body,Response Body,Description,,,,,,,,,,,,
 # Authentication Methods:
 # - AK/SK: Access Key and Secret Key authentication
-#   * Header: X-Access-Key + X-Secret-Key
-#   * Authorization: AccessKey AK:SK
 # - Multipart uses virtual merge (no physical file assembly)
 CreateAccessKey,Auth,POST,/api/v1/access-keys,AK/SK,{user_id},{alias,permission,expires_at}, {id,access_key,secret_key,alias,status,permission,expires_at},Create a new AK/SK credential for a user,,,,
 ListAccessKeys,Auth,GET,/api/v1/access-keys,AK/SK,{user_id,status},{}, {items:[{id,access_key,alias,status,user_id,expires_at,last_used_at}]},List access keys for a user,,,,,
@@ -27,6 +25,10 @@ ListLifecycleRules,Lifecycle,GET,/api/v1/buckets/:bucket_name/lifecycle,AK/SK,{b
 GetLifecycleRule,Lifecycle,GET,/api/v1/buckets/:bucket_name/lifecycle/:rule_id,AK/SK,{bucket_name,rule_id},{}, {rule_id,rule_name,prefix,transition_days,expiration_days,status},Get a specific lifecycle rule,,,,,,,
 UpdateLifecycleRule,Lifecycle,PUT,/api/v1/buckets/:bucket_name/lifecycle/:rule_id,AK/SK,{bucket_name,rule_id},{rule_name,prefix,transition_days,expiration_days,status}, {rule_id,rule_name,prefix,transition_days,expiration_days,status},Update a lifecycle rule,,,,,,,
 DeleteLifecycleRule,Lifecycle,DELETE,/api/v1/buckets/:bucket_name/lifecycle/:rule_id,AK/SK,{bucket_name,rule_id},{}, {success},Delete a lifecycle rule,,,,,,,,,,,
+CreateBucketCorsRule,CORS,POST,/api/v1/buckets/:bucket_name/cors,AK/SK,{bucket_name},{origin,allowed_methods,max_age_seconds}, {id,user_id,bucket_name,origin,allowed_methods,max_age_seconds,created_at,updated_at},Create one bucket CORS rule for one origin,,,,,
+ListBucketCorsRules,CORS,GET,/api/v1/buckets/:bucket_name/cors,AK/SK,{bucket_name},{}, {items:[{id,user_id,bucket_name,origin,allowed_methods,max_age_seconds,created_at,updated_at}]},List bucket CORS rules,,,,,
+UpdateBucketCorsRule,CORS,PUT,/api/v1/buckets/:bucket_name/cors/:rule_id,AK/SK,{bucket_name,rule_id},{origin,allowed_methods,max_age_seconds}, {id,user_id,bucket_name,origin,allowed_methods,max_age_seconds,created_at,updated_at},Update one bucket CORS rule,,,,,
+DeleteBucketCorsRule,CORS,DELETE,/api/v1/buckets/:bucket_name/cors/:rule_id,AK/SK,{bucket_name,rule_id},{}, {success},Delete one bucket CORS rule,,,,,
 GetDailyMetering,Metering,GET,/api/v1/metrics/daily,AK/SK,{date_from,date_to,user_id,bucket_id},{}, {items:[{date,storage_bytes,bandwidth_bytes,request_count}]},Query daily storage and traffic metrics,,,,,,
 ListOperationLogs,Audit,GET,/api/v1/logs,AK/SK,{user_id,bucket_name,action,status,date_from,date_to},{}, {items:[{log_id,user_id,action,status,ip,duration,request_id,timestamp}]},Query operation logs
 CreateEventRule,Event,POST,/api/v1/event-rules,AK/SK,{},{name,bucket_name,events,target_type,target_address,status}, {rule_id,name,bucket_name,events,target_type,target_address,status},Create an event notification rule,

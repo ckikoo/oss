@@ -1,9 +1,11 @@
 package router
 
 import (
+	"context"
 	"oss/adaptor"
 	"oss/api/auth"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/hertz-contrib/pprof"
@@ -18,6 +20,7 @@ type RouterDeps struct {
 	MultipartHandler auth.IMultipartHandler
 	PolicyHandler    auth.IPolicyHandler
 	LifecycleHandler auth.ILifecycleHandler
+	CorsHandler      auth.ICorsHandler
 	TokenHandler     auth.ITokenHandler
 	EventHandler     auth.IEventHandler
 }
@@ -32,16 +35,23 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 		MultipartHandler: auth.NewMultipartCtrl(adaptor),
 		PolicyHandler:    auth.NewPolicyCtrl(adaptor),
 		LifecycleHandler: auth.NewLifecycleCtrl(adaptor),
+		CorsHandler:      auth.NewCorsCtrl(adaptor),
 		TokenHandler:     auth.NewTokenCtrl(adaptor),
 		EventHandler:     auth.NewEventCtrl(adaptor),
 	}
 }
 
 func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) {
-	h.Use(globalCORSMiddleware())
+
+	if adaptor.GetConfig().Server.EnablePprof {
+		pprof.Register(h)
+	}
 
 	registerPublicRoutes(h, deps)
-	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor), NewOperationLogMiddleware(adaptor))
+	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor), newAuthenticatedCORSMiddleware(adaptor), NewOperationLogMiddleware(adaptor))
+	authGroup.OPTIONS("/*cors_path", func(ctx context.Context, c *app.RequestContext) {
+		c.AbortWithStatus(204)
+	})
 	registerAuthRoutes(authGroup, deps)
 	registerBucketRoutes(authGroup, deps, adaptor)
 	registerObjectRoutes(authGroup, deps, adaptor)
@@ -55,7 +65,6 @@ func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
 	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
 	h.PATCH("/api/v1/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
 
-	pprof.Register(h)
 }
 
 func registerAuthRoutes(authGroup *route.RouterGroup, deps RouterDeps) {
@@ -79,6 +88,11 @@ func registerBucketRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor
 	bucketGroup.GET("/buckets/:bucket_name/lifecycle/:rule_id", deps.LifecycleHandler.GetLifecycleRule)
 	bucketGroup.PUT("/buckets/:bucket_name/lifecycle/:rule_id", deps.LifecycleHandler.UpdateLifecycleRule)
 	bucketGroup.DELETE("/buckets/:bucket_name/lifecycle/:rule_id", deps.LifecycleHandler.DeleteLifecycleRule)
+
+	bucketGroup.POST("/buckets/:bucket_name/cors", deps.CorsHandler.CreateBucketCorsRule)
+	bucketGroup.GET("/buckets/:bucket_name/cors", deps.CorsHandler.ListBucketCorsRules)
+	bucketGroup.PUT("/buckets/:bucket_name/cors/:rule_id", deps.CorsHandler.UpdateBucketCorsRule)
+	bucketGroup.DELETE("/buckets/:bucket_name/cors/:rule_id", deps.CorsHandler.DeleteBucketCorsRule)
 
 	bucketGroup.POST("/buckets/:bucket_name/events", deps.EventHandler.CreateEventRule)
 	bucketGroup.GET("/buckets/:bucket_name/events", deps.EventHandler.ListEventRules)

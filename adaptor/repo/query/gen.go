@@ -21,6 +21,7 @@ func Use(db *gorm.DB, opts ...gen.DOOption) *Query {
 		AccessKey:       newAccessKey(db, opts...),
 		AsyncTask:       newAsyncTask(db, opts...),
 		Bucket:          newBucket(db, opts...),
+		BucketCorsRule:  newBucketCorsRule(db, opts...),
 		BucketPolicy:    newBucketPolicy(db, opts...),
 		EventDelivery:   newEventDelivery(db, opts...),
 		EventRule:       newEventRule(db, opts...),
@@ -44,6 +45,7 @@ type Query struct {
 	AccessKey       accessKey
 	AsyncTask       asyncTask
 	Bucket          bucket
+	BucketCorsRule  bucketCorsRule
 	BucketPolicy    bucketPolicy
 	EventDelivery   eventDelivery
 	EventRule       eventRule
@@ -68,6 +70,7 @@ func (q *Query) clone(db *gorm.DB) *Query {
 		AccessKey:       q.AccessKey.clone(db),
 		AsyncTask:       q.AsyncTask.clone(db),
 		Bucket:          q.Bucket.clone(db),
+		BucketCorsRule:  q.BucketCorsRule.clone(db),
 		BucketPolicy:    q.BucketPolicy.clone(db),
 		EventDelivery:   q.EventDelivery.clone(db),
 		EventRule:       q.EventRule.clone(db),
@@ -99,6 +102,7 @@ func (q *Query) ReplaceDB(db *gorm.DB) *Query {
 		AccessKey:       q.AccessKey.replaceDB(db),
 		AsyncTask:       q.AsyncTask.replaceDB(db),
 		Bucket:          q.Bucket.replaceDB(db),
+		BucketCorsRule:  q.BucketCorsRule.replaceDB(db),
 		BucketPolicy:    q.BucketPolicy.replaceDB(db),
 		EventDelivery:   q.EventDelivery.replaceDB(db),
 		EventRule:       q.EventRule.replaceDB(db),
@@ -120,6 +124,7 @@ type queryCtx struct {
 	AccessKey       *accessKeyDo
 	AsyncTask       *asyncTaskDo
 	Bucket          *bucketDo
+	BucketCorsRule  *bucketCorsRuleDo
 	BucketPolicy    *bucketPolicyDo
 	EventDelivery   *eventDeliveryDo
 	EventRule       *eventRuleDo
@@ -141,6 +146,7 @@ func (q *Query) WithContext(ctx context.Context) *queryCtx {
 		AccessKey:       q.AccessKey.WithContext(ctx),
 		AsyncTask:       q.AsyncTask.WithContext(ctx),
 		Bucket:          q.Bucket.WithContext(ctx),
+		BucketCorsRule:  q.BucketCorsRule.WithContext(ctx),
 		BucketPolicy:    q.BucketPolicy.WithContext(ctx),
 		EventDelivery:   q.EventDelivery.WithContext(ctx),
 		EventRule:       q.EventRule.WithContext(ctx),
