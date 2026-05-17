@@ -85,6 +85,8 @@ func resolvePolicyAction(c *app.RequestContext) string {
 		return "GetObject"
 	case method == "PUT" && strings.Contains(p, "/objects"):
 		return "PutObject"
+	case method == "POST" && strings.Contains(p, "/objects"):
+		return "PutObject"
 	case method == "DELETE" && strings.Contains(p, "/objects"):
 		return "DeleteObject"
 	case method == "HEAD" && strings.Contains(p, "/objects"):

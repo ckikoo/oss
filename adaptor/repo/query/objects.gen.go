@@ -41,45 +41,47 @@ func newObject(db *gorm.DB, opts ...gen.DOOption) object {
 	_object.UploadID = field.NewString(tableName, "upload_id")
 	_object.StoragePath = field.NewString(tableName, "storage_path")
 	_object.Acl = field.NewInt32(tableName, "acl")
-	_object.IsLatest = field.NewInt32(tableName, "is_latest")
 	_object.Metadata = field.NewString(tableName, "metadata")
+	_object.IsLatest = field.NewInt32(tableName, "is_latest")
 	_object.Status = field.NewInt32(tableName, "status")
 	_object.AccessCount = field.NewInt64(tableName, "access_count")
 	_object.CreatedAt = field.NewTime(tableName, "created_at")
 	_object.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_object.DeletedAt = field.NewField(tableName, "deleted_at")
+	_object.LatestGuard = field.NewString(tableName, "latest_guard")
 
 	_object.fillFieldMap()
 
 	return _object
 }
 
-// object Object 对象表
+// object Object 对象版本表
 type object struct {
 	objectDo objectDo
 
 	ALL           field.Asterisk
 	ID            field.Int64  // 主键
-	BucketID      field.Int64  // 所属BucketID
-	BucketName    field.String // Bucket名(冗余)
-	ObjectKey     field.String // 对象路径 e.g. dir/video.mp4
-	ObjectKeyHash field.String // MD5(object_key) 用于唯一索引
-	VersionID     field.String // 版本ID(未开启版本控制时为空字符串)
-	Size          field.Int64  // 文件大小(字节)
-	Etag          field.String // MD5 或分片合并ETag
-	ContentType   field.String // MIME类型
-	StorageClass  field.String
-	IsMultipart   field.Int32  // 0=普通上传 1=分片虚拟合并
-	UploadID      field.String // 分片上传ID(is_multipart=1时)
-	StoragePath   field.String // 物理路径(普通文件或物理合并后)
+	BucketID      field.Int64  // 所属 Bucket ID
+	BucketName    field.String // Bucket 名冗余
+	ObjectKey     field.String // 对象路径
+	ObjectKeyHash field.String // MD5(object_key)，用于索引和唯一约束
+	VersionID     field.String // 版本 ID，建议每次写入都生成
+	Size          field.Int64  // 对象大小，delete marker 为 0
+	Etag          field.String // ETag
+	ContentType   field.String // MIME 类型
+	StorageClass  field.String // STANDARD/IA/ARCHIVE
+	IsMultipart   field.Int32  // 0=普通对象 1=分片虚拟合并对象
+	UploadID      field.String // 分片上传 ID
+	StoragePath   field.String // 物理存储路径，delete marker 为空
 	Acl           field.Int32  // 0=继承Bucket 1=私有 2=公共读
-	IsLatest      field.Int32
 	Metadata      field.String // 用户自定义元数据
-	Status        field.Int32  // 1=正常 2=删除标记(版本控制) 3=物理删除
-	AccessCount   field.Int64  // 访问次数(懒合并触发依据)
+	IsLatest      field.Int32  // 0=历史版本 1=当前最新版本
+	Status        field.Int32  // 1=正常 2=删除标记 3=永久删除
+	AccessCount   field.Int64  // 访问次数
 	CreatedAt     field.Time
 	UpdatedAt     field.Time
-	DeletedAt     field.Field // 软删除时间
+	DeletedAt     field.Field  // 永久删除时间
+	LatestGuard   field.String // 保证同一对象只有一个 latest
 
 	fieldMap map[string]field.Expr
 }
@@ -110,13 +112,14 @@ func (o *object) updateTableName(table string) *object {
 	o.UploadID = field.NewString(table, "upload_id")
 	o.StoragePath = field.NewString(table, "storage_path")
 	o.Acl = field.NewInt32(table, "acl")
-	o.IsLatest = field.NewInt32(table, "is_latest")
 	o.Metadata = field.NewString(table, "metadata")
+	o.IsLatest = field.NewInt32(table, "is_latest")
 	o.Status = field.NewInt32(table, "status")
 	o.AccessCount = field.NewInt64(table, "access_count")
 	o.CreatedAt = field.NewTime(table, "created_at")
 	o.UpdatedAt = field.NewTime(table, "updated_at")
 	o.DeletedAt = field.NewField(table, "deleted_at")
+	o.LatestGuard = field.NewString(table, "latest_guard")
 
 	o.fillFieldMap()
 
@@ -141,7 +144,7 @@ func (o *object) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (o *object) fillFieldMap() {
-	o.fieldMap = make(map[string]field.Expr, 21)
+	o.fieldMap = make(map[string]field.Expr, 22)
 	o.fieldMap["id"] = o.ID
 	o.fieldMap["bucket_id"] = o.BucketID
 	o.fieldMap["bucket_name"] = o.BucketName
@@ -156,13 +159,14 @@ func (o *object) fillFieldMap() {
 	o.fieldMap["upload_id"] = o.UploadID
 	o.fieldMap["storage_path"] = o.StoragePath
 	o.fieldMap["acl"] = o.Acl
-	o.fieldMap["is_latest"] = o.IsLatest
 	o.fieldMap["metadata"] = o.Metadata
+	o.fieldMap["is_latest"] = o.IsLatest
 	o.fieldMap["status"] = o.Status
 	o.fieldMap["access_count"] = o.AccessCount
 	o.fieldMap["created_at"] = o.CreatedAt
 	o.fieldMap["updated_at"] = o.UpdatedAt
 	o.fieldMap["deleted_at"] = o.DeletedAt
+	o.fieldMap["latest_guard"] = o.LatestGuard
 }
 
 func (o object) clone(db *gorm.DB) object {

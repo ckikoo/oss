@@ -13,4 +13,5 @@ type IObjectHandler interface {
 	PutObject(ctx context.Context, c *app.RequestContext)
 	GetObject(ctx context.Context, c *app.RequestContext)
 	DeleteObject(ctx context.Context, c *app.RequestContext)
+	RestoreObjectVersion(ctx context.Context, c *app.RequestContext)
 }

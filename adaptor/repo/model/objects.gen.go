@@ -12,29 +12,30 @@ import (
 
 const TableNameObject = "objects"
 
-// Object Object 对象表
+// Object Object 对象版本表
 type Object struct {
-	ID            int64          `gorm:"column:id;primaryKey;autoIncrement:true;comment:主键" json:"id"`                          // 主键
-	BucketID      int64          `gorm:"column:bucket_id;not null;comment:所属BucketID" json:"bucket_id"`                         // 所属BucketID
-	BucketName    string         `gorm:"column:bucket_name;not null;comment:Bucket名(冗余)" json:"bucket_name"`                    // Bucket名(冗余)
-	ObjectKey     string         `gorm:"column:object_key;not null;comment:对象路径 e.g. dir/video.mp4" json:"object_key"`          // 对象路径 e.g. dir/video.mp4
-	ObjectKeyHash string         `gorm:"column:object_key_hash;not null;comment:MD5(object_key) 用于唯一索引" json:"object_key_hash"` // MD5(object_key) 用于唯一索引
-	VersionID     string         `gorm:"column:version_id;not null;comment:版本ID(未开启版本控制时为空字符串)" json:"version_id"`              // 版本ID(未开启版本控制时为空字符串)
-	Size          int64          `gorm:"column:size;not null;comment:文件大小(字节)" json:"size"`                                     // 文件大小(字节)
-	Etag          string         `gorm:"column:etag;not null;comment:MD5 或分片合并ETag" json:"etag"`                                // MD5 或分片合并ETag
-	ContentType   *string        `gorm:"column:content_type;comment:MIME类型" json:"content_type"`                                // MIME类型
-	StorageClass  string         `gorm:"column:storage_class;not null;default:STANDARD" json:"storage_class"`
-	IsMultipart   int32          `gorm:"column:is_multipart;not null;comment:0=普通上传 1=分片虚拟合并" json:"is_multipart"` // 0=普通上传 1=分片虚拟合并
-	UploadID      *string        `gorm:"column:upload_id;comment:分片上传ID(is_multipart=1时)" json:"upload_id"`        // 分片上传ID(is_multipart=1时)
-	StoragePath   *string        `gorm:"column:storage_path;comment:物理路径(普通文件或物理合并后)" json:"storage_path"`         // 物理路径(普通文件或物理合并后)
-	Acl           int32          `gorm:"column:acl;not null;comment:0=继承Bucket 1=私有 2=公共读" json:"acl"`             // 0=继承Bucket 1=私有 2=公共读
-	IsLatest      *int32         `gorm:"column:is_latest" json:"is_latest"`
-	Metadata      *string        `gorm:"column:metadata;comment:用户自定义元数据" json:"metadata"`                                // 用户自定义元数据
-	Status        int32          `gorm:"column:status;not null;default:1;comment:1=正常 2=删除标记(版本控制) 3=物理删除" json:"status"` // 1=正常 2=删除标记(版本控制) 3=物理删除
-	AccessCount   int64          `gorm:"column:access_count;not null;comment:访问次数(懒合并触发依据)" json:"access_count"`          // 访问次数(懒合并触发依据)
+	ID            int64          `gorm:"column:id;primaryKey;autoIncrement:true;comment:主键" json:"id"`                                    // 主键
+	BucketID      int64          `gorm:"column:bucket_id;not null;comment:所属 Bucket ID" json:"bucket_id"`                                 // 所属 Bucket ID
+	BucketName    string         `gorm:"column:bucket_name;not null;comment:Bucket 名冗余" json:"bucket_name"`                               // Bucket 名冗余
+	ObjectKey     string         `gorm:"column:object_key;not null;comment:对象路径" json:"object_key"`                                       // 对象路径
+	ObjectKeyHash string         `gorm:"column:object_key_hash;not null;comment:MD5(object_key)，用于索引和唯一约束" json:"object_key_hash"`        // MD5(object_key)，用于索引和唯一约束
+	VersionID     string         `gorm:"column:version_id;not null;comment:版本 ID，建议每次写入都生成" json:"version_id"`                            // 版本 ID，建议每次写入都生成
+	Size          int64          `gorm:"column:size;not null;comment:对象大小，delete marker 为 0" json:"size"`                                 // 对象大小，delete marker 为 0
+	Etag          string         `gorm:"column:etag;not null;comment:ETag" json:"etag"`                                                   // ETag
+	ContentType   *string        `gorm:"column:content_type;comment:MIME 类型" json:"content_type"`                                         // MIME 类型
+	StorageClass  string         `gorm:"column:storage_class;not null;default:STANDARD;comment:STANDARD/IA/ARCHIVE" json:"storage_class"` // STANDARD/IA/ARCHIVE
+	IsMultipart   int32          `gorm:"column:is_multipart;not null;comment:0=普通对象 1=分片虚拟合并对象" json:"is_multipart"`                      // 0=普通对象 1=分片虚拟合并对象
+	UploadID      *string        `gorm:"column:upload_id;comment:分片上传 ID" json:"upload_id"`                                               // 分片上传 ID
+	StoragePath   *string        `gorm:"column:storage_path;comment:物理存储路径，delete marker 为空" json:"storage_path"`                         // 物理存储路径，delete marker 为空
+	Acl           int32          `gorm:"column:acl;not null;comment:0=继承Bucket 1=私有 2=公共读" json:"acl"`                                    // 0=继承Bucket 1=私有 2=公共读
+	Metadata      *string        `gorm:"column:metadata;comment:用户自定义元数据" json:"metadata"`                                                // 用户自定义元数据
+	IsLatest      int32          `gorm:"column:is_latest;not null;comment:0=历史版本 1=当前最新版本" json:"is_latest"`                              // 0=历史版本 1=当前最新版本
+	Status        int32          `gorm:"column:status;not null;default:1;comment:1=正常 2=删除标记 3=永久删除" json:"status"`                       // 1=正常 2=删除标记 3=永久删除
+	AccessCount   int64          `gorm:"column:access_count;not null;comment:访问次数" json:"access_count"`                                   // 访问次数
 	CreatedAt     time.Time      `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt     time.Time      `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;comment:软删除时间" json:"deleted_at"` // 软删除时间
+	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;comment:永久删除时间" json:"deleted_at"`                // 永久删除时间
+	LatestGuard   *string        `gorm:"column:latest_guard;comment:保证同一对象只有一个 latest" json:"latest_guard"` // 保证同一对象只有一个 latest
 }
 
 // TableName Object's table name

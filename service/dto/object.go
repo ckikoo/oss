@@ -34,6 +34,7 @@ type ObjectMetadata struct {
 	Acl          int32  `json:"acl"`
 	Metadata     string `json:"metadata,omitempty"`
 	Status       int32  `json:"status"`
+	IsLatest     int32  `json:"is_latest"`
 }
 
 type GetObjectVersionsResp struct {
@@ -69,4 +70,16 @@ type DeleteObjectReq struct {
 
 type DeleteObjectResp struct {
 	Success bool `json:"success"`
+}
+
+type RestoreObjectVersionReq struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+type RestoreObjectVersionResp struct {
+	ObjectKey       string `json:"object_key"`
+	SourceVersionID string `json:"source_version_id"`
+	VersionID       string `json:"version_id"`
+	Etag            string `json:"etag"`
+	Size            int64  `json:"size"`
 }

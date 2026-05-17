@@ -82,7 +82,7 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 				return
 			}
 
-			if uploadInfo.Status == consts.MultipartPartStatusVirtualMerge {
+			if uploadInfo.Status != consts.MultipartUploadStatusUploading {
 				_ = multipartRedis.DelTimeoutMultipartCancel(ctx, uploadInfo.UploadID)
 				return
 			}

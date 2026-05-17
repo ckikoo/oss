@@ -127,6 +127,9 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
+	if !objectVisible(obj) {
+		return nil, common.ResouceNotFoundErr
+	}
 
 	metadata := ""
 	if obj.Metadata != nil {
@@ -147,6 +150,7 @@ func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objec
 		Acl:          obj.Acl,
 		Metadata:     metadata,
 		Status:       obj.Status,
+		IsLatest:     obj.IsLatest,
 	}, common.OK
 }
 
@@ -174,6 +178,7 @@ func (srv *Service) GetObjectVersions(ctx *common.UserInfoCtx, bucketName, objec
 			StorageClass: obj.StorageClass,
 			VersionID:    obj.VersionID,
 			Status:       obj.Status,
+			IsLatest:     obj.IsLatest,
 		})
 	}
 
@@ -194,80 +199,19 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 	bucketID := bucket.ID
 
-	if err := srv.meteringRepo.UpdateDailyMetrics(ctx, bucket.UserID, &bucket.ID, time.Now(), 0, 0, file.Size, 0, 1, 0, 0); err != nil {
-		srv.logger.Error("object PutObject meteringRepo.UpdateDailyMetrics error",
-			zap.Error(err),
-			zap.String("req", gconv.String(req)),
-			zap.Int64("uploadSize", file.Size),
-		)
-	}
-
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 
-	// Check if object already exists
-	cacheFile, err := srv.objRepo.GetByKey(ctx, req.BucketName, req.ObjectKey, "")
+	oldObject, err := srv.objRepo.GetByKey(ctx, req.BucketName, req.ObjectKey, "")
 	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
+	if errors.Is(err, repoerr.ErrNotFound) {
+		oldObject = nil
+	}
 
-	// Handle versioning
 	versionID := tools.UUIDHex()
-	if bucket.Versioning == consts.BucketVersioningEnabled { // 版本控制开启，生成新的versionID，保留旧版本
-		// Generate UUID for version ID when versioning is enabled
-	} else { // 旧的版本
-
-		if req.Overwrite == false && cacheFile != nil {
-			return nil, common.FileNameExists
-		}
-
-		// If versioning is disabled and object exists, delete the old one
-		if cacheFile != nil {
-			err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-				// Mark old object as deleted
-				if err := srv.objRepo.WithTx(tx).DeleteObject(ctx1, req.BucketName, req.ObjectKey, cacheFile.VersionID); err != nil {
-					srv.logger.Error("PutObject DeleteObject ",
-						zap.String("bucket", req.BucketName),
-						zap.String("objectKey", req.ObjectKey),
-						zap.String("versionID", cacheFile.VersionID),
-						zap.Error(err))
-
-					return err
-				}
-
-				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *cacheFile.UploadID); err != nil {
-					srv.logger.Error("PutObject DeleteMultipartParts ",
-						zap.String("bucket", req.BucketName),
-						zap.String("objectKey", req.ObjectKey),
-						zap.String("uploadID", *cacheFile.UploadID),
-						zap.Error(err))
-					return err
-				}
-
-				if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -cacheFile.Size); err != nil {
-					srv.logger.Error("service.PutObject UpdateStorageUsed",
-						zap.String("bucket", req.BucketName),
-						zap.String("objectKey", req.ObjectKey),
-						zap.String("versionID", cacheFile.VersionID),
-						zap.Error(err))
-					return err
-				}
-
-				return nil
-			})
-
-			// Delete old version's storage // 可以删除也可以不删除，后续会被覆盖掉
-			if cacheFile.IsMultipart == consts.ObjectIsMultipartMerged {
-				if err := srv.storage.DeleteParts(ctx, cacheFile.BucketName, *cacheFile.UploadID); err != nil {
-					srv.logger.Error("PutObject  DeleteParts ",
-						zap.String("path", *cacheFile.StoragePath),
-						zap.Error(err))
-				}
-			}
-
-			if err != nil {
-				return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
-			}
-		}
+	if bucket.Versioning == consts.BucketVersioningDisabled && objectVisible(oldObject) && !req.Overwrite {
+		return nil, common.FileNameExists
 	}
 
 	rules, err := srv.lifecycleRepo.ListLifecycleRules(ctx, bucket.ID)
@@ -280,7 +224,11 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	if uInfo.StorageQuota != 0 && uInfo.StorageUsed+file.Size > uInfo.StorageQuota {
+	expectedStorageDelta := file.Size
+	if bucket.Versioning == consts.BucketVersioningDisabled && objectVisible(oldObject) {
+		expectedStorageDelta = file.Size - oldObject.Size
+	}
+	if uInfo.StorageQuota != 0 && expectedStorageDelta > 0 && uInfo.StorageUsed+expectedStorageDelta > uInfo.StorageQuota {
 		return nil, common.StorageQuotaOver
 	}
 
@@ -330,27 +278,65 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	}
 
 	var id int64
+	var oldObjectToCleanup *do.ObjectDo
+	deltaCount := int64(0)
+	deltaSize := putResult.Size
+	if !objectVisible(oldObject) {
+		deltaCount = 1
+	}
+	if bucket.Versioning == consts.BucketVersioningDisabled && objectVisible(oldObject) {
+		oldObjectToCleanup = oldObject
+		deltaSize = putResult.Size - oldObject.Size
+	}
+
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		if err := srv.objRepo.WithTx(tx).UpdateObjectNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey, createObj.VersionID); err != nil {
+		objRepo := srv.objRepo.WithTx(tx)
+		if err := objRepo.MarkAllNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey); err != nil {
 			return err
 		}
 
-		id, err = srv.objRepo.WithTx(tx).CreateObject(ctx1, createObj)
+		if oldObjectToCleanup != nil {
+			if _, err := objRepo.MarkVersionPurged(ctx1, oldObjectToCleanup.BucketName, oldObjectToCleanup.ObjectKey, oldObjectToCleanup.VersionID); err != nil {
+				return err
+			}
+			if oldObjectToCleanup.IsMultipart == consts.ObjectIsMultipartMerged && oldObjectToCleanup.UploadID != nil {
+				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
+					return err
+				}
+			}
+		}
+
+		id, err = objRepo.CreateObject(ctx1, createObj)
 		if err != nil {
 			return err
 		}
 
-		err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, req.BucketName, 1, putResult.Size)
-		if err != nil {
-			return err
+		if deltaCount != 0 || deltaSize != 0 {
+			if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, req.BucketName, deltaCount, deltaSize); err != nil {
+				return err
+			}
 		}
 
-		return srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, putResult.Size)
+		if deltaSize != 0 {
+			if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, deltaSize); err != nil {
+				return err
+			}
+		}
+
+		return srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), deltaSize, deltaCount, putResult.Size, 0, 0, 1, 0)
 	})
 
 	if err != nil {
-		srv.storage.Delete(ctx, putResult.StoragePath)
+		if deleteErr := srv.storage.Delete(ctx, putResult.StoragePath); deleteErr != nil {
+			srv.logger.Warn("failed to cleanup object storage after PutObject transaction failure",
+				zap.String("storage_path", putResult.StoragePath),
+				zap.Error(deleteErr))
+		}
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	if oldObjectToCleanup != nil {
+		srv.deleteObjectStorage(ctx, oldObjectToCleanup)
 	}
 
 	now := time.Now()
@@ -468,6 +454,9 @@ func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, ve
 	if err != nil {
 		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
+	if !objectVisible(obj) {
+		return common.ResouceNotFoundErr
+	}
 
 	// Set response headers
 	contentType := "application/octet-stream"
@@ -566,131 +555,365 @@ func (w *countingWriter) Count() int64 {
 }
 
 func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) common.Errno {
-
-	// ── Step 1: 对象级别分布式锁，读之前加，防并发双删 ──────────
-	// key 精确到对象，不同对象互不阻塞
-	lockKey := fmt.Sprintf("lock:obj:del:%s/%s:%s", bucketName, objectKey, versionID)
-	currentWorkdId := uuid.NewString()
-
-	locked, err := srv.locker.AcquireLock(ctx, lockKey, currentWorkdId, 15*time.Second)
-	if err != nil {
-		return common.ServerErr.WithErr(err)
-	}
-
-	if !locked {
-		// 拿不到锁说明同一对象正在被另一个请求删除，直接告知客户端
-		return common.ConflictErr.WithMsg("object is being deleted, please retry later")
-	}
-	defer srv.locker.ReleaseLock(ctx, lockKey, currentWorkdId) // 函数退出时释放，无论成功还是失败
-
-	// ── Step 1: 读操作移出事务，各用独立连接 ──────────────────
-	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
-	if err != nil {
-		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
-	}
-
 	bucket, err := srv.bucketRepo.GetByUserAndName(ctx, ctx.UserID, bucketName)
 	if err != nil {
 		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
-
-	// ── Step 2: 业务校验在事务外，不占连接 ────────────────────
 	if bucket == nil {
 		return common.BucketNotFoundErr
+	}
+
+	release, errno := srv.acquireObjectWriteLock(ctx, bucketName, objectKey)
+	if errno.NotOk() {
+		return errno
+	}
+	defer release()
+
+	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
 	}
 	if obj.BucketID != bucket.ID {
 		return common.AuthErr
 	}
 
-	var versionIDs []string = nil
-	var mutilpartUploads []string = nil
-	var storagePaths []string = nil
-	var totalSize int64 = 0
-	var totalNum int64 = 0
+	if versionID == "" && bucket.Versioning == consts.BucketVersioningEnabled {
+		return srv.createDeleteMarker(ctx, bucket, obj)
+	}
 
-	if versionID == "" {
+	if versionID != "" && bucket.Versioning == consts.BucketVersioningDisabled {
+		return common.VersioningDisabledErr
+	}
 
-		// 如果删除的是最新版本，找出全部版本
-		list, err := srv.objRepo.ListVersionsByFilter(ctx, obj.BucketName, obj.ObjectKey)
-		if err != nil {
-			return common.ErrnoFromRepoError(err, common.DatabaseErr)
+	deletedObj, promotedObj, deltaCount, deltaSize, err := srv.purgeObjectVersion(ctx, bucket, obj)
+	if err != nil {
+		return common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	srv.deleteObjectStorage(ctx, deletedObj)
+
+	go srv.eventService.TriggerEvent(ctx, obj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
+		"bucket_name": bucketName,
+		"object_key":  objectKey,
+		"version_id":  obj.VersionID,
+		"promoted":    promotedObj != nil,
+		"delta_count": deltaCount,
+		"size":        -deltaSize,
+		"etag":        obj.Etag,
+		"purged":      true,
+	})
+
+	return common.OK
+}
+
+func (srv *Service) RestoreObjectVersion(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, req *dto.RestoreObjectVersionReq) (*dto.RestoreObjectVersionResp, common.Errno) {
+	bucket, err := srv.bucketRepo.GetByUserAndName(ctx, ctx.UserID, bucketName)
+	if err != nil {
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+	if bucket == nil {
+		return nil, common.BucketNotFoundErr
+	}
+	if bucket.Versioning == consts.BucketVersioningDisabled {
+		return nil, common.VersioningDisabledErr
+	}
+
+	release, errno := srv.acquireObjectWriteLock(ctx, bucketName, objectKey)
+	if errno.NotOk() {
+		return nil, errno
+	}
+	defer release()
+
+	source, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
+	if err != nil {
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.ResouceNotFoundErr)
+	}
+	if source.BucketID != bucket.ID {
+		return nil, common.AuthErr
+	}
+	if !objectVisible(source) {
+		return nil, common.ParamErr.WithMsg("source version is not restorable")
+	}
+
+	current, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, "")
+	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+	if errors.Is(err, repoerr.ErrNotFound) {
+		current = nil
+	}
+
+	uInfo, err := srv.userRepo.GetUserInfoById(ctx, ctx.UserID)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+	if uInfo.StorageQuota != 0 && source.Size > 0 && uInfo.StorageUsed+source.Size > uInfo.StorageQuota {
+		return nil, common.StorageQuotaOver
+	}
+
+	newVersionID := tools.UUIDHex()
+	putResult, isMultipart, err := srv.copyObjectVersion(ctx, source, newVersionID)
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+
+	createObj := &do.CreateObject{
+		BucketID:      bucket.ID,
+		BucketName:    bucketName,
+		ObjectKey:     objectKey,
+		ObjectKeyHash: source.ObjectKeyHash,
+		VersionID:     newVersionID,
+		Size:          putResult.Size,
+		Etag:          putResult.Etag,
+		ContentType:   source.ContentType,
+		StorageClass:  source.StorageClass,
+		IsMultipart:   isMultipart,
+		StoragePath:   &putResult.StoragePath,
+		Acl:           source.Acl,
+		Metadata:      source.Metadata,
+	}
+
+	deltaCount := int64(0)
+	if !objectVisible(current) {
+		deltaCount = 1
+	}
+
+	var objectID int64
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		objRepo := srv.objRepo.WithTx(tx)
+		if err := objRepo.MarkAllNotLatest(ctx1, bucketName, objectKey); err != nil {
+			return err
 		}
-		mutilpartUploads = make([]string, 0, len(list))
-		versionIDs = make([]string, 0, len(list))
-		storagePaths = make([]string, 0, len(list))
-		for _, item := range list {
-			versionIDs = append(versionIDs, item.VersionID)
-			totalSize += item.Size
-			if item.IsMultipart == consts.ObjectIsMultipartMerged {
-				mutilpartUploads = append(mutilpartUploads, *item.UploadID)
-			} else {
-				storagePaths = append(storagePaths, *item.StoragePath)
+		objectID, err = objRepo.CreateObject(ctx1, createObj)
+		if err != nil {
+			return err
+		}
+		if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, deltaCount, putResult.Size); err != nil {
+			return err
+		}
+		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, putResult.Size); err != nil {
+			return err
+		}
+		return srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), putResult.Size, deltaCount, 0, 0, 0, 1, 0)
+	})
+	if err != nil {
+		if deleteErr := srv.storage.Delete(ctx, putResult.StoragePath); deleteErr != nil {
+			srv.logger.Warn("failed to cleanup restored object after transaction failure",
+				zap.String("storage_path", putResult.StoragePath),
+				zap.Error(deleteErr))
+		}
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+
+	go srv.eventService.TriggerEvent(ctx, bucket.ID, consts.EventTypePutObject, objectKey, map[string]interface{}{
+		"bucket_name":       bucketName,
+		"object_key":        objectKey,
+		"source_version_id": versionID,
+		"version_id":        newVersionID,
+		"object_id":         objectID,
+		"size":              putResult.Size,
+		"etag":              putResult.Etag,
+		"restore_reason":    req.Reason,
+		"restored":          true,
+	})
+
+	return &dto.RestoreObjectVersionResp{
+		ObjectKey:       objectKey,
+		SourceVersionID: versionID,
+		VersionID:       newVersionID,
+		Etag:            putResult.Etag,
+		Size:            putResult.Size,
+	}, common.OK
+}
+
+func (srv *Service) createDeleteMarker(ctx *common.UserInfoCtx, bucket *do.BucketDo, latest *do.ObjectDo) common.Errno {
+	deltaCount := int64(0)
+	if objectVisible(latest) {
+		deltaCount = -1
+	}
+
+	storageClass := bucket.StorageClass
+	if latest.StorageClass != "" {
+		storageClass = latest.StorageClass
+	}
+	if storageClass == "" {
+		storageClass = consts.StorageClassStandard
+	}
+	marker := &do.CreateDeleteMarker{
+		BucketID:      bucket.ID,
+		BucketName:    bucket.Name,
+		ObjectKey:     latest.ObjectKey,
+		ObjectKeyHash: latest.ObjectKeyHash,
+		VersionID:     tools.UUIDHex(),
+		StorageClass:  storageClass,
+		Acl:           latest.Acl,
+	}
+
+	err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		objRepo := srv.objRepo.WithTx(tx)
+		if err := objRepo.MarkAllNotLatest(ctx1, marker.BucketName, marker.ObjectKey); err != nil {
+			return err
+		}
+		if _, err := objRepo.CreateDeleteMarker(ctx1, marker); err != nil {
+			return err
+		}
+		if deltaCount != 0 {
+			if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucket.Name, deltaCount, 0); err != nil {
+				return err
 			}
 		}
-
-		totalNum = int64(len(versionIDs))
-	}
-
-	if versionIDs == nil {
-		versionIDs = []string{versionID}
-		totalSize = obj.Size
-		totalNum = 1
-		mutilpartUploads = []string{}
-		storagePaths = []string{}
-
-		if obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
-			mutilpartUploads = []string{*obj.UploadID}
-		} else {
-			storagePaths = []string{*obj.StoragePath}
-		}
-
-	}
-
-	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-
-		if err = srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), -totalSize, -totalNum, 0, 0, 0, 0, totalNum); err != nil {
-			return err
-		}
-
-		if err = srv.objRepo.WithTx(tx).DeleteObject(ctx1, bucketName, objectKey, versionIDs...); err != nil {
-			fmt.Printf("err: %v\n", err)
-			return err
-		}
-
-		if err = srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, -totalSize); err != nil {
-			return err
-		}
-
-		if err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, -totalSize, -totalNum); err != nil {
-			return err
-		}
-
-		return nil
+		return srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), 0, deltaCount, 0, 0, 0, 0, 1)
 	})
 	if err != nil {
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	for _, uploadId := range mutilpartUploads {
-		if err := srv.storage.DeleteParts(ctx, bucketName, uploadId); err != nil {
-			srv.logger.Error("failed to delete multipart storage", zap.String("upload_id", uploadId), zap.Error(err))
-		}
-	}
-
-	for _, storagePath := range storagePaths {
-		if err := srv.storage.Delete(ctx, storagePath); err != nil {
-			srv.logger.Error("failed to delete storage", zap.String("storage_path", storagePath), zap.Error(err))
-		}
-	}
-
-	go srv.eventService.TriggerEvent(context.TODO(), obj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
-		"bucket_name": bucketName,
-		"object_key":  objectKey,
-		"size":        totalSize,
-		"etag":        obj.Etag,
+	go srv.eventService.TriggerEvent(ctx, bucket.ID, consts.EventTypeDeleteObject, latest.ObjectKey, map[string]interface{}{
+		"bucket_name":     bucket.Name,
+		"object_key":      latest.ObjectKey,
+		"version_id":      marker.VersionID,
+		"delete_marker":   true,
+		"previous_latest": latest.VersionID,
 	})
-
 	return common.OK
+}
+
+func (srv *Service) purgeObjectVersion(ctx *common.UserInfoCtx, bucket *do.BucketDo, obj *do.ObjectDo) (*do.ObjectDo, *do.ObjectDo, int64, int64, error) {
+	visibleBefore := objectVisible(obj) && obj.IsLatest == 1
+	deltaSize := int64(0)
+	if objectVisible(obj) {
+		deltaSize = -obj.Size
+	}
+
+	var deletedObj *do.ObjectDo
+	var promotedObj *do.ObjectDo
+	err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+		objRepo := srv.objRepo.WithTx(tx)
+		var err error
+		deletedObj, err = objRepo.MarkVersionPurged(ctx1, obj.BucketName, obj.ObjectKey, obj.VersionID)
+		if err != nil {
+			return err
+		}
+		if obj.IsLatest == 1 {
+			promotedObj, err = objRepo.PromotePreviousVersion(ctx1, obj.BucketName, obj.ObjectKey)
+			if err != nil {
+				return err
+			}
+		}
+
+		visibleAfter := objectVisible(promotedObj)
+		deltaCount := boolToInt64(visibleAfter) - boolToInt64(visibleBefore)
+		if deltaCount != 0 || deltaSize != 0 {
+			if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucket.Name, deltaCount, deltaSize); err != nil {
+				return err
+			}
+		}
+		if deltaSize != 0 {
+			if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, deltaSize); err != nil {
+				return err
+			}
+		}
+		if err := srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), deltaSize, deltaCount, 0, 0, 0, 0, 1); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+
+	visibleAfter := objectVisible(promotedObj)
+	deltaCount := boolToInt64(visibleAfter) - boolToInt64(visibleBefore)
+	return deletedObj, promotedObj, deltaCount, deltaSize, nil
+}
+
+func (srv *Service) acquireObjectWriteLock(ctx context.Context, bucketName, objectKey string) (func(), common.Errno) {
+	lockKey := fmt.Sprintf("lock:obj:write:%s/%s", bucketName, objectKey)
+	lockID := uuid.NewString()
+	locked, err := srv.locker.AcquireLock(ctx, lockKey, lockID, 15*time.Second)
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+	if !locked {
+		return nil, common.ConflictErr.WithMsg("object is being modified, please retry later")
+	}
+
+	return func() {
+		if err := srv.locker.ReleaseLock(ctx, lockKey, lockID); err != nil {
+			srv.logger.Warn("failed to release object write lock",
+				zap.String("lock_key", lockKey),
+				zap.Error(err))
+		}
+	}, common.OK
+}
+
+func (srv *Service) deleteObjectStorage(ctx context.Context, obj *do.ObjectDo) {
+	if obj == nil || obj.Status == consts.ObjectStatusDeleteMark {
+		return
+	}
+	switch obj.IsMultipart {
+	case consts.ObjectIsMultipartMerged:
+		if obj.UploadID == nil {
+			return
+		}
+		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
+			srv.logger.Error("failed to delete multipart storage", zap.String("upload_id", *obj.UploadID), zap.Error(err))
+		}
+	default:
+		if obj.StoragePath == nil {
+			return
+		}
+		if err := srv.storage.Delete(ctx, *obj.StoragePath); err != nil {
+			srv.logger.Error("failed to delete object storage", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
+		}
+	}
+}
+
+func (srv *Service) copyObjectVersion(ctx *common.UserInfoCtx, source *do.ObjectDo, newVersionID string) (*storage.PutResult, int32, error) {
+	if source.IsMultipart == consts.ObjectIsMultipartMerged {
+		if source.UploadID == nil {
+			return nil, 0, fmt.Errorf("multipart object missing upload_id")
+		}
+		parts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, *source.UploadID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(parts) == 0 {
+			return nil, 0, fmt.Errorf("multipart object has no parts")
+		}
+		sort.Slice(parts, func(i, j int) bool {
+			return parts[i].PartNumber < parts[j].PartNumber
+		})
+		partPaths := make([]string, 0, len(parts))
+		for _, part := range parts {
+			partPaths = append(partPaths, part.StoragePath)
+		}
+		result, err := srv.storage.MergeParts(ctx, source.BucketName, source.ObjectKey, newVersionID, partPaths)
+		return result, consts.ObjectIsMultipartNormal, err
+	}
+
+	if source.StoragePath == nil {
+		return nil, 0, fmt.Errorf("object storage path not found")
+	}
+	file, err := srv.storage.Get(ctx, *source.StoragePath)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	result, err := srv.storage.Put(ctx, source.BucketName, source.ObjectKey, newVersionID, file)
+	return result, consts.ObjectIsMultipartNormal, err
+}
+
+func objectVisible(obj *do.ObjectDo) bool {
+	return obj != nil && obj.Status == consts.ObjectStatusNormal
+}
+
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // streamMultipartObject 流式返回multipart对象的合并内容

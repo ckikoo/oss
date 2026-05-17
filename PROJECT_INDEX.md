@@ -414,7 +414,17 @@ go build -o oss ./main.go
 - ✅ 生命周期事件执行器 - **已实现** (`timer/lifecycle.go` 处理转移和删除事件)
 - ✅ 分片超时清理 - **已实现** (`timer/upload_timeout.go` 后台定期清理)
 - ✅ 日统计指标收集 - **已实现** (支持 PUT/GET/DELETE 请求计数、上下行流量)
-- ✅ 版本控制 - **已实现** (Bucket versioning 支持，PutObject 自动生成 version_id)
+- ✅ 版本控制 - **基础已实现** (Bucket versioning 支持，PutObject 自动生成 version_id；删除标记、永久删除和回滚语义见 `OBJECT_VERSIONING_DESIGN.md`)
+
+---
+
+## 专题文档
+
+| 文档 | 内容 |
+|---|---|
+| [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md) | 对象版本控制、删除标记、永久删除、版本回滚、统计和生命周期语义 |
+| [MULTIPART_GUIDE.md](MULTIPART_GUIDE.md) | 分片上传和虚拟合并策略 |
+| [POLICY_API.md](POLICY_API.md) | Bucket policy API 和权限策略说明 |
 
 ---
 
@@ -441,4 +451,4 @@ go build -o oss ./main.go
 - ✅ 对象过期删除（Expiration）
 - ✅ 分片超时清理
 - ✅ 日统计指标收集（PUT/GET/DELETE 请求计数、上下行流量）
-- ✅ 版本控制（Bucket versioning 和自动生成 version_id）
+- ✅ 版本控制（Bucket versioning 和自动生成 version_id；删除/回滚目标语义已文档化）

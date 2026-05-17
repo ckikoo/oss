@@ -39,6 +39,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 		log.Error("timer fail to dequeue task", zap.Error(err))
 		return
 	}
+	if len(taskIDs) == 0 {
+		return
+	}
 
 	locker := redis.NewLock(adaptor)
 
@@ -93,6 +96,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				log.Error("timer.handlerTask fail to get async task", zap.Error(err), zap.String("taskID", taskID))
 				return
 			}
+			if task.Status == consts.TaskStatusCompleted || task.Status == consts.TaskStatusFailed {
+				return
+			}
 
 			switch task.TaskType {
 			case consts.TaskTypePhysicalMerge:
@@ -124,6 +130,26 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}()
 
 				// 处理物理合并任务
+				if info.Status == consts.MultipartUploadStatusMergedPhysical {
+					_ = updateTaskStatus(taskCtx, taskRepo, task.TaskID, consts.TaskStatusCompleted, "")
+					return
+				}
+
+				if obj, err := fileRepo.GetByKey(taskCtx, info.BucketName, info.ObjectKey, info.VersionID); err == nil &&
+					obj.IsMultipart == consts.ObjectIsMultipartNormal &&
+					obj.StoragePath != nil {
+					physicalStatus := int32(consts.MultipartUploadStatusMergedPhysical)
+					if _, err := multipart.UpdateMultipartUpload(taskCtx, info.UserID, info.UploadID, &do.UpdateMultipartUpload{Status: &physicalStatus}); err != nil {
+						log.Error("timer.handlerTask fail to update already merged upload status",
+							zap.Error(err),
+							zap.String("taskID", taskID),
+							zap.String("uploadID", info.UploadID))
+						return
+					}
+					_ = updateTaskStatus(taskCtx, taskRepo, task.TaskID, consts.TaskStatusCompleted, "")
+					return
+				}
+
 				parts, err := multipart.ListMultipartParts(taskCtx, task.UserId, task.UploadID)
 				if err != nil {
 					log.Error("timer.handlerTask ListMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
@@ -173,6 +199,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 
 				status := int32(consts.ObjectIsMultipartNormal)
+				physicalStatus := int32(consts.MultipartUploadStatusMergedPhysical)
 				err = txManager.RunInTx(taskCtx, func(ctx context.Context, tx tx.Tx) error {
 
 					fileTxRepo := fileRepo.WithTx(tx)
@@ -190,6 +217,11 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						return err
 					}
 					// 清理 multipart 相关数据
+					if _, err := multipartTxRepo.UpdateMultipartUpload(ctx, task.UserId, task.UploadID, &do.UpdateMultipartUpload{Status: &physicalStatus}); err != nil {
+						log.Error("timer.handlerTask UpdateMultipartUpload physical status error", zap.Error(err), zap.String("taskID", taskID))
+						return err
+					}
+
 					err = multipartTxRepo.DeleteMultipartParts(ctx, task.UserId, task.UploadID)
 					if err != nil {
 						log.Error("timer.handlerTask DeleteMultipartParts error", zap.Error(err), zap.String("taskID", taskID))
@@ -217,10 +249,6 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
 				if err != nil {
 					log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.String("taskID", taskID))
-					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = updateTaskStatus(writeCtx, taskRepo, task.TaskID, consts.TaskStatusFailed, err.Error())
-					cancel()
-					return
 				}
 
 				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

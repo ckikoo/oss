@@ -19,12 +19,12 @@
 - **Multipart Upload**: 支持分片上传，实现大文件上传。
 - **权限控制**: 基于 JSON 的细粒度权限系统，支持 bucket policy 及多维策略规则。
 - **策略查询优化**: `bucket_policies` 查询使用 `utils/pool` 控制并发加载子表，避免 N+1 查询卡顿。
-- **版本控制**: 支持对象版本管理。
+- **版本控制**: 支持对象版本管理；删除标记、永久删除和回滚语义见 [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md)。
 - **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。
 - **分布式锁**: 基于 Redis 的文件锁机制，支持并发控制和原子操作。
 - **生命周期管理**: 支持对象存储类转换和过期删除规则。
 
-> 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
+> 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。对象版本设计见 [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md)。
 
 ## API 认证
 

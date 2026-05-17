@@ -183,3 +183,31 @@ func (ctrl *ObjectCtrl) DeleteObject(ctx context.Context, c *app.RequestContext)
 	errno := ctrl.object.DeleteObject(ctx1, bucketName, objectKey, versionID)
 	api.WriteResp(c, nil, errno)
 }
+
+func (ctrl *ObjectCtrl) RestoreObjectVersion(ctx context.Context, c *app.RequestContext) {
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	bucketName := c.Param("bucket_name")
+	objectKey := c.Param("object_key")
+	versionID := c.Param("version_id")
+
+	if bucketName == "" || objectKey == "" || versionID == "" {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name, object_key and version_id are required"))
+		return
+	}
+
+	req := &dto.RestoreObjectVersionReq{}
+	if len(c.Request.Body()) > 0 {
+		if err := c.BindAndValidate(req); err != nil {
+			api.WriteResp(c, nil, common.ParamErr.WithErr(err))
+			return
+		}
+	}
+
+	resp, errno := ctrl.object.RestoreObjectVersion(ctx1, bucketName, objectKey, versionID, req)
+	api.WriteResp(c, resp, errno)
+}

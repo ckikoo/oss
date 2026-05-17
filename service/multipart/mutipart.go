@@ -75,6 +75,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		tokenRedis:    redis.NewToken(adaptor),
 		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
 		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:    redis.NewEventQueue(adaptor),
 		logger:        logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
@@ -424,46 +425,16 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if err != nil {
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
 	}
+	if upload.BucketID != bucket.ID || upload.BucketName != bucketName {
+		return nil, common.FileUploadIdNotFound.WithMsg("upload_id does not belong to bucket")
+	}
 
 	oldObject, err := srv.objRepo.GetByKey(ctx, bucketName, upload.ObjectKey, "")
 	if err != nil && !errors.Is(err, repoerr.ErrNotFound) {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
-
-	switch bucket.Versioning {
-	// 版本控制开启，允许同名覆盖，生成删除旧的版本
-	case consts.BucketVersioningDisabled:
-		if oldObject != nil {
-			// 删除旧版本的存储文件 只有分片需要删除，别的直接覆盖
-			if oldObject.IsMultipart == consts.ObjectIsMultipartMerged {
-
-				if err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-					// 删除旧版本的数据库记录
-					err = srv.objRepo.DeleteObject(ctx1, oldObject.BucketName, oldObject.ObjectKey, oldObject.VersionID)
-					if err != nil {
-						srv.logger.Warn("failed to delete old object record",
-							zap.String("bucket_name", oldObject.BucketName),
-							zap.String("object_key", oldObject.ObjectKey),
-							zap.String("version_id", oldObject.VersionID),
-							zap.Error(err))
-						return err
-					}
-
-					return srv.userRepo.UpdateStorageUsed(ctx1, ctx.UserID, -oldObject.Size)
-				}); err != nil {
-					return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
-				}
-
-				err := srv.storage.DeleteParts(ctx, oldObject.BucketName, *oldObject.UploadID)
-				if err != nil {
-					srv.logger.Warn("failed to delete old multipart parts storage",
-						zap.String("bucket_name", oldObject.BucketName),
-						zap.String("upload_id", *oldObject.UploadID),
-						zap.Error(err))
-				}
-
-			}
-		}
+	if errors.Is(err, repoerr.ErrNotFound) {
+		oldObject = nil
 	}
 
 	createReqMap, err := srv.tokenRedis.GetUploadTokenFields(ctx, uploadID, redis.FieldCallbackURL)
@@ -535,7 +506,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		metadata = upload.Metadata
 	}
 
-	var statusMerged int32 = consts.MultipartPartStatusVirtualMerge
+	var statusMerged int32 = consts.MultipartUploadStatusMergedVirtual
 	lastActive := time.Now()
 	update := &do.UpdateMultipartUpload{
 		Status:       &statusMerged,
@@ -563,37 +534,106 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	}
 
 	var objectID int64
+	var oldObjectToCleanup *do.ObjectDo
+	deltaCount := int64(0)
+	deltaSize := int64(0)
+	if oldObject == nil || oldObject.Status != consts.ObjectStatusNormal {
+		deltaCount = 1
+	}
+	if bucket.Versioning == consts.BucketVersioningDisabled && oldObject != nil && oldObject.Status == consts.ObjectStatusNormal {
+		oldObjectToCleanup = oldObject
+		deltaSize = -oldObject.Size
+	}
+
+	taskID := tools.UUIDHex()
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		if oldObject != nil {
-			if err := srv.objRepo.UpdateObjectNotLatest(ctx1, bucketName, oldObject.ObjectKey, createObj.VersionID); err != nil {
+		objRepo := srv.objRepo.WithTx(tx)
+		if err := objRepo.MarkAllNotLatest(ctx1, bucketName, upload.ObjectKey); err != nil {
+			return err
+		}
+
+		if oldObjectToCleanup != nil {
+			if _, err := objRepo.MarkVersionPurged(ctx1, oldObjectToCleanup.BucketName, oldObjectToCleanup.ObjectKey, oldObjectToCleanup.VersionID); err != nil {
 				return err
+			}
+			if oldObjectToCleanup.IsMultipart == consts.ObjectIsMultipartMerged && oldObjectToCleanup.UploadID != nil {
+				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
+					return err
+				}
 			}
 		}
 
-		objectID, err = srv.objRepo.WithTx(tx).CreateObject(ctx, createObj)
+		objectID, err = objRepo.CreateObject(ctx1, createObj)
 		if err != nil {
 			return err
 		}
 
-		if _, err := srv.multipartRepo.WithTx(tx).UpdateMultipartUpload(ctx, ctx.UserID, uploadID, update); err != nil {
+		if _, err := srv.multipartRepo.WithTx(tx).UpdateMultipartUpload(ctx1, ctx.UserID, uploadID, update); err != nil {
 			return err
 		}
 
-		if err = srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx, ctx.UserID, bucketName, 1, 0); err != nil {
+		if _, err := srv.asyncRepo.WithTx(tx).CreateAsyncTask(ctx1, &do.CreateAsyncTask{
+			UserId:    ctx.UserID,
+			TaskID:    taskID,
+			TaskType:  consts.TaskTypePhysicalMerge,
+			UploadID:  uploadID,
+			ObjectID:  objectID,
+			Status:    consts.TaskStatusPending,
+			MaxRetry:  3,
+			StartedAt: time.Now(),
+		}); err != nil {
 			return err
 		}
 
-		return nil
+		if deltaCount != 0 || deltaSize != 0 {
+			if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, deltaCount, deltaSize); err != nil {
+				return err
+			}
+		}
+
+		if deltaSize != 0 {
+			if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, deltaSize); err != nil {
+				return err
+			}
+		}
+
+		return srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), deltaSize, deltaCount, 0, 0, 0, 1, 0)
 	})
 
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
+	if oldObjectToCleanup != nil {
+		switch oldObjectToCleanup.IsMultipart {
+		case consts.ObjectIsMultipartMerged:
+			if oldObjectToCleanup.UploadID != nil {
+				if err := srv.storage.DeleteParts(ctx, oldObjectToCleanup.BucketName, *oldObjectToCleanup.UploadID); err != nil {
+					srv.logger.Warn("failed to delete old multipart parts storage",
+						zap.String("bucket_name", oldObjectToCleanup.BucketName),
+						zap.String("upload_id", *oldObjectToCleanup.UploadID),
+						zap.Error(err))
+				}
+			}
+		default:
+			if oldObjectToCleanup.StoragePath != nil {
+				if err := srv.storage.Delete(ctx, *oldObjectToCleanup.StoragePath); err != nil {
+					srv.logger.Warn("failed to delete old object storage",
+						zap.String("storage_path", *oldObjectToCleanup.StoragePath),
+						zap.Error(err))
+				}
+			}
+		}
+	}
+
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
-	if err := srv.publishTask(ctx, consts.TaskTypePhysicalMerge, uploadID, objectID); err != nil {
-		srv.logger.Error("failed to publish physical merge task", zap.String("upload_id", uploadID), zap.Int64("object_id", objectID), zap.Error(err))
+	if err := srv.asyncRedis.EnqueueTask(ctx, taskID); err != nil {
+		srv.logger.Warn("failed to enqueue physical merge task, pending scanner will retry",
+			zap.String("task_id", taskID),
+			zap.String("upload_id", uploadID),
+			zap.Int64("object_id", objectID),
+			zap.Error(err))
 	}
 
 	// 回调事件
@@ -606,7 +646,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 			"object_key":   upload.ObjectKey,
 			"upload_id":    uploadID,
 			"object_id":    objectID,
-			"version_id":   uploadID,
+			"version_id":   upload.VersionID,
 			"size":         totalSize,
 			"etag":         resultEtag,
 			"parts_count":  len(sortedParts),
@@ -620,6 +660,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		"bucket_name": upload.BucketName,
 		"object_key":  upload.ObjectKey,
 		"upload_id":   uploadID,
+		"version_id":  upload.VersionID,
 		"size":        totalSize,
 		"etag":        resultEtag,
 		"parts_count": len(sortedParts),
@@ -628,7 +669,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	return &dto.CompleteMultipartUploadResp{
 		ObjectID:  objectID,
 		ObjectKey: upload.ObjectKey,
-		VersionID: uploadID,
+		VersionID: upload.VersionID,
 		Status:    statusMerged,
 	}, common.OK
 }
@@ -673,10 +714,13 @@ func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, upload
 		return err
 	}
 
-	// 2. 再推 Redis（加速消费，失败不影响正确性）
-	err := srv.asyncRedis.EnqueueTask(ctx, task.TaskID)
-	// 忽略 Redis 错误，兜底扫描会补偿
-	return err
+	if err := srv.asyncRedis.EnqueueTask(ctx, task.TaskID); err != nil {
+		srv.logger.Warn("failed to enqueue async task, pending scanner will retry",
+			zap.String("task_id", task.TaskID),
+			zap.String("task_type", task.TaskType),
+			zap.Error(err))
+	}
+	return nil
 }
 
 func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {

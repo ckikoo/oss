@@ -67,6 +67,7 @@ func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 		StoragePath:   modelObject.StoragePath,
 		Acl:           modelObject.Acl,
 		Metadata:      modelObject.Metadata,
+		IsLatest:      modelObject.IsLatest,
 		Status:        modelObject.Status,
 		AccessCount:   modelObject.AccessCount,
 		CreatedAt:     modelObject.CreatedAt,
@@ -124,10 +125,16 @@ func (r *objectRepo) setLatestVersion(ctx context.Context, bucketName, objectKey
 
 // invalidateObjectCache 删本地 + 删 Redis + 广播其他实例
 func (r *objectRepo) invalidateObjectCache(ctx context.Context, bucketName, objectKey string, versionIDs ...string) {
-
-	keys := make([]string, 0, len(versionIDs))
+	keySet := map[string]struct{}{
+		consts.ObjectCacheKey(bucketName, objectKey, ""):          {},
+		consts.ObjectLatestVersionCacheKey(bucketName, objectKey): {},
+	}
 	for _, versionID := range versionIDs {
-		keys = append(keys, consts.ObjectCacheKey(bucketName, objectKey, versionID))
+		keySet[consts.ObjectCacheKey(bucketName, objectKey, versionID)] = struct{}{}
+	}
+	keys := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keys = append(keys, key)
 	}
 	// 删 Redis
 	r.rds.Del(ctx, keys...)
@@ -218,19 +225,53 @@ func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		Acl:           object.Acl,
 		Metadata:      object.Metadata,
 		Status:        consts.ObjectStatusNormal,
-		IsLatest:      &[]int32{1}[0],
+		IsLatest:      1,
 		AccessCount:   0,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 
-	if err = query.Use(r.db).Object.WithContext(ctx).Create(modelObject); err != nil {
+	q := query.Use(r.db).Object
+	if err = q.WithContext(ctx).Omit(q.LatestGuard).Create(modelObject); err != nil {
 		return 0, repoerr.Wrap(err)
 	}
 
 	objectID = modelObject.ID
 
 	return objectID, nil
+}
+
+func (r *objectRepo) CreateDeleteMarker(ctx context.Context, marker *do.CreateDeleteMarker) (int64, error) {
+	now := time.Now()
+	modelObject := &model.Object{
+		BucketID:      marker.BucketID,
+		BucketName:    marker.BucketName,
+		ObjectKey:     marker.ObjectKey,
+		ObjectKeyHash: marker.ObjectKeyHash,
+		VersionID:     marker.VersionID,
+		Size:          0,
+		Etag:          "",
+		ContentType:   nil,
+		StorageClass:  marker.StorageClass,
+		IsMultipart:   consts.ObjectIsMultipartNormal,
+		UploadID:      nil,
+		StoragePath:   nil,
+		Acl:           marker.Acl,
+		Metadata:      marker.Metadata,
+		IsLatest:      1,
+		Status:        consts.ObjectStatusDeleteMark,
+		AccessCount:   0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	q := query.Use(r.db).Object
+	if err := q.WithContext(ctx).Omit(q.LatestGuard).Create(modelObject); err != nil {
+		return 0, repoerr.Wrap(err)
+	}
+
+	r.invalidateObjectCache(ctx, marker.BucketName, marker.ObjectKey, marker.VersionID)
+	return modelObject.ID, nil
 }
 
 // version 为空，默认返回最新的
@@ -240,7 +281,11 @@ func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 	return r.getByKey(ctx, cacheKey, func() (*do.ObjectDo, error) {
 		// Cache miss, query database
 		q := query.Use(r.db)
-		qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.ObjectKey.Eq(objectKey))
+		qs := q.Object.WithContext(ctx).Where(
+			q.Object.BucketName.Eq(bucketName),
+			q.Object.ObjectKey.Eq(objectKey),
+			q.Object.Status.Neq(consts.ObjectStatusDeleted),
+		)
 		if versionID != "" {
 			qs = qs.Where(q.Object.VersionID.Eq(versionID))
 		} else {
@@ -258,7 +303,7 @@ func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 
 func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
 	q := query.Use(r.db)
-	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.Status.Neq(consts.ObjectStatusDeleted))
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.Status.Eq(consts.ObjectStatusNormal))
 
 	if prefix != "" {
 		qs = qs.Where(q.Object.ObjectKey.Like(prefix + "%"))
@@ -293,8 +338,8 @@ func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delim
 func (r *objectRepo) ListVersionsByFilter(ctx context.Context, bucketName, objectKey string) ([]*do.ObjectDo, error) {
 	q := query.Use(r.db).Object
 	qs := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey))
-	qs.Where(q.Status.Neq(consts.ObjectStatusDeleted))
-	modelObjects, err := qs.Order(q.VersionID.Desc()).Find()
+	qs = qs.Where(q.Status.Neq(consts.ObjectStatusDeleted))
+	modelObjects, err := qs.Order(q.ID.Desc()).Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -395,6 +440,8 @@ func (r *objectRepo) DeleteObject(ctx context.Context, bucketName, objectKey str
 
 	updates := map[string]interface{}{
 		q.Status.ColumnName().String():    consts.ObjectStatusDeleted,
+		q.IsLatest.ColumnName().String():  0,
+		"deleted_at":                      time.Now(),
 		q.UpdatedAt.ColumnName().String(): time.Now(),
 	}
 
@@ -406,6 +453,76 @@ func (r *objectRepo) DeleteObject(ctx context.Context, bucketName, objectKey str
 	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID...)
 
 	return nil
+}
+
+func (r *objectRepo) MarkAllNotLatest(ctx context.Context, bucketName, objectKey string) error {
+	q := query.Use(r.db).Object
+	_, err := q.WithContext(ctx).
+		Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.Status.Neq(consts.ObjectStatusDeleted)).
+		Update(q.IsLatest, 0)
+	if err != nil {
+		return repoerr.Wrap(err)
+	}
+
+	r.invalidateObjectCache(ctx, bucketName, objectKey)
+	return nil
+}
+
+func (r *objectRepo) MarkVersionPurged(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
+	if bucketName == "" || objectKey == "" || versionID == "" {
+		return nil, repoerr.ErrInvalidData
+	}
+
+	q := query.Use(r.db).Object
+	modelObject, err := q.WithContext(ctx).
+		Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.VersionID.Eq(versionID), q.Status.Neq(consts.ObjectStatusDeleted)).
+		First()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{
+		q.Status.ColumnName().String():    consts.ObjectStatusDeleted,
+		q.IsLatest.ColumnName().String():  0,
+		"deleted_at":                      now,
+		q.UpdatedAt.ColumnName().String(): now,
+	}
+	if _, err := q.WithContext(ctx).
+		Where(q.ID.Eq(modelObject.ID)).
+		Updates(updates); err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+
+	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
+	return r.toObjectDo(modelObject), nil
+}
+
+func (r *objectRepo) PromotePreviousVersion(ctx context.Context, bucketName, objectKey string) (*do.ObjectDo, error) {
+	q := query.Use(r.db).Object
+	modelObjects, err := q.WithContext(ctx).
+		Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.Status.Neq(consts.ObjectStatusDeleted)).
+		Order(q.ID.Desc()).
+		Limit(1).
+		Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+	if len(modelObjects) == 0 {
+		r.invalidateObjectCache(ctx, bucketName, objectKey)
+		return nil, nil
+	}
+
+	modelObject := modelObjects[0]
+	if _, err := q.WithContext(ctx).
+		Where(q.ID.Eq(modelObject.ID)).
+		Update(q.IsLatest, 1); err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+
+	r.invalidateObjectCache(ctx, bucketName, objectKey, modelObject.VersionID)
+	modelObject.IsLatest = 1
+	return r.toObjectDo(modelObject), nil
 }
 
 func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListObjectsByBucket) ([]*do.ObjectDo, error) {
@@ -427,6 +544,7 @@ func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListOb
 
 	qs = qs.Order(q.ID.Asc()).
 		Where(q.ID.Gt(list.Cursor)).
+		Where(q.Status.Eq(consts.ObjectStatusNormal), q.IsLatest.Eq(1)).
 		Limit(list.Limit)
 
 	modelObjects, err := qs.Find()
@@ -442,13 +560,7 @@ func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListOb
 
 // 效率有点地下降
 func (r *objectRepo) UpdateObjectNotLatest(ctx context.Context, bucketName, objectKey string, version string) error {
-	// Invalidate cache before update
-	r.invalidateObjectCache(ctx, bucketName, objectKey, version)
-	q := query.Use(r.db).Object
-	_, err := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.VersionID.Neq(version)).Update(q.IsLatest, 0)
-	r.invalidateObjectCache(ctx, bucketName, objectKey, version)
-
-	return repoerr.Wrap(err)
+	return r.MarkAllNotLatest(ctx, bucketName, objectKey)
 }
 
 // 只要versionID，不需要其他字段
@@ -480,6 +592,7 @@ func (r *objectRepo) GetLastVersion(ctx context.Context, bucketName, objectKey s
 		err := q.WithContext(ctx).
 			Select(q.VersionID).
 			Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).
+			Where(q.Status.Neq(consts.ObjectStatusDeleted)).
 			Where(q.IsLatest.Eq(1)).
 			Scan(&versionID)
 

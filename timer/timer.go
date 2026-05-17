@@ -2,9 +2,9 @@ package timer
 
 import (
 	"context"
+	"fmt"
 	"oss/adaptor"
 	"oss/adaptor/repo/async"
-
 	"oss/service/do"
 	"oss/utils/logger"
 	"strings"
@@ -28,13 +28,43 @@ func buildLockKey(keys ...string) string {
 	return strings.Join(keys, ":")
 }
 
-// 定时器相关的代码
 const (
 	taskInterval               = 30 * time.Second
+	taskRecoveryInterval       = 1 * time.Minute
 	uploadMergeTimeoutInterval = 30 * time.Second
 	lifecycleInterval          = 1 * time.Minute
 	eventDeliveryInterval      = 10 * time.Second
 )
+
+type Mode string
+
+const (
+	ModeAll           Mode = "all"
+	ModeAsyncTask     Mode = "task"
+	ModeTaskRecovery  Mode = "task-recovery"
+	ModeUploadTimeout Mode = "upload-timeout"
+	ModeLifecycle     Mode = "lifecycle"
+	ModeEventDelivery Mode = "event-delivery"
+	ModeScanLifecycle Mode = "scan-lifecycle"
+)
+
+var modes = []Mode{
+	ModeAll,
+	ModeAsyncTask,
+	ModeTaskRecovery,
+	ModeUploadTimeout,
+	ModeLifecycle,
+	ModeEventDelivery,
+	ModeScanLifecycle,
+}
+
+func ValidModes() []string {
+	validModes := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		validModes = append(validModes, string(mode))
+	}
+	return validModes
+}
 
 func runTimerTask(ctx context.Context, name string, done chan struct{}, fn func()) {
 	go func() {
@@ -60,7 +90,6 @@ func startTimerTaskLoop(ctx context.Context, name string, interval time.Duration
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		// 尝试第一次立即执行
 		select {
 		case <-done:
 			runTimerTask(ctx, name, done, fn)
@@ -76,42 +105,74 @@ func startTimerTaskLoop(ctx context.Context, name string, interval time.Duration
 				case <-done:
 					runTimerTask(ctx, name, done, fn)
 				default:
-					// 上一轮还没完成，跳过
 				}
 			}
 		}
 	}()
 }
 
+func startTimerHandler(ctx context.Context, name string, interval time.Duration, fn func()) {
+	done := make(chan struct{}, 1)
+	done <- struct{}{}
+	startTimerTaskLoop(ctx, name, interval, done, fn)
+}
+
 func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
-	taskDone := make(chan struct{}, 1)
-	timeoutDone := make(chan struct{}, 1)
-	lifecycleDone := make(chan struct{}, 1)
-	scanLifecycleDone := make(chan struct{}, 1)
-	eventDone := make(chan struct{}, 1)
-	taskDone <- struct{}{}
-	timeoutDone <- struct{}{}
-	lifecycleDone <- struct{}{}
-	scanLifecycleDone <- struct{}{}
-	eventDone <- struct{}{}
+	if err := StartTimerMode(ctx, adaptor, ModeAll); err != nil {
+		log.Error("timer exited with error", zap.Error(err))
+	}
+}
 
-	startTimerTaskLoop(ctx, "handlerTask", taskInterval, taskDone, func() {
-		handlerTask(ctx, adaptor)
-	})
+func StartTimerMode(ctx context.Context, adaptor adaptor.IAdaptor, mode Mode) error {
+	switch mode {
+	case ModeAll:
+		startTimerHandler(ctx, "handlerTask", taskInterval, func() {
+			handlerTask(ctx, adaptor)
+		})
+		startTimerHandler(ctx, "handlerTaskRecovery", taskRecoveryInterval, func() {
+			handlerTaskRecovery(ctx, adaptor)
+		})
+		startTimerHandler(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, func() {
+			handlerUploadMergeTimeout(ctx, adaptor)
+		})
+		startTimerHandler(ctx, "handlerLifecycleEvents", lifecycleInterval, func() {
+			handlerLifecycleEvents(ctx, adaptor)
+		})
+		startTimerHandler(ctx, "handlerEventDeliveries", eventDeliveryInterval, func() {
+			handlerEventDeliveries(ctx, adaptor)
+		})
+		startTimerHandler(ctx, "handlerScanTableLifecycleEvents", lifecycleInterval, func() {
+			handlerScanTableLifecycleEvents(ctx, adaptor)
+		})
+	case ModeAsyncTask:
+		startTimerHandler(ctx, "handlerTask", taskInterval, func() {
+			handlerTask(ctx, adaptor)
+		})
+	case ModeTaskRecovery:
+		startTimerHandler(ctx, "handlerTaskRecovery", taskRecoveryInterval, func() {
+			handlerTaskRecovery(ctx, adaptor)
+		})
+	case ModeUploadTimeout:
+		startTimerHandler(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, func() {
+			handlerUploadMergeTimeout(ctx, adaptor)
+		})
+	case ModeLifecycle:
+		startTimerHandler(ctx, "handlerLifecycleEvents", lifecycleInterval, func() {
+			handlerLifecycleEvents(ctx, adaptor)
+		})
+	case ModeEventDelivery:
+		startTimerHandler(ctx, "handlerEventDeliveries", eventDeliveryInterval, func() {
+			handlerEventDeliveries(ctx, adaptor)
+		})
+	case ModeScanLifecycle:
+		startTimerHandler(ctx, "handlerScanTableLifecycleEvents", lifecycleInterval, func() {
+			handlerScanTableLifecycleEvents(ctx, adaptor)
+		})
+	default:
+		return fmt.Errorf("unsupported timer mode %q, valid modes: %s", mode, strings.Join(ValidModes(), ", "))
+	}
 
-	startTimerTaskLoop(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, timeoutDone, func() {
-		handlerUploadMergeTimeout(ctx, adaptor)
-	})
-	startTimerTaskLoop(ctx, "handlerLifecycleEvents", lifecycleInterval, lifecycleDone, func() {
-		handlerLifecycleEvents(ctx, adaptor)
-	})
-	startTimerTaskLoop(ctx, "handlerEventDeliveries", eventDeliveryInterval, eventDone, func() {
-		handlerEventDeliveries(ctx, adaptor)
-	})
-
-	startTimerTaskLoop(ctx, "handlerScanTableLifecycleEvents", lifecycleInterval, scanLifecycleDone, func() {
-		handlerScanTableLifecycleEvents(ctx, adaptor)
-	})
-
+	log.Info("timer started", zap.String("mode", string(mode)))
 	<-ctx.Done()
+	return nil
 }

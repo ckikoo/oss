@@ -56,6 +56,7 @@ var (
 	StorageQuotaOver              = Errno{Code: 12000, Msg: "剩余空间不够"}
 	BucketNotFoundErr             = Errno{Code: 13000, Msg: "Bucket Not Found"}
 	BucketNotEmptyErr             = Errno{Code: 13001, Msg: "Bucket is not empty"}
+	VersioningDisabledErr         = Errno{Code: 13002, Msg: "Bucket versioning is disabled"}
 	EventRuleAlreadyExists        = Errno{Code: 14000, Msg: "Event Rule Already Exists"}
 	EventRuleNotFound             = Errno{Code: 14001, Msg: "Event Rule Not Found"}
 	ErrInvalidParams              = Errno{Code: 400, Msg: "Invalid Parameters"}

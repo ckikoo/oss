@@ -11,5 +11,6 @@ type IAsyncTaskRepo interface {
 	WithTx(tx tx.Tx) IAsyncTaskRepo
 	CreateAsyncTask(ctx context.Context, task *do.CreateAsyncTask) (int64, error)
 	GetAsyncTaskByID(ctx context.Context, taskID string) (*do.AsyncTaskDo, error)
+	ListPendingAsyncTasks(ctx context.Context, limit int) ([]*do.AsyncTaskDo, error)
 	UpdateAsyncTask(ctx context.Context, taskID string, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error)
 }

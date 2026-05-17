@@ -22,6 +22,7 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/utils/pool"
+	"oss/utils/tools"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -238,9 +239,12 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			}
 		}()
 		var eventDeleted bool
+		var expiredObj *do.ObjectDo
+		var shouldDeleteStorage bool
 
 		err = txManager.RunInTx(cancelCtx, func(ctx context.Context, tx tx.Tx) error {
-			obj, err := objectRepo.WithTx(tx).GetByKey(ctx, bucket.Name, objectKey, "")
+			objRepo := objectRepo.WithTx(tx)
+			obj, err := objRepo.GetByKey(ctx, bucket.Name, objectKey, "")
 			if err != nil || obj == nil {
 				log.Warn("timer.handleExpirationEvents object not found in transaction, removing lifecycle event",
 					zap.String("bucket", bucket.Name),
@@ -252,9 +256,33 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return nil
 			}
 
-			err = objectRepo.WithTx(tx).DeleteObject(ctx, bucket.Name, objectKey, obj.VersionID)
+			if obj.Status != consts.ObjectStatusNormal {
+				lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+				eventDeleted = true
+				return nil
+			}
+
+			if bucket.Versioning == consts.BucketVersioningEnabled {
+				if err := objRepo.MarkAllNotLatest(ctx, bucket.Name, objectKey); err != nil {
+					return err
+				}
+				if _, err := objRepo.CreateDeleteMarker(ctx, &do.CreateDeleteMarker{
+					BucketID:      bucket.ID,
+					BucketName:    bucket.Name,
+					ObjectKey:     obj.ObjectKey,
+					ObjectKeyHash: obj.ObjectKeyHash,
+					VersionID:     tools.UUIDHex(),
+					StorageClass:  obj.StorageClass,
+					Acl:           obj.Acl,
+				}); err != nil {
+					return err
+				}
+				return bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, 0)
+			}
+
+			expiredObj, err = objRepo.MarkVersionPurged(ctx, bucket.Name, objectKey, obj.VersionID)
 			if err != nil {
-				log.Error("timer.handleExpirationEvents failed to delete object",
+				log.Error("timer.handleExpirationEvents failed to purge object",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
 					zap.Int64("bucketID", rule.BucketID),
@@ -262,9 +290,9 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 					zap.Error(err))
 				return err
 			}
+			shouldDeleteStorage = true
 
-			err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, -obj.Size)
-			if err != nil {
+			if err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, -obj.Size); err != nil {
 				log.Error("timer.handleExpirationEvents failed to update bucket stats",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
@@ -274,8 +302,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return err
 			}
 
-			err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, -obj.Size)
-			if err != nil {
+			if err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, -obj.Size); err != nil {
 				log.Error("timer.handleExpirationEvents failed to update user storage used",
 					zap.Error(err),
 					zap.Int64("userId", bucket.UserID),
@@ -283,25 +310,32 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return err
 			}
 
-			switch obj.IsMultipart {
-			case consts.ObjectIsMultipartMerged:
-				if obj.UploadID == nil {
-					log.Error("multipart object missing upload_id", zap.Int64("obj_id", obj.ID))
-					return err
-				}
-				err = storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID)
-			case consts.ObjectIsMultipartNormal:
-				if obj.StoragePath == nil {
-					log.Error("normal object missing storage_path", zap.Int64("obj_id", obj.ID))
-					return err
-				}
-				err = storage.Delete(ctx, *obj.StoragePath)
-			}
-			return err
+			return nil
 		})
 
 		if !eventDeleted {
 			lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+		}
+		if err == nil && shouldDeleteStorage && expiredObj != nil {
+			switch expiredObj.IsMultipart {
+			case consts.ObjectIsMultipartMerged:
+				if expiredObj.UploadID != nil {
+					if deleteErr := storage.DeleteParts(ctx, expiredObj.BucketName, *expiredObj.UploadID); deleteErr != nil {
+						log.Error("timer.handleExpirationEvents failed to delete multipart storage",
+							zap.String("bucket", expiredObj.BucketName),
+							zap.String("uploadID", *expiredObj.UploadID),
+							zap.Error(deleteErr))
+					}
+				}
+			default:
+				if expiredObj.StoragePath != nil {
+					if deleteErr := storage.Delete(ctx, *expiredObj.StoragePath); deleteErr != nil {
+						log.Error("timer.handleExpirationEvents failed to delete object storage",
+							zap.String("storagePath", *expiredObj.StoragePath),
+							zap.Error(deleteErr))
+					}
+				}
+			}
 		}
 	}
 }

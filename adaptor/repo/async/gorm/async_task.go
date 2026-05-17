@@ -7,6 +7,7 @@ import (
 	"oss/adaptor/repo/query"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
+	"oss/consts"
 	"oss/service/do"
 	"time"
 
@@ -59,6 +60,32 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID string) (*d
 		return nil, repoerr.Wrap(err)
 	}
 
+	return toAsyncTaskDo(modelTask), nil
+}
+
+func (r *AsyncTaskRepo) ListPendingAsyncTasks(ctx context.Context, limit int) ([]*do.AsyncTaskDo, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	q := query.Use(r.db).AsyncTask
+	modelTasks, err := q.WithContext(ctx).
+		Where(q.Status.Eq(consts.TaskStatusPending)).
+		Order(q.ID.Asc()).
+		Limit(limit).
+		Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+
+	tasks := make([]*do.AsyncTaskDo, 0, len(modelTasks))
+	for _, modelTask := range modelTasks {
+		tasks = append(tasks, toAsyncTaskDo(modelTask))
+	}
+	return tasks, nil
+}
+
+func toAsyncTaskDo(modelTask *model.AsyncTask) *do.AsyncTaskDo {
 	uploadID := ""
 	if modelTask.UploadID != nil {
 		uploadID = *modelTask.UploadID
@@ -106,7 +133,7 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID string) (*d
 		FinishedAt: finishedAt,
 		CreatedAt:  modelTask.CreatedAt,
 		UpdatedAt:  modelTask.UpdatedAt,
-	}, nil
+	}
 }
 
 func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID string, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error) {

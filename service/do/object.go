@@ -22,6 +22,7 @@ type ObjectDo struct {
 	StoragePath   *string        `gorm:"column:storage_path"`
 	Acl           int32          `gorm:"column:acl"`
 	Metadata      *string        `gorm:"column:metadata"`
+	IsLatest      int32          `gorm:"column:is_latest"`
 	Status        int32          `gorm:"column:status"`
 	AccessCount   int64          `gorm:"column:access_count"`
 	CreatedAt     time.Time      `gorm:"column:created_at"`
@@ -52,6 +53,17 @@ type CreateObject struct {
 	Metadata      *string
 }
 
+type CreateDeleteMarker struct {
+	BucketID      int64
+	BucketName    string
+	ObjectKey     string
+	ObjectKeyHash string
+	VersionID     string
+	StorageClass  string
+	Acl           int32
+	Metadata      *string
+}
+
 type UpdateObject struct {
 	Size         *int64
 	Etag         *string
@@ -62,7 +74,7 @@ type UpdateObject struct {
 	Metadata     *string
 	Status       *int32
 	IsMultipart  *int32
-	IsLatest     *bool
+	IsLatest     *int32
 }
 
 type ListObjectsByBucket struct {
