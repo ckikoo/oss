@@ -20,8 +20,8 @@ var luaRefresh = redis.NewScript(`
 		end
 	`)
 
-// luaBatchPop 原子批量弹出，避免多次 RPop 的竞态
-// KEYS[1] = queue key, ARGV[1] = count
+// LIST queue batch pop:
+// KEYS[1] = queue key, ARGV[1] = batch size
 var luaBatchPop = redis.NewScript(`
 	local result = {}
 	local count = tonumber(ARGV[1])
@@ -31,4 +31,16 @@ var luaBatchPop = redis.NewScript(`
 		result[#result + 1] = val
 	end
 	return result
+`)
+
+// ZSET task queue pop:
+// KEYS[1] = ready queue key, ARGV[1] = batch size
+var luaZPopReady = redis.NewScript(`
+	local count = tonumber(ARGV[1])
+	local ids = redis.call('ZRANGE', KEYS[1], 0, count - 1)
+	if #ids == 0 then
+		return ids
+	end
+	redis.call('ZREM', KEYS[1], unpack(ids))
+	return ids
 `)

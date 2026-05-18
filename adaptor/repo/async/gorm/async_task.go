@@ -29,20 +29,40 @@ func NewAsyncTaskRepo(db *gorm.DB) async.IAsyncTaskRepo {
 func (r *AsyncTaskRepo) WithTx(tx tx.Tx) async.IAsyncTaskRepo {
 	return &AsyncTaskRepo{db: tx.(*gorm.DB)}
 }
+
 func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyncTask) (int64, error) {
+	now := time.Now()
+	maxRetry := task.MaxRetry
+	if maxRetry == 0 {
+		maxRetry = 3
+	}
+
 	modelTask := &model.AsyncTask{
-		TaskID:     task.TaskID,
+		UserID:     task.UserId,
 		TaskType:   task.TaskType,
+		BizType:    task.BizType,
+		BizID:      task.BizID,
 		Status:     task.Status,
 		Progress:   task.Progress,
 		RetryCount: task.RetryCount,
-		MaxRetry:   task.MaxRetry,
-		UploadID:   &task.UploadID,
-		ObjectID:   &task.ObjectID,
-		StartedAt:  &task.StartedAt,
-		UserID:     task.UserId,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		MaxRetry:   maxRetry,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if task.Result != "" {
+		modelTask.Result = &task.Result
+	}
+	if task.LastError != "" {
+		modelTask.LastError = &task.LastError
+	}
+	if task.LockedBy != "" {
+		modelTask.LockedBy = &task.LockedBy
+	}
+	if !task.LockedUntil.IsZero() {
+		modelTask.LockedUntil = &task.LockedUntil
+	}
+	if !task.StartedAt.IsZero() {
+		modelTask.StartedAt = &task.StartedAt
 	}
 
 	err := r.db.WithContext(ctx).Model(&model.AsyncTask{}).Create(modelTask).Error
@@ -53,9 +73,9 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 	return modelTask.ID, nil
 }
 
-func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID string) (*do.AsyncTaskDo, error) {
+func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do.AsyncTaskDo, error) {
 	q := query.Use(r.db)
-	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.TaskID.Eq(taskID)).First()
+	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.ID.Eq(taskID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -63,17 +83,23 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID string) (*d
 	return toAsyncTaskDo(modelTask), nil
 }
 
-func (r *AsyncTaskRepo) ListPendingAsyncTasks(ctx context.Context, limit int) ([]*do.AsyncTaskDo, error) {
+func (r *AsyncTaskRepo) ListRunnableAsyncTasks(ctx context.Context, limit int) ([]*do.AsyncTaskDo, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	q := query.Use(r.db).AsyncTask
-	modelTasks, err := q.WithContext(ctx).
-		Where(q.Status.Eq(consts.TaskStatusPending)).
-		Order(q.ID.Asc()).
+	now := time.Now()
+	var modelTasks []*model.AsyncTask
+	err := r.db.WithContext(ctx).
+		Model(&model.AsyncTask{}).
+		Where("status = ? OR (status = ? AND locked_until IS NOT NULL AND locked_until < ?)",
+			consts.TaskStatusPending,
+			consts.TaskStatusRunning,
+			now,
+		).
+		Order("id ASC").
 		Limit(limit).
-		Find()
+		Find(&modelTasks).Error
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -85,26 +111,61 @@ func (r *AsyncTaskRepo) ListPendingAsyncTasks(ctx context.Context, limit int) ([
 	return tasks, nil
 }
 
+func (r *AsyncTaskRepo) ClaimAsyncTask(ctx context.Context, taskID int64, workerID string, lockTTL time.Duration) (bool, *do.AsyncTaskDo, error) {
+	if workerID == "" {
+		workerID = "unknown"
+	}
+	if lockTTL <= 0 {
+		lockTTL = 30 * time.Second
+	}
+
+	now := time.Now()
+	lockedUntil := now.Add(lockTTL)
+	result := r.db.WithContext(ctx).
+		Model(&model.AsyncTask{}).
+		Where("id = ? AND (status = ? OR (status = ? AND locked_until IS NOT NULL AND locked_until < ?))",
+			taskID,
+			consts.TaskStatusPending,
+			consts.TaskStatusRunning,
+			now,
+		).
+		Updates(map[string]interface{}{
+			"status":       consts.TaskStatusRunning,
+			"locked_by":    workerID,
+			"locked_until": lockedUntil,
+			"started_at":   gorm.Expr("COALESCE(started_at, ?)", now),
+			"updated_at":   now,
+		})
+	if result.Error != nil {
+		return false, nil, repoerr.Wrap(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return false, nil, nil
+	}
+
+	task, err := r.GetAsyncTaskByID(ctx, taskID)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, task, nil
+}
+
 func toAsyncTaskDo(modelTask *model.AsyncTask) *do.AsyncTaskDo {
-	uploadID := ""
-	if modelTask.UploadID != nil {
-		uploadID = *modelTask.UploadID
-	}
-	objectID := int64(0)
-	if modelTask.ObjectID != nil {
-		objectID = *modelTask.ObjectID
-	}
 	result := ""
 	if modelTask.Result != nil {
 		result = *modelTask.Result
 	}
-	errorMsg := ""
-	if modelTask.ErrorMsg != nil {
-		errorMsg = *modelTask.ErrorMsg
+	lastError := ""
+	if modelTask.LastError != nil {
+		lastError = *modelTask.LastError
 	}
-	workerID := ""
-	if modelTask.WorkerID != nil {
-		workerID = *modelTask.WorkerID
+	lockedBy := ""
+	if modelTask.LockedBy != nil {
+		lockedBy = *modelTask.LockedBy
+	}
+	lockedUntil := time.Time{}
+	if modelTask.LockedUntil != nil {
+		lockedUntil = *modelTask.LockedUntil
 	}
 	startedAt := time.Time{}
 	if modelTask.StartedAt != nil {
@@ -116,33 +177,40 @@ func toAsyncTaskDo(modelTask *model.AsyncTask) *do.AsyncTaskDo {
 	}
 
 	return &do.AsyncTaskDo{
-		ID:         modelTask.ID,
-		UserId:     modelTask.UserID,
-		TaskID:     modelTask.TaskID,
-		TaskType:   modelTask.TaskType,
-		UploadID:   uploadID,
-		ObjectID:   objectID,
-		Status:     modelTask.Status,
-		Progress:   modelTask.Progress,
-		Result:     result,
-		ErrorMsg:   errorMsg,
-		RetryCount: modelTask.RetryCount,
-		MaxRetry:   modelTask.MaxRetry,
-		WorkerID:   workerID,
-		StartedAt:  startedAt,
-		FinishedAt: finishedAt,
-		CreatedAt:  modelTask.CreatedAt,
-		UpdatedAt:  modelTask.UpdatedAt,
+		ID:          modelTask.ID,
+		UserId:      modelTask.UserID,
+		TaskType:    modelTask.TaskType,
+		BizType:     modelTask.BizType,
+		BizID:       modelTask.BizID,
+		Status:      modelTask.Status,
+		Progress:    modelTask.Progress,
+		Result:      result,
+		LastError:   lastError,
+		RetryCount:  modelTask.RetryCount,
+		MaxRetry:    modelTask.MaxRetry,
+		LockedBy:    lockedBy,
+		LockedUntil: lockedUntil,
+		StartedAt:   startedAt,
+		FinishedAt:  finishedAt,
+		CreatedAt:   modelTask.CreatedAt,
+		UpdatedAt:   modelTask.UpdatedAt,
 	}
 }
 
-func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID string, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error) {
+func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, update *do.UpdateAsyncTask) (*do.AsyncTaskDo, error) {
 	q := query.Use(r.db).AsyncTask
+	now := time.Now()
 
-	// 构建更新字段
 	updates := make(map[string]interface{})
 	if update.Status != 0 {
 		updates[q.Status.ColumnName().String()] = update.Status
+		if update.Status == consts.TaskStatusCompleted || update.Status == consts.TaskStatusFailed {
+			updates[q.LockedBy.ColumnName().String()] = nil
+			updates[q.LockedUntil.ColumnName().String()] = nil
+			if update.FinishedAt.IsZero() {
+				updates[q.FinishedAt.ColumnName().String()] = now
+			}
+		}
 	}
 	if update.Progress != 0 {
 		updates[q.Progress.ColumnName().String()] = update.Progress
@@ -150,14 +218,14 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID string, upda
 	if update.Result != "" {
 		updates[q.Result.ColumnName().String()] = update.Result
 	}
-	if update.ErrorMsg != "" {
-		updates[q.ErrorMsg.ColumnName().String()] = update.ErrorMsg
+	if update.LastError != "" {
+		updates[q.LastError.ColumnName().String()] = update.LastError
 	}
 	if update.RetryCount != 0 {
 		updates[q.RetryCount.ColumnName().String()] = update.RetryCount
 	}
-	if update.WorkerID != "" {
-		updates[q.WorkerID.ColumnName().String()] = update.WorkerID
+	if !update.LockedUntil.IsZero() {
+		updates[q.LockedUntil.ColumnName().String()] = update.LockedUntil
 	}
 	if !update.StartedAt.IsZero() {
 		updates[q.StartedAt.ColumnName().String()] = update.StartedAt
@@ -165,14 +233,16 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID string, upda
 	if !update.FinishedAt.IsZero() {
 		updates[q.FinishedAt.ColumnName().String()] = update.FinishedAt
 	}
-	updates[q.UpdatedAt.ColumnName().String()] = time.Now()
+	updates[q.UpdatedAt.ColumnName().String()] = now
 
-	// 执行更新
-	_, err := q.WithContext(ctx).Where(q.TaskID.Eq(taskID)).Updates(updates)
+	queryDo := q.WithContext(ctx).Where(q.ID.Eq(taskID))
+	if update.LockedBy != "" {
+		queryDo = queryDo.Where(q.LockedBy.Eq(update.LockedBy))
+	}
+	_, err := queryDo.Updates(updates)
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
 
-	// 返回更新后的记录
 	return r.GetAsyncTaskByID(ctx, taskID)
 }

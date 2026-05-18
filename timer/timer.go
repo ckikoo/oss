@@ -15,10 +15,10 @@ import (
 
 var log = logger.GetLogger()
 
-func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID string, status int32, errMsg string) error {
-	update := &do.UpdateAsyncTask{Status: status}
+func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, workerID string, status int32, errMsg string) error {
+	update := &do.UpdateAsyncTask{Status: status, LockedBy: workerID}
 	if errMsg != "" {
-		update.ErrorMsg = errMsg
+		update.LastError = errMsg
 	}
 	_, err := taskRepo.UpdateAsyncTask(ctx, taskID, update)
 	return err

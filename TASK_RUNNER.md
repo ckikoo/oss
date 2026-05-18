@@ -67,9 +67,29 @@ timer.StartTimerMode(ctx, adaptor, timer.Mode(*mode))
 
 ## 异步任务队列语义
 
-`async_tasks` 是任务状态源，保存任务类型、状态、失败原因和恢复依据；Redis 队列只保存 `task_id`，用于唤醒 worker 快速消费。
+`async_tasks` 是任务状态源，保存任务类型、状态、失败原因和恢复依据；Redis 队列只保存 `async_tasks.id`，用于唤醒 worker 快速消费。
 
-`handlerTask` 只消费 Redis 队列，不直接扫描数据库。`handlerTaskRecovery` 单独定时扫描 `async_tasks` 中的 pending 任务并批量重新入 Redis，用于补偿 Redis 入队失败、进程重启或队列丢失。
+Redis 使用 ZSET 作为 ready queue：
+
+```text
+key: oss:task:ready
+member: async_tasks.id
+score: async_tasks.id
+```
+
+同一个任务重复入队会被 ZSET member 去重；`score` 使用自增 ID，worker 按任务创建顺序弹出。
+
+任务 ID 使用 `async_tasks.id`，不再额外生成 UUID。业务 ID 不直接作为任务 ID 使用，例如 `upload_id` 只表示分片上传会话，`async_tasks.id` 表示一次异步调度执行。业务幂等通过数据库唯一约束约束业务维度，例如 `task_type + biz_id`。
+
+入队示例：
+
+```text
+ZADD oss-server:task:ready 1001 1001
+```
+
+worker 每次从 ZSET 中按 score 从小到大弹出任务 ID。恢复扫描使用 `ZADD NX` 批量补偿可执行任务；如果某个任务 ID 已经在 ZSET 中，恢复逻辑不会重复插入。
+
+`handlerTask` 只消费 Redis ZSET 队列，不直接扫描数据库。拿到任务 ID 后必须先抢占 `async_tasks` 行，只有抢占成功的 worker 才执行。`handlerTaskRecovery` 单独定时扫描 `async_tasks` 中的 pending 任务和租约过期的 running 任务并批量重新入 Redis，用于补偿 Redis 入队失败、进程重启或队列丢失。
 
 ## 入口职责
 

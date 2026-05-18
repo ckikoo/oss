@@ -166,34 +166,44 @@ CREATE TABLE  IF NOT EXISTS  multipart_parts (
 
 
 -- ============================================================
--- 7. 异步任务库（物理合并 / 转码 / 图片处理等）
+-- 7. 异步任务库
 -- ============================================================
-CREATE TABLE  IF NOT EXISTS  async_tasks (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    task_id         VARCHAR(64)     NOT NULL                COMMENT '任务唯一ID',
-    task_type       VARCHAR(32)     NOT NULL                COMMENT 'PHYSICAL_MERGE/TRANSCODE/IMG_PROCESS/DELETE_FILE',
-    upload_id       VARCHAR(64)                             COMMENT '关联分片会话ID',
-    object_id       BIGINT                                  COMMENT '关联对象ID',
-    status          TINYINT         NOT NULL DEFAULT 0      COMMENT '0=待执行 1=执行中 2=完成 3=失败',
-    progress        INT             NOT NULL DEFAULT 0      COMMENT '进度 0~100',
-    result          JSON                                    COMMENT '执行结果',
-    error_msg       TEXT                                    COMMENT '失败原因',
-    retry_count     INT             NOT NULL DEFAULT 0      COMMENT '已重试次数',
-    max_retry       INT             NOT NULL DEFAULT 3      COMMENT '最大重试次数',
-    worker_id       VARCHAR(64)                             COMMENT '处理该任务的Worker标识',
-    started_at      DATETIME                                COMMENT '开始执行时间',
-    finished_at     DATETIME                                COMMENT '完成时间',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+CREATE TABLE async_tasks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '任务ID，Redis ZSET member 使用该值',
+
+    user_id BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID',
+    task_type VARCHAR(64) NOT NULL COMMENT '任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART',
+
+    biz_type VARCHAR(32) NOT NULL DEFAULT '' COMMENT '业务对象类型，如 upload/object/event',
+    biz_id VARCHAR(128) NOT NULL COMMENT '业务幂等ID，如 upload_id/object_version_id/delivery_id',
+
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending 1=running 2=completed 3=failed',
+    progress TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '进度 0~100',
+
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry INT NOT NULL DEFAULT 3 COMMENT '最大重试次数',
+
+    locked_by VARCHAR(128) DEFAULT NULL COMMENT '抢占任务的 worker 标识',
+    locked_until DATETIME(3) DEFAULT NULL COMMENT 'worker 租约过期时间，用于 running 任务恢复',
+
+    result JSON DEFAULT NULL COMMENT '执行结果',
+    last_error TEXT DEFAULT NULL COMMENT '最近一次失败原因',
+
+    started_at DATETIME(3) DEFAULT NULL COMMENT '开始执行时间',
+    finished_at DATETIME(3) DEFAULT NULL COMMENT '完成时间',
+
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
     PRIMARY KEY (id),
-    UNIQUE KEY uk_task_id    (task_id),
-    INDEX      idx_upload_id (upload_id),
-    INDEX      idx_object_id (object_id),
-    INDEX      idx_status    (status),
-    INDEX      idx_task_type (task_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异步任务表';
 
+    UNIQUE KEY uk_async_tasks_biz (task_type, biz_id),
+
+    KEY idx_async_tasks_status_id (status, id),
+    KEY idx_async_tasks_locked_until (locked_until),
+    KEY idx_async_tasks_user_status (user_id, status),
+    KEY idx_async_tasks_updated_at (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异步任务表';
 
 -- ============================================================
 -- 8. 策略头表

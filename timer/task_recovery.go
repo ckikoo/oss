@@ -32,21 +32,21 @@ func handlerTaskRecovery(ctx context.Context, adaptor adaptor.IAdaptor) {
 		}
 	}()
 
-	tasks, err := taskRepo.ListPendingAsyncTasks(ctx, 100)
+	tasks, err := taskRepo.ListRunnableAsyncTasks(ctx, 100)
 	if err != nil {
-		log.Error("timer.handlerTaskRecovery fail to scan pending async tasks", zap.Error(err))
+		log.Error("timer.handlerTaskRecovery fail to scan runnable async tasks", zap.Error(err))
 		return
 	}
 	if len(tasks) == 0 {
 		return
 	}
 
-	taskIDs := make([]string, 0, len(tasks))
+	taskIDs := make([]int64, 0, len(tasks))
 	for _, task := range tasks {
-		if task == nil || task.TaskID == "" {
+		if task == nil || task.ID <= 0 {
 			continue
 		}
-		taskIDs = append(taskIDs, task.TaskID)
+		taskIDs = append(taskIDs, task.ID)
 	}
 	if len(taskIDs) == 0 {
 		return
