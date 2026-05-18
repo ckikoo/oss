@@ -21,6 +21,8 @@ type ILock interface {
 	RefreshLock(ctx context.Context, key string, uuid string, ttl time.Duration) error
 	// 检查锁状态
 	CheckLock(ctx context.Context, key string, uuid string) (bool, error)
+	// 检查锁是否存在
+	LockExists(ctx context.Context, key string) (bool, error)
 
 	// 强制释放锁（管理员操作）
 	ForceReleaseLock(ctx context.Context, key string) error
@@ -67,7 +69,7 @@ func (fl *lock) ReleaseLock(ctx context.Context, key string, uuid string) error 
 // 刷新锁
 func (fl *lock) RefreshLock(ctx context.Context, key string, uuid string, ttl time.Duration) error {
 	lockKey := fl.generateLockKey(key)
-	result, err := luaRefresh.Run(ctx, fl.redis, []string{lockKey}, uuid, ttl.Seconds()).Result()
+	result, err := luaRefresh.Run(ctx, fl.redis, []string{lockKey}, uuid, ttl.Milliseconds()).Result()
 	if err != nil {
 		return fmt.Errorf("failed to refresh lock: %w", err)
 	}
@@ -92,6 +94,16 @@ func (fl *lock) CheckLock(ctx context.Context, key string, uuid string) (bool, e
 	}
 
 	return val == uuid, nil // 返回是否由指定的 uuid 持有锁
+}
+
+// LockExists 检查指定 Redis 锁 key 是否存在
+func (fl *lock) LockExists(ctx context.Context, key string) (bool, error) {
+	lockKey := fl.generateLockKey(key)
+	count, err := fl.redis.Exists(ctx, lockKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("failed to check lock exists: %w", err)
+	}
+	return count > 0, nil
 }
 
 // 强制释放锁（管理员操作）

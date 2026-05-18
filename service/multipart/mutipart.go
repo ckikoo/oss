@@ -628,7 +628,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
-	if err := srv.asyncRedis.EnqueueTask(ctx, taskID); err != nil {
+	if err := srv.enqueueAsyncTask(ctx, taskID); err != nil {
 		srv.logger.Warn("failed to enqueue physical merge task, pending scanner will retry",
 			zap.Int64("task_id", taskID),
 			zap.String("upload_id", uploadID),
@@ -712,13 +712,29 @@ func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, upload
 		return err
 	}
 
-	if err := srv.asyncRedis.EnqueueTask(ctx, taskID); err != nil {
+	if err := srv.enqueueAsyncTask(ctx, taskID); err != nil {
 		srv.logger.Warn("failed to enqueue async task, pending scanner will retry",
 			zap.Int64("task_id", taskID),
 			zap.String("task_type", task.TaskType),
 			zap.Error(err))
 	}
 	return nil
+}
+
+func (srv *Service) enqueueAsyncTask(ctx context.Context, taskID int64) error {
+	if taskID <= 0 {
+		return nil
+	}
+
+	queued, err := srv.asyncRepo.MarkAsyncTaskQueued(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !queued {
+		return nil
+	}
+
+	return srv.asyncRedis.EnqueueTask(ctx, taskID)
 }
 
 func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {

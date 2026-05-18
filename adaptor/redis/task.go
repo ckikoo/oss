@@ -37,10 +37,7 @@ func (t *Task) EnqueueTask(ctx context.Context, taskID int64) error {
 		return nil
 	}
 
-	return t.rds.ZAdd(ctx, taskQueueKey(), &redis.Z{
-		Score:  float64(taskID),
-		Member: taskID,
-	}).Err()
+	return t.rds.RPush(ctx, taskQueueKey(), strconv.FormatInt(taskID, 10)).Err()
 }
 
 func (t *Task) EnqueueBatch(ctx context.Context, taskIDs []int64) error {
@@ -48,21 +45,21 @@ func (t *Task) EnqueueBatch(ctx context.Context, taskIDs []int64) error {
 		return nil
 	}
 
-	members := make([]*redis.Z, 0, len(taskIDs))
+	pipe := t.rds.Pipeline()
+	hasCommand := false
 	for _, taskID := range taskIDs {
 		if taskID <= 0 {
 			continue
 		}
-		members = append(members, &redis.Z{
-			Score:  float64(taskID),
-			Member: taskID,
-		})
+		pipe.RPush(ctx, taskQueueKey(), strconv.FormatInt(taskID, 10))
+		hasCommand = true
 	}
-	if len(members) == 0 {
+	if !hasCommand {
 		return nil
 	}
 
-	return t.rds.ZAddNX(ctx, taskQueueKey(), members...).Err()
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (t *Task) DequeueTask(ctx context.Context, size int64, timeout time.Duration) ([]int64, error) {
@@ -70,71 +67,40 @@ func (t *Task) DequeueTask(ctx context.Context, size int64, timeout time.Duratio
 		return nil, nil
 	}
 
-	deadline := time.Now().Add(timeout)
-	for {
-		taskIDs, err := t.popReady(ctx, size)
-		if err != nil || len(taskIDs) > 0 || timeout <= 0 {
-			return taskIDs, err
-		}
-
-		wait := time.Until(deadline)
-		if wait <= 0 {
-			return nil, nil
-		}
-		if wait > 200*time.Millisecond {
-			wait = 200 * time.Millisecond
-		}
-
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-func (t *Task) popReady(ctx context.Context, size int64) ([]int64, error) {
-	raw, err := luaZPopReady.Run(ctx, t.rds, []string{taskQueueKey()}, size).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	if items, ok := raw.([]string); ok {
-		return parseTaskIDs(items), nil
-	}
-
-	items, ok := raw.([]interface{})
-	if !ok {
+	vals, err := t.rds.BLPop(ctx, timeout, taskQueueKey()).Result()
+	if err == redis.Nil {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("unexpected BLPop result")
+	}
 
-	taskIDs := make([]int64, 0, len(items))
-	for _, item := range items {
-		taskID, err := strconv.ParseInt(fmt.Sprint(item), 10, 64)
-		if err == nil && taskID > 0 {
+	taskIDs := make([]int64, 0, size)
+	appendTaskID := func(raw string) {
+		taskID, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr == nil && taskID > 0 {
 			taskIDs = append(taskIDs, taskID)
 		}
+	}
+	appendTaskID(vals[1])
+
+	for int64(len(taskIDs)) < size {
+		raw, popErr := t.rds.LPop(ctx, taskQueueKey()).Result()
+		if popErr == redis.Nil {
+			break
+		}
+		if popErr != nil {
+			return taskIDs, popErr
+		}
+		appendTaskID(raw)
 	}
 
 	return taskIDs, nil
 }
 
-func parseTaskIDs(items []string) []int64 {
-	taskIDs := make([]int64, 0, len(items))
-	for _, item := range items {
-		taskID, err := strconv.ParseInt(item, 10, 64)
-		if err == nil && taskID > 0 {
-			taskIDs = append(taskIDs, taskID)
-		}
-	}
-	return taskIDs
-}
-
 func (t *Task) QueueLen(ctx context.Context) (int64, error) {
-	return t.rds.ZCard(ctx, taskQueueKey()).Result()
+	return t.rds.LLen(ctx, taskQueueKey()).Result()
 }

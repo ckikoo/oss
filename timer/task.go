@@ -92,7 +92,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 			}()
 
-			claimed, task, err := taskRepo.ClaimAsyncTask(taskCtx, taskID, workerID, time.Second*30)
+			claimed, task, err := taskRepo.ClaimAsyncTask(taskCtx, taskID)
 			if err != nil {
 				log.Error("timer.handlerTask fail to claim async task", zap.Error(err), zap.Int64("taskID", taskID))
 				return
@@ -105,7 +105,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 			switch task.TaskType {
 			case consts.TaskTypePhysicalMerge:
 				if uploadID == "" {
-					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, "task biz_id is empty")
+					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "task biz_id is empty")
 					return
 				}
 				info, err := multipart.GetMultipartUploadByID(taskCtx, task.UserId, uploadID)
@@ -137,7 +137,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 				// 处理物理合并任务
 				if info.Status == consts.MultipartUploadStatusMergedPhysical {
-					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, workerID, consts.TaskStatusCompleted, "")
+					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
 					return
 				}
 
@@ -152,7 +152,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 							zap.String("uploadID", info.UploadID))
 						return
 					}
-					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, workerID, consts.TaskStatusCompleted, "")
+					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
 					return
 				}
 
@@ -170,7 +170,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					)
 
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
 				}
@@ -189,7 +189,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 							zap.Error(err),
 							zap.Int64("taskID", taskID),
 						)
-						_ = updateTaskStatus(ctx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+						_ = updateTaskStatus(ctx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 						return
 					}
 					partPaths[i] = part.StoragePath
@@ -200,7 +200,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					log.Error("timer.handlerTask fail to merge parts", zap.Error(err), zap.String("task", gconv.String(task)))
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					return
 				}
 
@@ -248,7 +248,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 							)
 						}
 					}
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
 				}
@@ -258,7 +258,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 
 				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusCompleted, ""); err != nil {
+				if err := updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusCompleted, ""); err != nil {
 					log.Error("timer.handlerTask update physical merge task completed failed",
 						zap.Error(err),
 						zap.Int64("taskID", taskID),
@@ -268,7 +268,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 			case consts.TaskTypeAbortMultipart:
 				if uploadID == "" {
-					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, "task biz_id is empty")
+					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "task biz_id is empty")
 					return
 				}
 				info, err := multipart.GetMultipartUploadByID(ctx, task.UserId, uploadID)
@@ -334,7 +334,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				if err != nil {
 					log.Error("timer.handlerTask runInTx failed", zap.Error(err), zap.Int64("taskId", gconv.Int64(task.ID)))
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
 				}
@@ -345,13 +345,13 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						zap.Int64("taskID", taskID),
 					)
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusFailed, err.Error())
+					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
 				}
 
 				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := updateTaskStatus(writeCtx, taskRepo, task.ID, workerID, consts.TaskStatusCompleted, ""); err != nil {
+				if err := updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusCompleted, ""); err != nil {
 					log.Error("timer.handlerTask update abort task completed failed",
 						zap.Error(err),
 						zap.Int64("taskID", taskID),
@@ -360,7 +360,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				cancel()
 
 			default:
-				// 处理未知任务类型
+				_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "unknown async task type")
 			}
 
 		}); err != nil {

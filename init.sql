@@ -169,7 +169,7 @@ CREATE TABLE  IF NOT EXISTS  multipart_parts (
 -- 7. 异步任务库
 -- ============================================================
 CREATE TABLE async_tasks (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '任务ID，Redis ZSET member 使用该值',
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '任务ID，Redis LIST item 使用该值',
 
     user_id BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID',
     task_type VARCHAR(64) NOT NULL COMMENT '任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART',
@@ -177,20 +177,14 @@ CREATE TABLE async_tasks (
     biz_type VARCHAR(32) NOT NULL DEFAULT '' COMMENT '业务对象类型，如 upload/object/event',
     biz_id VARCHAR(128) NOT NULL COMMENT '业务幂等ID，如 upload_id/object_version_id/delivery_id',
 
-    status TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending 1=running 2=completed 3=failed',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending 1=queued 2=running 3=completed 4=failed',
     progress TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '进度 0~100',
 
     retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
     max_retry INT NOT NULL DEFAULT 3 COMMENT '最大重试次数',
 
-    locked_by VARCHAR(128) DEFAULT NULL COMMENT '抢占任务的 worker 标识',
-    locked_until DATETIME(3) DEFAULT NULL COMMENT 'worker 租约过期时间，用于 running 任务恢复',
-
     result JSON DEFAULT NULL COMMENT '执行结果',
     last_error TEXT DEFAULT NULL COMMENT '最近一次失败原因',
-
-    started_at DATETIME(3) DEFAULT NULL COMMENT '开始执行时间',
-    finished_at DATETIME(3) DEFAULT NULL COMMENT '完成时间',
 
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -200,9 +194,8 @@ CREATE TABLE async_tasks (
     UNIQUE KEY uk_async_tasks_biz (task_type, biz_id),
 
     KEY idx_async_tasks_status_id (status, id),
-    KEY idx_async_tasks_locked_until (locked_until),
     KEY idx_async_tasks_user_status (user_id, status),
-    KEY idx_async_tasks_updated_at (updated_at)
+    KEY idx_async_tasks_status_updated_at (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异步任务表';
 
 -- ============================================================
