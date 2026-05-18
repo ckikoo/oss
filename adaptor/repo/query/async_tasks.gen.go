@@ -28,22 +28,22 @@ func newAsyncTask(db *gorm.DB, opts ...gen.DOOption) asyncTask {
 	tableName := _asyncTask.asyncTaskDo.TableName()
 	_asyncTask.ALL = field.NewAsterisk(tableName)
 	_asyncTask.ID = field.NewInt64(tableName, "id")
-	_asyncTask.TaskID = field.NewString(tableName, "task_id")
+	_asyncTask.UserID = field.NewInt64(tableName, "user_id")
 	_asyncTask.TaskType = field.NewString(tableName, "task_type")
-	_asyncTask.UploadID = field.NewString(tableName, "upload_id")
-	_asyncTask.ObjectID = field.NewInt64(tableName, "object_id")
+	_asyncTask.BizType = field.NewString(tableName, "biz_type")
+	_asyncTask.BizID = field.NewString(tableName, "biz_id")
 	_asyncTask.Status = field.NewInt32(tableName, "status")
 	_asyncTask.Progress = field.NewInt32(tableName, "progress")
-	_asyncTask.Result = field.NewString(tableName, "result")
-	_asyncTask.ErrorMsg = field.NewString(tableName, "error_msg")
 	_asyncTask.RetryCount = field.NewInt32(tableName, "retry_count")
 	_asyncTask.MaxRetry = field.NewInt32(tableName, "max_retry")
-	_asyncTask.WorkerID = field.NewString(tableName, "worker_id")
+	_asyncTask.LockedBy = field.NewString(tableName, "locked_by")
+	_asyncTask.LockedUntil = field.NewTime(tableName, "locked_until")
+	_asyncTask.Result = field.NewString(tableName, "result")
+	_asyncTask.LastError = field.NewString(tableName, "last_error")
 	_asyncTask.StartedAt = field.NewTime(tableName, "started_at")
 	_asyncTask.FinishedAt = field.NewTime(tableName, "finished_at")
 	_asyncTask.CreatedAt = field.NewTime(tableName, "created_at")
 	_asyncTask.UpdatedAt = field.NewTime(tableName, "updated_at")
-	_asyncTask.UserID = field.NewInt64(tableName, "user_id")
 
 	_asyncTask.fillFieldMap()
 
@@ -54,24 +54,24 @@ func newAsyncTask(db *gorm.DB, opts ...gen.DOOption) asyncTask {
 type asyncTask struct {
 	asyncTaskDo asyncTaskDo
 
-	ALL        field.Asterisk
-	ID         field.Int64  // 主键
-	TaskID     field.String // 任务唯一ID
-	TaskType   field.String // PHYSICAL_MERGE/TRANSCODE/IMG_PROCESS
-	UploadID   field.String // 关联分片会话ID
-	ObjectID   field.Int64  // 关联对象ID
-	Status     field.Int32  // 0=待执行 1=执行中 2=完成 3=失败
-	Progress   field.Int32  // 进度 0~100
-	Result     field.String // 执行结果
-	ErrorMsg   field.String // 失败原因
-	RetryCount field.Int32  // 已重试次数
-	MaxRetry   field.Int32  // 最大重试次数
-	WorkerID   field.String // 处理该任务的Worker标识
-	StartedAt  field.Time   // 开始执行时间
-	FinishedAt field.Time   // 完成时间
-	CreatedAt  field.Time
-	UpdatedAt  field.Time
-	UserID     field.Int64
+	ALL         field.Asterisk
+	ID          field.Int64  // 任务ID，Redis ZSET member 使用该值
+	UserID      field.Int64  // 用户ID
+	TaskType    field.String // 任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART
+	BizType     field.String // 业务对象类型，如 upload/object/event
+	BizID       field.String // 业务幂等ID，如 upload_id/object_version_id/delivery_id
+	Status      field.Int32  // 0=pending 1=running 2=completed 3=failed
+	Progress    field.Int32  // 进度 0~100
+	RetryCount  field.Int32  // 已重试次数
+	MaxRetry    field.Int32  // 最大重试次数
+	LockedBy    field.String // 抢占任务的 worker 标识
+	LockedUntil field.Time   // worker 租约过期时间，用于 running 任务恢复
+	Result      field.String // 执行结果
+	LastError   field.String // 最近一次失败原因
+	StartedAt   field.Time   // 开始执行时间
+	FinishedAt  field.Time   // 完成时间
+	CreatedAt   field.Time
+	UpdatedAt   field.Time
 
 	fieldMap map[string]field.Expr
 }
@@ -89,22 +89,22 @@ func (a asyncTask) As(alias string) *asyncTask {
 func (a *asyncTask) updateTableName(table string) *asyncTask {
 	a.ALL = field.NewAsterisk(table)
 	a.ID = field.NewInt64(table, "id")
-	a.TaskID = field.NewString(table, "task_id")
+	a.UserID = field.NewInt64(table, "user_id")
 	a.TaskType = field.NewString(table, "task_type")
-	a.UploadID = field.NewString(table, "upload_id")
-	a.ObjectID = field.NewInt64(table, "object_id")
+	a.BizType = field.NewString(table, "biz_type")
+	a.BizID = field.NewString(table, "biz_id")
 	a.Status = field.NewInt32(table, "status")
 	a.Progress = field.NewInt32(table, "progress")
-	a.Result = field.NewString(table, "result")
-	a.ErrorMsg = field.NewString(table, "error_msg")
 	a.RetryCount = field.NewInt32(table, "retry_count")
 	a.MaxRetry = field.NewInt32(table, "max_retry")
-	a.WorkerID = field.NewString(table, "worker_id")
+	a.LockedBy = field.NewString(table, "locked_by")
+	a.LockedUntil = field.NewTime(table, "locked_until")
+	a.Result = field.NewString(table, "result")
+	a.LastError = field.NewString(table, "last_error")
 	a.StartedAt = field.NewTime(table, "started_at")
 	a.FinishedAt = field.NewTime(table, "finished_at")
 	a.CreatedAt = field.NewTime(table, "created_at")
 	a.UpdatedAt = field.NewTime(table, "updated_at")
-	a.UserID = field.NewInt64(table, "user_id")
 
 	a.fillFieldMap()
 
@@ -133,22 +133,22 @@ func (a *asyncTask) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 func (a *asyncTask) fillFieldMap() {
 	a.fieldMap = make(map[string]field.Expr, 17)
 	a.fieldMap["id"] = a.ID
-	a.fieldMap["task_id"] = a.TaskID
+	a.fieldMap["user_id"] = a.UserID
 	a.fieldMap["task_type"] = a.TaskType
-	a.fieldMap["upload_id"] = a.UploadID
-	a.fieldMap["object_id"] = a.ObjectID
+	a.fieldMap["biz_type"] = a.BizType
+	a.fieldMap["biz_id"] = a.BizID
 	a.fieldMap["status"] = a.Status
 	a.fieldMap["progress"] = a.Progress
-	a.fieldMap["result"] = a.Result
-	a.fieldMap["error_msg"] = a.ErrorMsg
 	a.fieldMap["retry_count"] = a.RetryCount
 	a.fieldMap["max_retry"] = a.MaxRetry
-	a.fieldMap["worker_id"] = a.WorkerID
+	a.fieldMap["locked_by"] = a.LockedBy
+	a.fieldMap["locked_until"] = a.LockedUntil
+	a.fieldMap["result"] = a.Result
+	a.fieldMap["last_error"] = a.LastError
 	a.fieldMap["started_at"] = a.StartedAt
 	a.fieldMap["finished_at"] = a.FinishedAt
 	a.fieldMap["created_at"] = a.CreatedAt
 	a.fieldMap["updated_at"] = a.UpdatedAt
-	a.fieldMap["user_id"] = a.UserID
 }
 
 func (a asyncTask) clone(db *gorm.DB) asyncTask {

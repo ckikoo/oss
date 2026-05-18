@@ -545,7 +545,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		deltaSize = -oldObject.Size
 	}
 
-	taskID := tools.UUIDHex()
+	var taskID int64
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 		objRepo := srv.objRepo.WithTx(tx)
 		if err := objRepo.MarkAllNotLatest(ctx1, bucketName, upload.ObjectKey); err != nil {
@@ -572,18 +572,18 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 			return err
 		}
 
-		if _, err := srv.asyncRepo.WithTx(tx).CreateAsyncTask(ctx1, &do.CreateAsyncTask{
-			UserId:    ctx.UserID,
-			TaskID:    taskID,
-			TaskType:  consts.TaskTypePhysicalMerge,
-			UploadID:  uploadID,
-			ObjectID:  objectID,
-			Status:    consts.TaskStatusPending,
-			MaxRetry:  3,
-			StartedAt: time.Now(),
-		}); err != nil {
+		createdTaskID, err := srv.asyncRepo.WithTx(tx).CreateAsyncTask(ctx1, &do.CreateAsyncTask{
+			UserId:   ctx.UserID,
+			TaskType: consts.TaskTypePhysicalMerge,
+			BizType:  consts.TaskBizTypeUpload,
+			BizID:    uploadID,
+			Status:   consts.TaskStatusPending,
+			MaxRetry: 3,
+		})
+		if err != nil {
 			return err
 		}
+		taskID = createdTaskID
 
 		if deltaCount != 0 || deltaSize != 0 {
 			if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, deltaCount, deltaSize); err != nil {
@@ -630,7 +630,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 
 	if err := srv.asyncRedis.EnqueueTask(ctx, taskID); err != nil {
 		srv.logger.Warn("failed to enqueue physical merge task, pending scanner will retry",
-			zap.String("task_id", taskID),
+			zap.Int64("task_id", taskID),
 			zap.String("upload_id", uploadID),
 			zap.Int64("object_id", objectID),
 			zap.Error(err))
@@ -694,29 +694,27 @@ func (srv *Service) dispatchCallback(ctx context.Context, url string, payload ma
 	}
 }
 
-func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, uploadID string, objectID int64) error {
+func (srv *Service) publishTask(ctx *common.UserInfoCtx, taskType string, uploadID string) error {
 	if !consts.ValidAsyncTaskType(taskType) {
 		return fmt.Errorf("invalid async task type: %s", taskType)
 	}
 
-	// 1. 先写 MySQL（持久化保证）
 	task := &do.CreateAsyncTask{
-		UserId:    ctx.UserID,
-		TaskID:    tools.UUIDHex(),
-		TaskType:  taskType,
-		UploadID:  uploadID,
-		ObjectID:  objectID,
-		Status:    consts.TaskStatusPending,
-		MaxRetry:  3,
-		StartedAt: time.Now(),
+		UserId:   ctx.UserID,
+		TaskType: taskType,
+		BizType:  consts.TaskBizTypeUpload,
+		BizID:    uploadID,
+		Status:   consts.TaskStatusPending,
+		MaxRetry: 3,
 	}
-	if _, err := srv.asyncRepo.CreateAsyncTask(ctx, task); err != nil {
+	taskID, err := srv.asyncRepo.CreateAsyncTask(ctx, task)
+	if err != nil {
 		return err
 	}
 
-	if err := srv.asyncRedis.EnqueueTask(ctx, task.TaskID); err != nil {
+	if err := srv.asyncRedis.EnqueueTask(ctx, taskID); err != nil {
 		srv.logger.Warn("failed to enqueue async task, pending scanner will retry",
-			zap.String("task_id", task.TaskID),
+			zap.Int64("task_id", taskID),
 			zap.String("task_type", task.TaskType),
 			zap.Error(err))
 	}
@@ -745,7 +743,7 @@ func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID strin
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
 
-	if err = srv.publishTask(ctx, consts.TaskTypeAbortMultipart, uploadID, 0); err != nil {
+	if err = srv.publishTask(ctx, consts.TaskTypeAbortMultipart, uploadID); err != nil {
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 

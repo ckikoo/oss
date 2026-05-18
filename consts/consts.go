@@ -132,6 +132,10 @@ const (
 )
 
 const (
+	TaskBizTypeUpload = "upload"
+)
+
+const (
 	TaskStatusPending   int32 = 0 // 待执行
 	TaskStatusRunning   int32 = 1 // 执行中
 	TaskStatusCompleted int32 = 2 // 完成
