@@ -4,31 +4,25 @@
 
 package model
 
-import (
-	"time"
-)
+import "time"
 
 const TableNameAsyncTask = "async_tasks"
 
 // AsyncTask 异步任务表
 type AsyncTask struct {
-	ID          int64      `gorm:"column:id;primaryKey;autoIncrement:true;comment:任务ID，Redis ZSET member 使用该值" json:"id"`         // 任务ID，Redis ZSET member 使用该值
-	UserID      int64      `gorm:"column:user_id;not null;comment:用户ID" json:"user_id"`                                           // 用户ID
-	TaskType    string     `gorm:"column:task_type;not null;comment:任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART" json:"task_type"`      // 任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART
-	BizType     string     `gorm:"column:biz_type;not null;comment:业务对象类型，如 upload/object/event" json:"biz_type"`                 // 业务对象类型，如 upload/object/event
-	BizID       string     `gorm:"column:biz_id;not null;comment:业务幂等ID，如 upload_id/object_version_id/delivery_id" json:"biz_id"` // 业务幂等ID，如 upload_id/object_version_id/delivery_id
-	Status      int32      `gorm:"column:status;not null;comment:0=pending 1=running 2=completed 3=failed" json:"status"`         // 0=pending 1=running 2=completed 3=failed
-	Progress    int32      `gorm:"column:progress;not null;comment:进度 0~100" json:"progress"`                                     // 进度 0~100
-	RetryCount  int32      `gorm:"column:retry_count;not null;comment:已重试次数" json:"retry_count"`                                  // 已重试次数
-	MaxRetry    int32      `gorm:"column:max_retry;not null;default:3;comment:最大重试次数" json:"max_retry"`                           // 最大重试次数
-	LockedBy    *string    `gorm:"column:locked_by;comment:抢占任务的 worker 标识" json:"locked_by"`                                     // 抢占任务的 worker 标识
-	LockedUntil *time.Time `gorm:"column:locked_until;comment:worker 租约过期时间，用于 running 任务恢复" json:"locked_until"`                 // worker 租约过期时间，用于 running 任务恢复
-	Result      *string    `gorm:"column:result;comment:执行结果" json:"result"`                                                      // 执行结果
-	LastError   *string    `gorm:"column:last_error;comment:最近一次失败原因" json:"last_error"`                                          // 最近一次失败原因
-	StartedAt   *time.Time `gorm:"column:started_at;comment:开始执行时间" json:"started_at"`                                            // 开始执行时间
-	FinishedAt  *time.Time `gorm:"column:finished_at;comment:完成时间" json:"finished_at"`                                            // 完成时间
-	CreatedAt   time.Time  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
-	UpdatedAt   time.Time  `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(3)" json:"updated_at"`
+	ID         int64     `gorm:"column:id;primaryKey;autoIncrement:true;comment:任务ID，Redis LIST item 使用该值" json:"id"`            // 任务ID，Redis LIST item 使用该值
+	UserID     int64     `gorm:"column:user_id;not null;comment:用户ID" json:"user_id"`                                            // 用户ID
+	TaskType   string    `gorm:"column:task_type;not null;comment:任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART" json:"task_type"`       // 任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART
+	BizType    string    `gorm:"column:biz_type;not null;comment:业务对象类型，如 upload/object/event" json:"biz_type"`                  // 业务对象类型，如 upload/object/event
+	BizID      string    `gorm:"column:biz_id;not null;comment:业务幂等ID，如 upload_id/object_version_id/delivery_id" json:"biz_id"`  // 业务幂等ID，如 upload_id/object_version_id/delivery_id
+	Status     int32     `gorm:"column:status;not null;comment:0=pending 1=queued 2=running 3=completed 4=failed" json:"status"` // 0=pending 1=queued 2=running 3=completed 4=failed
+	Progress   int32     `gorm:"column:progress;not null;comment:进度 0~100" json:"progress"`                                      // 进度 0~100
+	RetryCount int32     `gorm:"column:retry_count;not null;comment:已重试次数" json:"retry_count"`                                   // 已重试次数
+	MaxRetry   int32     `gorm:"column:max_retry;not null;default:3;comment:最大重试次数" json:"max_retry"`                            // 最大重试次数
+	Result     *string   `gorm:"column:result;comment:执行结果" json:"result"`                                                       // 执行结果
+	LastError  *string   `gorm:"column:last_error;comment:最近一次失败原因" json:"last_error"`                                           // 最近一次失败原因
+	CreatedAt  time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
+	UpdatedAt  time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(3)" json:"updated_at"`
 }
 
 // TableName AsyncTask's table name

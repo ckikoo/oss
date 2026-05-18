@@ -56,8 +56,11 @@ timer.StartTimerMode(ctx, adaptor, timer.Mode(*mode))
 | mode | 内部任务函数 | 间隔 |
 |---|---|---:|
 | `all` | 启动全部任务函数 | 按各任务自身间隔 |
-| `task` | `handlerTask` | 30s |
-| `task-recovery` | `handlerTaskRecovery` | 1m |
+| `task` | `handlerTask` | 5s |
+| `task-recovery` | 启动全部 async 维护任务（兼容模式） | 按各任务自身间隔 |
+| `task-scan-pending` | `handlerScanPendingAsyncTasks` | 5s |
+| `task-recover-queued` | `handlerRecoverStaleQueuedAsyncTasks` | 1m |
+| `task-recover-running` | `handlerRecoverStaleRunningAsyncTasks` | 1m |
 | `upload-timeout` | `handlerUploadMergeTimeout` | 30s |
 | `lifecycle` | `handlerLifecycleEvents` | 1m |
 | `event-delivery` | `handlerEventDeliveries` | 10s |
@@ -67,29 +70,28 @@ timer.StartTimerMode(ctx, adaptor, timer.Mode(*mode))
 
 ## 异步任务队列语义
 
-`async_tasks` 是任务状态源，保存任务类型、状态、失败原因和恢复依据；Redis 队列只保存 `async_tasks.id`，用于唤醒 worker 快速消费。
+`async_tasks` 是任务状态源，保存任务类型、状态、失败原因和恢复依据；Redis LIST 队列只保存 `async_tasks.id`，用于唤醒 worker 快速消费。
 
-Redis 使用 ZSET 作为 ready queue：
+Redis 使用 LIST 作为 ready queue：
 
 ```text
 key: oss:task:ready
-member: async_tasks.id
-score: async_tasks.id
+item: async_tasks.id
 ```
 
-同一个任务重复入队会被 ZSET member 去重；`score` 使用自增 ID，worker 按任务创建顺序弹出。
+任务写入 DB 后先从 `PENDING` 改为 `QUEUED` 再 `RPUSH` 到 Redis。LIST 本身不负责去重，worker 消费时必须通过 DB 的 `QUEUED -> RUNNING` 条件更新抢占任务；重复 LIST item 会因为 DB 状态不匹配被跳过。
 
 任务 ID 使用 `async_tasks.id`，不再额外生成 UUID。业务 ID 不直接作为任务 ID 使用，例如 `upload_id` 只表示分片上传会话，`async_tasks.id` 表示一次异步调度执行。业务幂等通过数据库唯一约束约束业务维度，例如 `task_type + biz_id`。
 
 入队示例：
 
 ```text
-ZADD oss-server:task:ready 1001 1001
+RPUSH oss-server:task:ready 1001
 ```
 
-worker 每次从 ZSET 中按 score 从小到大弹出任务 ID。恢复扫描使用 `ZADD NX` 批量补偿可执行任务；如果某个任务 ID 已经在 ZSET 中，恢复逻辑不会重复插入。
+worker 使用 `BLPOP` 阻塞弹出任务 ID，并使用 Redis task lock 维护执行租约。async 维护任务拆成三个独立 timer：`task-scan-pending` 通过 `FOR UPDATE SKIP LOCKED` 扫描 `PENDING` 任务转为 `QUEUED` 并入队；`task-recover-queued` 通过 `FOR UPDATE SKIP LOCKED` 将超过 2 分钟未消费的 `QUEUED` 任务重置为 `PENDING`；`task-recover-running` 扫描 `RUNNING` 后检查 Redis task lock，确认锁不存在时再次按行加 `FOR UPDATE SKIP LOCKED` 并重置为 `PENDING`。
 
-`handlerTask` 只消费 Redis ZSET 队列，不直接扫描数据库。拿到任务 ID 后必须先抢占 `async_tasks` 行，只有抢占成功的 worker 才执行。`handlerTaskRecovery` 单独定时扫描 `async_tasks` 中的 pending 任务和租约过期的 running 任务并批量重新入 Redis，用于补偿 Redis 入队失败、进程重启或队列丢失。
+`handlerTask` 只消费 Redis LIST 队列，不直接扫描数据库。拿到任务 ID 后必须先通过 `FOR UPDATE SKIP LOCKED` 抢占 `async_tasks` 行，只有抢占成功的 worker 才执行。三个 async 维护 timer 分别补偿 Redis 入队失败、进程重启、队列丢失或 worker 崩溃；`task-recovery` mode 仅作为兼容入口，一次启动这三个维护 timer。
 
 ## 入口职责
 

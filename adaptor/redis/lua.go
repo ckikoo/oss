@@ -32,15 +32,3 @@ var luaBatchPop = redis.NewScript(`
 	end
 	return result
 `)
-
-// ZSET task queue pop:
-// KEYS[1] = ready queue key, ARGV[1] = batch size
-var luaZPopReady = redis.NewScript(`
-	local count = tonumber(ARGV[1])
-	local ids = redis.call('ZRANGE', KEYS[1], 0, count - 1)
-	if #ids == 0 then
-		return ids
-	end
-	redis.call('ZREM', KEYS[1], unpack(ids))
-	return ids
-`)

@@ -136,10 +136,11 @@ const (
 )
 
 const (
-	TaskStatusPending   int32 = 0 // 待执行
-	TaskStatusRunning   int32 = 1 // 执行中
-	TaskStatusCompleted int32 = 2 // 完成
-	TaskStatusFailed    int32 = 3 // 失败
+	TaskStatusPending   int32 = 0 // 已写入 DB，等待扫描入队
+	TaskStatusQueued    int32 = 1 // 已写入 Redis LIST，等待 worker 消费
+	TaskStatusRunning   int32 = 2 // worker 已取走并执行中
+	TaskStatusCompleted int32 = 3 // 完成
+	TaskStatusFailed    int32 = 4 // 重试耗尽后失败
 )
 
 func ValidAsyncTaskType(taskType string) bool {

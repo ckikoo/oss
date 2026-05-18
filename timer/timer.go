@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"oss/adaptor"
 	"oss/adaptor/repo/async"
+	"oss/consts"
 	"oss/service/do"
 	"oss/utils/logger"
 	"strings"
@@ -15,13 +16,22 @@ import (
 
 var log = logger.GetLogger()
 
-func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, workerID string, status int32, errMsg string) error {
-	update := &do.UpdateAsyncTask{Status: status, LockedBy: workerID}
-	if errMsg != "" {
-		update.LastError = errMsg
+func updateTaskStatus(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskID int64, status int32, errMsg string) error {
+	switch status {
+	case consts.TaskStatusCompleted:
+		_, err := taskRepo.CompleteAsyncTask(ctx, taskID, "")
+		return err
+	case consts.TaskStatusFailed:
+		_, _, err := taskRepo.FailAsyncTask(ctx, taskID, errMsg)
+		return err
+	default:
+		update := &do.UpdateAsyncTask{Status: status}
+		if errMsg != "" {
+			update.LastError = errMsg
+		}
+		_, err := taskRepo.UpdateAsyncTask(ctx, taskID, update)
+		return err
 	}
-	_, err := taskRepo.UpdateAsyncTask(ctx, taskID, update)
-	return err
 }
 
 func buildLockKey(keys ...string) string {
@@ -29,29 +39,37 @@ func buildLockKey(keys ...string) string {
 }
 
 const (
-	taskInterval               = 30 * time.Second
-	taskRecoveryInterval       = 1 * time.Minute
-	uploadMergeTimeoutInterval = 30 * time.Second
-	lifecycleInterval          = 1 * time.Minute
-	eventDeliveryInterval      = 10 * time.Second
+	taskInterval                = 5 * time.Second
+	taskScanPendingInterval     = 5 * time.Second
+	taskQueuedRecoveryInterval  = 1 * time.Minute
+	taskRunningRecoveryInterval = 1 * time.Minute
+	uploadMergeTimeoutInterval  = 30 * time.Second
+	lifecycleInterval           = 1 * time.Minute
+	eventDeliveryInterval       = 10 * time.Second
 )
 
 type Mode string
 
 const (
-	ModeAll           Mode = "all"
-	ModeAsyncTask     Mode = "task"
-	ModeTaskRecovery  Mode = "task-recovery"
-	ModeUploadTimeout Mode = "upload-timeout"
-	ModeLifecycle     Mode = "lifecycle"
-	ModeEventDelivery Mode = "event-delivery"
-	ModeScanLifecycle Mode = "scan-lifecycle"
+	ModeAll                Mode = "all"
+	ModeAsyncTask          Mode = "task"
+	ModeTaskRecovery       Mode = "task-recovery"
+	ModeTaskScanPending    Mode = "task-scan-pending"
+	ModeTaskRecoverQueued  Mode = "task-recover-queued"
+	ModeTaskRecoverRunning Mode = "task-recover-running"
+	ModeUploadTimeout      Mode = "upload-timeout"
+	ModeLifecycle          Mode = "lifecycle"
+	ModeEventDelivery      Mode = "event-delivery"
+	ModeScanLifecycle      Mode = "scan-lifecycle"
 )
 
 var modes = []Mode{
 	ModeAll,
 	ModeAsyncTask,
 	ModeTaskRecovery,
+	ModeTaskScanPending,
+	ModeTaskRecoverQueued,
+	ModeTaskRecoverRunning,
 	ModeUploadTimeout,
 	ModeLifecycle,
 	ModeEventDelivery,
@@ -123,15 +141,25 @@ func StartTimer(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 }
 
+func startAsyncTaskMaintenanceHandlers(ctx context.Context, adaptor adaptor.IAdaptor) {
+	startTimerHandler(ctx, "handlerScanPendingAsyncTasks", taskScanPendingInterval, func() {
+		handlerScanPendingAsyncTasks(ctx, adaptor)
+	})
+	startTimerHandler(ctx, "handlerRecoverStaleQueuedAsyncTasks", taskQueuedRecoveryInterval, func() {
+		handlerRecoverStaleQueuedAsyncTasks(ctx, adaptor)
+	})
+	startTimerHandler(ctx, "handlerRecoverStaleRunningAsyncTasks", taskRunningRecoveryInterval, func() {
+		handlerRecoverStaleRunningAsyncTasks(ctx, adaptor)
+	})
+}
+
 func StartTimerMode(ctx context.Context, adaptor adaptor.IAdaptor, mode Mode) error {
 	switch mode {
 	case ModeAll:
 		startTimerHandler(ctx, "handlerTask", taskInterval, func() {
 			handlerTask(ctx, adaptor)
 		})
-		startTimerHandler(ctx, "handlerTaskRecovery", taskRecoveryInterval, func() {
-			handlerTaskRecovery(ctx, adaptor)
-		})
+		startAsyncTaskMaintenanceHandlers(ctx, adaptor)
 		startTimerHandler(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, func() {
 			handlerUploadMergeTimeout(ctx, adaptor)
 		})
@@ -149,8 +177,18 @@ func StartTimerMode(ctx context.Context, adaptor adaptor.IAdaptor, mode Mode) er
 			handlerTask(ctx, adaptor)
 		})
 	case ModeTaskRecovery:
-		startTimerHandler(ctx, "handlerTaskRecovery", taskRecoveryInterval, func() {
-			handlerTaskRecovery(ctx, adaptor)
+		startAsyncTaskMaintenanceHandlers(ctx, adaptor)
+	case ModeTaskScanPending:
+		startTimerHandler(ctx, "handlerScanPendingAsyncTasks", taskScanPendingInterval, func() {
+			handlerScanPendingAsyncTasks(ctx, adaptor)
+		})
+	case ModeTaskRecoverQueued:
+		startTimerHandler(ctx, "handlerRecoverStaleQueuedAsyncTasks", taskQueuedRecoveryInterval, func() {
+			handlerRecoverStaleQueuedAsyncTasks(ctx, adaptor)
+		})
+	case ModeTaskRecoverRunning:
+		startTimerHandler(ctx, "handlerRecoverStaleRunningAsyncTasks", taskRunningRecoveryInterval, func() {
+			handlerRecoverStaleRunningAsyncTasks(ctx, adaptor)
 		})
 	case ModeUploadTimeout:
 		startTimerHandler(ctx, "handlerUploadMergeTimeout", uploadMergeTimeoutInterval, func() {
