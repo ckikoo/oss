@@ -397,45 +397,6 @@ func toAsyncTaskDos(modelTasks []*model.AsyncTask) []*do.AsyncTaskDo {
 	return tasks
 }
 
-func (r *AsyncTaskRepo) ClaimAsyncTask(ctx context.Context, taskID int64, workerID string, lockTTL time.Duration) (bool, *do.AsyncTaskDo, error) {
-	if workerID == "" {
-		workerID = "unknown"
-	}
-	if lockTTL <= 0 {
-		lockTTL = 30 * time.Second
-	}
-
-	now := time.Now()
-	lockedUntil := now.Add(lockTTL)
-	result := r.db.WithContext(ctx).
-		Model(&model.AsyncTask{}).
-		Where("id = ? AND (status = ? OR (status = ? AND locked_until IS NOT NULL AND locked_until < ?))",
-			taskID,
-			consts.TaskStatusPending,
-			consts.TaskStatusRunning,
-			now,
-		).
-		Updates(map[string]interface{}{
-			"status":       consts.TaskStatusRunning,
-			"locked_by":    workerID,
-			"locked_until": lockedUntil,
-			"started_at":   gorm.Expr("COALESCE(started_at, ?)", now),
-			"updated_at":   now,
-		})
-	if result.Error != nil {
-		return false, nil, repoerr.Wrap(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return false, nil, nil
-	}
-
-	task, err := r.GetAsyncTaskByID(ctx, taskID)
-	if err != nil {
-		return true, nil, err
-	}
-	return true, task, nil
-}
-
 func toAsyncTaskDo(modelTask *model.AsyncTask) *do.AsyncTaskDo {
 	result := ""
 	if modelTask.Result != nil {
