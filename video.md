@@ -96,8 +96,8 @@ CREATE TABLE video_transcodes (
     status TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending 1=processing 2=done 3=failed 4=deleted',
     duration_ms BIGINT NOT NULL DEFAULT 0,
     derived_size BIGINT NOT NULL DEFAULT 0,
-    profile_count INT NOT NULL DEFAULT 0,
-    done_profile_count INT NOT NULL DEFAULT 0,
+    profile_count INT NOT NULL DEFAULT 0 COMMENT`码率`,
+    done_profile_count INT NOT NULL DEFAULT 0 COMMENT`done_profile_count 每个 profile 完成时 +1`,
     last_error TEXT DEFAULT NULL,
 
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -340,9 +340,9 @@ type IVideoRepo interface {
 
 验收：
 
-- [ ] Repo 方法单测覆盖重复创建、not found、状态更新。
-- [ ] `WithTx(tx tx.Tx)` 是接口第一项。
-- [ ] Service 不 import `gorm.io/gorm`。
+- [x] Repo 单测覆盖重复创建、not found、状态更新和 DO 转换；DB 行为使用 sqlmock 覆盖。
+- [x] `WithTx(tx tx.Tx)` 是接口第一项。
+- [x] 新增 video DO/Repo 不让 Service 层依赖 `gorm.io/gorm`；现有 `service/do/object.go` 仍有历史 `gorm.DeletedAt`。
 
 ---
 
