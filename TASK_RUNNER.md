@@ -89,7 +89,7 @@ item: async_tasks.id
 RPUSH oss-server:task:ready 1001
 ```
 
-worker 使用 `BLPOP` 阻塞弹出任务 ID，并使用 Redis task lock 维护执行租约。async 维护任务拆成三个独立 timer：`task-scan-pending` 通过 `FOR UPDATE SKIP LOCKED` 扫描 `PENDING` 任务转为 `QUEUED` 并入队；`task-recover-queued` 通过 `FOR UPDATE SKIP LOCKED` 将超过 2 分钟未消费的 `QUEUED` 任务重置为 `PENDING`；`task-recover-running` 扫描 `RUNNING` 后检查 Redis task lock，确认锁不存在时再次按行加 `FOR UPDATE SKIP LOCKED` 并重置为 `PENDING`。
+worker 使用 `BLPOP` 阻塞弹出任务 ID，并使用 Redis task lock 维护执行租约。async 维护任务拆成三个独立 timer：`task-scan-pending` 通过 `FOR UPDATE SKIP LOCKED` 扫描 `PENDING` 任务转为 `QUEUED` 并入队；如果 Redis 入队失败，会立即把仍为 `QUEUED` 的任务按条件重置为 `PENDING`；`task-recover-queued` 通过 `FOR UPDATE SKIP LOCKED` 将超过 2 分钟未消费的 `QUEUED` 任务重置为 `PENDING`；`task-recover-running` 扫描 `RUNNING` 后检查 Redis task lock，确认锁不存在时再次按行加 `FOR UPDATE SKIP LOCKED` 并重置为 `PENDING`。
 
 `handlerTask` 只消费 Redis LIST 队列，不直接扫描数据库。拿到任务 ID 后必须先通过 `FOR UPDATE SKIP LOCKED` 抢占 `async_tasks` 行，只有抢占成功的 worker 才执行。三个 async 维护 timer 分别补偿 Redis 入队失败、进程重启、队列丢失或 worker 崩溃；`task-recovery` mode 仅作为兼容入口，一次启动这三个维护 timer。
 

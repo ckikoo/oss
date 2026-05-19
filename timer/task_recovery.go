@@ -55,6 +55,23 @@ func scanPendingAsyncTasks(ctx context.Context, taskRepo async.IAsyncTaskRepo, r
 
 	if err := redisTask.EnqueueBatch(ctx, taskIDs); err != nil {
 		log.Error("timer.scanPendingAsyncTasks fail to enqueue async tasks", zap.Error(err), zap.Int("count", len(taskIDs)))
+		resetQueuedTasksAfterEnqueueFailure(ctx, taskRepo, taskIDs)
+	}
+}
+
+func resetQueuedTasksAfterEnqueueFailure(ctx context.Context, taskRepo async.IAsyncTaskRepo, taskIDs []int64) {
+	for _, taskID := range taskIDs {
+		if taskID <= 0 {
+			continue
+		}
+		reset, err := taskRepo.ResetAsyncTaskToPending(ctx, taskID, consts.TaskStatusQueued, "redis enqueue failed")
+		if err != nil {
+			log.Error("timer.scanPendingAsyncTasks fail to reset queued task after enqueue failure", zap.Error(err), zap.Int64("taskID", taskID))
+			continue
+		}
+		if reset {
+			log.Warn("timer.scanPendingAsyncTasks reset queued task after enqueue failure", zap.Int64("taskID", taskID))
+		}
 	}
 }
 
