@@ -280,8 +280,7 @@ type IVideoAssetStorage interface {
     GetAsset(ctx context.Context, bucket string, assetKey string) (io.ReadCloser, error)
     DeleteAsset(ctx context.Context, bucket string, assetKey string) error
     DeleteAssetPrefix(ctx context.Context, bucket string, prefix string) error
-    // 本地磁盘没问题，但接口抽象就穿透了——以后换 MinIO 或 S3 兼容存储时，这里会变成一个隐藏的修改点。
-    MoveAssetPrefix(ctx, bucket, srcPrefix, dstPrefix string) error  // 新增
+    MoveAssetPrefix(ctx context.Context, bucket string, srcPrefix string, dstPrefix string) error
 }
 ```
 
@@ -298,12 +297,14 @@ type IVideoAssetStorage interface {
 - 派生资产不出现在 `ListObjects`。
 - 派生资产读取必须走 video 播放接口，不允许直接暴露物理路径。
 - `DeleteAssetPrefix` 用于对象删除、版本清理、转码失败清理。
+- `MoveAssetPrefix` 用于将 staging 前缀发布到正式前缀；本地实现用目录移动，S3/MinIO 实现需要内部完成 copy+delete。
 
 验收：
 
-- [ ] 本地 Storage 支持写入、读取、删除单个 HLS asset。
-- [ ] 本地 Storage 支持按 prefix 删除 HLS asset。
-- [ ] Service 层不直接 import local storage 实现。
+- [x] 本地 Storage 支持写入、读取、删除单个 HLS asset。
+- [x] 本地 Storage 支持按 prefix 删除 HLS asset。
+- [x] 本地 Storage 支持 staging prefix 发布到正式 prefix。
+- [x] Service 层不直接 import local storage 实现。
 
 ---
 
