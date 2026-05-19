@@ -741,15 +741,26 @@ GetTranscodeStatus
 
 验收：
 
-- [ ] 路由启动无冲突。
-- [ ] HLS 路由不挂 AK/SK，但必须校验播放 token。
-- [ ] 管理/查询路由必须校验用户身份。
+- [x] 路由启动无冲突。
+- [x] HLS 路由不挂 AK/SK，但必须校验播放 token。
+- [x] 管理/查询路由必须校验用户身份。
 
 ---
 
 ## TASK 12 · 删除、覆盖与版本清理
+实现说明：
 
-对象删除或版本 purge 时：
+- 新增 `service/video.CleanupService`，统一处理对象版本关联的 `transcode/profile/key/play-token/asset` 清理。
+- 删除或 purge 普通对象版本时，在同一个 DB 事务内标记 `video_transcodes` 与 `video_transcode_profiles` 为 deleted，并删除 `video_encrypt_keys`。
+- DB 事务提交后再删除 `_video/{transcode_id}/` 派生资产，并按 `object_id/version_id` 索引失效 Redis play token。
+- lifecycle 定时过期删除同样走 `CleanupService`：非版本化 bucket 的过期 purge 会清理 HLS/key/token/derived storage，版本化 bucket 的过期 delete-marker 只失效当前版本 play token，不删除历史版本 HLS。
+- 非版本化 bucket 覆盖对象时，会 purge 旧对象版本并同步清理旧版本 HLS；版本化 bucket 覆盖对象时，旧版本 HLS 保留，可继续按 version_id 重新申请播放 token。
+- 版本化 bucket 删除当前对象只写 delete marker，不删除旧版本 HLS，但会失效当前最新版本已签发的 play token，避免“删除后旧 token 继续播放”。
+- `derived_size` 会和原始对象 size 一起参与 `bucket.storage_size` / `user.storage_used` 扣减。
+
+对象删除或版本 purge 时，包括 API 删除、非版本化覆盖、multipart 覆盖、lifecycle 定时过期删除：
+
+
 
 ```text
 1. 查询 object_id/version_id 对应 transcode。
@@ -767,26 +778,21 @@ GetTranscodeStatus
 
 验收：
 
-- [ ] 覆盖视频不会误用旧版本 HLS。
-- [ ] 删除对象后 play token 不再可用。
-- [ ] 删除对象后 HLS 派生资产被清理。
-- [ ] storage_used 正确扣减派生资产大小。
+- [x] 覆盖视频不会误用旧版本 HLS。
+- [x] 删除对象后 play token 不再可用。
+- [x] 删除对象后 HLS 派生资产被清理。
+- [x] storage_used 正确扣减派生资产大小。
 
 ---
 
 ## TASK 13 · 计费与指标
+实现说明：
 
-派生资产默认计入存储用量：
-
-```text
-derived_size = sum(profile.size)
-bucket.storage_size += profile.size
-user.storage_used += profile.size
-```
-
-上传转码产物时不计入用户上传流量；播放 segment 时计入下载流量。
-
-指标建议：
+- 派生资产继续默认计入存储用量：每个 profile 完成后按 `profile.size` 更新 `video_transcodes.derived_size`、`bucket.storage_size`、`user.storage_used` 和 `metering_daily.storage_size`。
+- 上传转码产物只计入派生存储，不计入用户上传流量：`completeProfile` 中 `UpdateDailyMetrics(..., deltaUploadFlow=0, ...)` 保持不变。
+- 删除、覆盖、版本 purge、lifecycle 定时 purge 已在 TASK 12 中把 `derived_size` 纳入 storage 扣减。
+- 播放 `.ts` segment 时通过 `meteredSegmentReadCloser` 统计实际写出的 bytes，并在 close 时写入 `metering_daily.download_flow`，同时增加一次 get request。
+- 新增轻量级 `service/video/metrics.go`，记录以下 video 维度指标快照，后续可直接接 Prometheus/OpenTelemetry exporter：
 
 ```text
 video_transcode_total{status, profile}
@@ -797,18 +803,20 @@ video_key_request_total{result}
 video_segment_request_bytes
 ```
 
-日志要求：
-
-- 转码任务日志包含 `task_id/profile_id/transcode_id/object_id/version_id`。
-- ffmpeg stderr 截断记录。
-- key server 日志不包含 raw key。
+- `CreatePlayToken` 记录 `video_play_token_total{result}`，区分 `success/pending/not_ready/error`。
+- `GetHLSKey` 记录 `video_key_request_total{result}`，成功解密返回后标记 `success`，其他路径标记 `error`。
+- 转码成功日志包含 `task_id/profile_id/profile/transcode_id/object_id/version_id/duration_ms/derived_size/segment_count`。
+- 转码失败日志包含 `task_id/profile_id/profile/transcode_id/object_id/version_id`，并将 ffmpeg stderr / 错误信息按 `maxFFmpegOutput` 截断记录。
+- key server 只记录 key 请求结果，不记录 raw key；raw key 仅在响应体中返回给已通过 play token 校验的请求。
 
 验收：
 
-- [ ] 转码成功后 storage_used 增加派生资产大小。
-- [ ] 删除或 purge 后 storage_used 扣减。
-- [ ] 下载 segment 计入 download flow。
-
+- [x] 转码成功后 storage_used 增加派生资产大小。
+- [x] 删除或 purge 后 storage_used 扣减。
+- [x] 下载 segment 计入 download flow。
+- [x] 转码成功/失败会记录 video_transcode 指标。
+- [x] play token 和 key 请求会记录 result 指标。
+- [x] key server 日志不包含 raw key。
 ---
 
 ## TASK 14 · 端到端联调

@@ -19,6 +19,8 @@ import (
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
+	"oss/adaptor/repo/metering"
+	gormMetering "oss/adaptor/repo/metering/gorm"
 	"oss/adaptor/repo/object"
 	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/repo/repoerr"
@@ -44,15 +46,16 @@ const (
 )
 
 type PlaybackService struct {
-	videoRepo  videoRepo.IVideoRepo
-	objectRepo object.IObjectRepo
-	bucketRepo bucket.IBucketRepo
-	playToken  redis.IPlayToken
-	policy     playPolicyEvaluator
-	storage    storage.IStorage
-	security   config.Security
-	videoCfg   config.Video
-	logger     *zap.Logger
+	videoRepo    videoRepo.IVideoRepo
+	objectRepo   object.IObjectRepo
+	bucketRepo   bucket.IBucketRepo
+	meteringRepo metering.IMeteringRepo
+	playToken    redis.IPlayToken
+	policy       playPolicyEvaluator
+	storage      storage.IStorage
+	security     config.Security
+	videoCfg     config.Video
+	logger       *zap.Logger
 }
 
 type HLSContent struct {
@@ -79,19 +82,23 @@ func NewPlaybackService(adaptor adaptor.IAdaptor) *PlaybackService {
 	}
 
 	return &PlaybackService{
-		videoRepo:  gormVideo.NewVideoRepo(adaptor.GetGORM()),
-		objectRepo: gormObject.NewObjectRepo(adaptor),
-		bucketRepo: gormBucket.NewBucketRepo(adaptor),
-		playToken:  redis.NewPlayToken(adaptor),
-		policy:     policySvc.NewService(adaptor),
-		storage:    adaptor.GetStorage(),
-		security:   securityCfg,
-		videoCfg:   videoCfg,
-		logger:     logger.GetLogger().With(zap.String("module", "video_playback")),
+		videoRepo:    gormVideo.NewVideoRepo(adaptor.GetGORM()),
+		objectRepo:   gormObject.NewObjectRepo(adaptor),
+		bucketRepo:   gormBucket.NewBucketRepo(adaptor),
+		meteringRepo: gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		playToken:    redis.NewPlayToken(adaptor),
+		policy:       policySvc.NewService(adaptor),
+		storage:      adaptor.GetStorage(),
+		security:     securityCfg,
+		videoCfg:     videoCfg,
+		logger:       logger.GetLogger().With(zap.String("module", "video_playback")),
 	}
 }
 
 func (s *PlaybackService) CreatePlayToken(ctx *common.UserInfoCtx, req *dto.CreateVideoPlayTokenReq) (*dto.CreateVideoPlayTokenResp, common.Errno) {
+	metricResult := "error"
+	defer func() { RecordVideoPlayToken(metricResult) }()
+
 	req.BucketName = strings.TrimSpace(req.BucketName)
 	req.ObjectKey = strings.TrimSpace(req.ObjectKey)
 	req.VersionID = strings.TrimSpace(req.VersionID)
@@ -107,6 +114,7 @@ func (s *PlaybackService) CreatePlayToken(ctx *common.UserInfoCtx, req *dto.Crea
 	videoTranscodeDo, err := s.videoRepo.GetTranscodeByObjectVersion(ctx, obj.ID, obj.VersionID)
 	if err != nil {
 		if errors.Is(err, repoerr.ErrNotFound) {
+			metricResult = "pending"
 			return &dto.CreateVideoPlayTokenResp{
 				Status:   consts.TranscodeStatusPending,
 				Profiles: []string{},
@@ -116,6 +124,7 @@ func (s *PlaybackService) CreatePlayToken(ctx *common.UserInfoCtx, req *dto.Crea
 	}
 
 	if videoTranscodeDo == nil {
+		metricResult = "pending"
 		return &dto.CreateVideoPlayTokenResp{
 			Status:   consts.TranscodeStatusPending,
 			Profiles: []string{},
@@ -131,6 +140,7 @@ func (s *PlaybackService) CreatePlayToken(ctx *common.UserInfoCtx, req *dto.Crea
 	}
 
 	if len(profiles) == 0 {
+		metricResult = "not_ready"
 		return &dto.CreateVideoPlayTokenResp{
 			Status:      videoTranscodeDo.Status,
 			TranscodeID: videoTranscodeDo.ID,
@@ -151,6 +161,7 @@ func (s *PlaybackService) CreatePlayToken(ctx *common.UserInfoCtx, req *dto.Crea
 		return nil, common.RedisErr.WithErr(err)
 	}
 
+	metricResult = "success"
 	return &dto.CreateVideoPlayTokenResp{
 		Token:       token,
 		PlayURL:     fmt.Sprintf("/api/v1/video/hls/%d/master.m3u8", videoTranscodeDo.ID),
@@ -291,10 +302,38 @@ func (s *PlaybackService) GetSegment(ctx *common.VideoPlayTokenCtx, transcodeID 
 	if err != nil {
 		return nil, common.ResouceNotFoundErr.WithErr(err)
 	}
-	return &HLSContent{Body: rc, ContentType: segmentContentType(segment)}, common.OK
+	metered := s.meterSegmentDownload(ctx, transcode, profile.Profile, segment, rc)
+	return &HLSContent{Body: metered, ContentType: segmentContentType(segment)}, common.OK
+}
+
+func (s *PlaybackService) meterSegmentDownload(ctx *common.VideoPlayTokenCtx, transcode *do.VideoTranscodeDo, profile string, segment string, rc io.ReadCloser) io.ReadCloser {
+	return &meteredSegmentReadCloser{
+		ReadCloser: rc,
+		onClose: func(bytesRead int64) {
+			if bytesRead > 0 {
+				RecordVideoSegmentBytes(bytesRead)
+			}
+			if s.meteringRepo == nil || transcode == nil || ctx == nil {
+				return
+			}
+			if err := s.meteringRepo.UpdateDailyMetrics(ctx, transcode.UserID, &transcode.BucketID, time.Now(), 0, 0, 0, bytesRead, 1, 0, 0); err != nil && s.logger != nil {
+				s.logger.Warn("failed to meter video segment download",
+					zap.Int64("transcode_id", transcode.ID),
+					zap.Int64("object_id", transcode.ObjectID),
+					zap.String("version_id", transcode.VersionID),
+					zap.String("profile", profile),
+					zap.String("segment", segment),
+					zap.Int64("bytes", bytesRead),
+					zap.Error(err))
+			}
+		},
+	}
 }
 
 func (s *PlaybackService) GetKey(ctx *common.VideoPlayTokenCtx, keyID string) (*HLSContent, common.Errno) {
+	metricResult := "error"
+	defer func() { RecordVideoKeyRequest(metricResult) }()
+
 	keyInfo, err := s.videoRepo.GetEncryptKeyByKeyID(ctx, keyID)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
@@ -329,7 +368,28 @@ func (s *PlaybackService) GetKey(ctx *common.VideoPlayTokenCtx, keyID string) (*
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}
+	metricResult = "success"
 	return &HLSContent{Body: io.NopCloser(bytes.NewReader(rawKey)), ContentType: contentTypeBinary}, common.OK
+}
+
+type meteredSegmentReadCloser struct {
+	io.ReadCloser
+	bytesRead int64
+	onClose   func(bytesRead int64)
+}
+
+func (r *meteredSegmentReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
+}
+
+func (r *meteredSegmentReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	if r.onClose != nil {
+		r.onClose(r.bytesRead)
+	}
+	return err
 }
 
 func (s *PlaybackService) buildPlayTokenClaims(userID int64, obj *do.ObjectDo, transcode *do.VideoTranscodeDo, token string, expiresAt int64) *dto.VideoPlayToken {

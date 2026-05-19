@@ -74,6 +74,7 @@ func (ctrl *VideoCtrl) GetHLSMasterPlaylist(ctx context.Context, c *app.RequestC
 	ctx1, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
+		return
 	}
 
 	content, errno := ctrl.video.GetMasterPlaylist(ctx1, transcodeID)
@@ -90,6 +91,7 @@ func (ctrl *VideoCtrl) GetHLSProfilePlaylist(ctx context.Context, c *app.Request
 	ctx1, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
+		return
 	}
 
 	content, errno := ctrl.video.GetProfilePlaylist(ctx1, transcodeID, c.Param("profile"))
@@ -105,6 +107,7 @@ func (ctrl *VideoCtrl) GetHLSSegment(ctx context.Context, c *app.RequestContext)
 	ctx1, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
+		return
 	}
 
 	content, errno := ctrl.video.GetSegment(ctx1, transcodeID, c.Param("profile"), c.Param("segment"))
@@ -121,6 +124,7 @@ func (ctrl *VideoCtrl) GetHLSKey(ctx context.Context, c *app.RequestContext) {
 	ctx1, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
+		return
 	}
 
 	content, errno := ctrl.video.GetKey(ctx1, keyID)

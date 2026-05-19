@@ -6,3 +6,4 @@ tmp
 
 test/*
 .agents/*
+.third_part/

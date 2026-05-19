@@ -68,7 +68,10 @@ type Processor struct {
 type transcodeContext struct {
 	taskID      int64
 	profileID   int64
+	profileName string
 	transcodeID int64
+	objectID    int64
+	versionID   string
 	bucketName  string
 	stagingKey  string
 	finalKey    string
@@ -140,9 +143,20 @@ func (p *Processor) HandleTask(ctx context.Context, task *do.AsyncTaskDo) (strin
 		if retErr != nil {
 			p.cleanupStaging(state)
 			p.recordFailure(task, state, retErr)
+			RecordVideoTranscode("failed", state.profileName, 0, 0)
+			if p.logger != nil {
+				p.logger.Warn("video transcode task failed",
+					zap.Int64("task_id", state.taskID),
+					zap.Int64("profile_id", state.profileID),
+					zap.String("profile", state.profileName),
+					zap.Int64("transcode_id", state.transcodeID),
+					zap.Int64("object_id", state.objectID),
+					zap.String("version_id", state.versionID),
+					zap.String("ffmpeg_stderr", truncateString(retErr.Error(), maxFFmpegOutput)),
+					zap.Error(retErr))
+			}
 		}
 	}()
-
 	profileID, err := strconv.ParseInt(task.BizID, 10, 64)
 	if err != nil || profileID <= 0 {
 		retErr = fmt.Errorf("invalid transcode profile id: %s", task.BizID)
@@ -155,7 +169,10 @@ func (p *Processor) HandleTask(ctx context.Context, task *do.AsyncTaskDo) (strin
 		retErr = err
 		return "", retErr
 	}
+	state.profileName = profile.Profile
 	state.transcodeID = transcode.ID
+	state.objectID = transcode.ObjectID
+	state.versionID = transcode.VersionID
 	state.bucketName = transcode.BucketName
 	state.finalKey = BuildProfileAssetPrefix(transcode.ID, profile.Profile)
 	state.stagingKey = BuildProfileStagingAssetPrefix(transcode.ID, profile.Profile, task.ID)
@@ -239,6 +256,20 @@ func (p *Processor) HandleTask(ctx context.Context, task *do.AsyncTaskDo) (strin
 	if err := p.completeProfile(ctx, transcode, profile, state.finalKey, stats, durationMs); err != nil {
 		retErr = err
 		return "", retErr
+	}
+
+	RecordVideoTranscode("done", profile.Profile, durationMs, stats.size)
+	if p.logger != nil {
+		p.logger.Info("video transcode profile completed",
+			zap.Int64("task_id", state.taskID),
+			zap.Int64("profile_id", state.profileID),
+			zap.String("profile", profile.Profile),
+			zap.Int64("transcode_id", transcode.ID),
+			zap.Int64("object_id", transcode.ObjectID),
+			zap.String("version_id", transcode.VersionID),
+			zap.Int64("duration_ms", durationMs),
+			zap.Int64("derived_size", stats.size),
+			zap.Int32("segment_count", stats.segmentCount))
 	}
 
 	return fmt.Sprintf("transcode profile %s completed", profile.Profile), nil

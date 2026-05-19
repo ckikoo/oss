@@ -339,6 +339,11 @@ type playTokenHandler struct {
 }
 
 func (h *playTokenHandler) Handle(ctx context.Context, c *app.RequestContext, next func()) {
+	if !isVideoPlaybackPath(c) {
+		next()
+		return
+	}
+
 	token := extractPlayToken(c)
 	if token == "" {
 		api.WriteResp(c, nil, common.AuthErr.WithMsg("token is empty"))
@@ -349,27 +354,40 @@ func (h *playTokenHandler) Handle(ctx context.Context, c *app.RequestContext, ne
 	claims, err := h.playToken.GetPlayToken(ctx, token)
 	if err != nil {
 		if errors.Is(err, redis.ErrTokenNotFound) {
-			c.String(401, "play token expired or not found")
+			api.WriteResp(c, nil, common.TokenExpired.WithMsg("play token expired or not found"))
 		} else {
-			c.String(500, "failed to validate play token")
+			api.WriteResp(c, nil, common.RedisErr.WithMsg("failed to validate play token"))
 		}
 		c.Abort()
 		return
 	}
 
 	if claims == nil {
-		c.String(401, "play token is invalid")
+		api.WriteResp(c, nil, common.TokenInvalid.WithMsg("play token is invalid"))
 		c.Abort()
 		return
 	}
 
 	if claims.Action != consts.PlayVideoAction {
-		c.String(403, "invalid play token action")
+		api.WriteResp(c, nil, common.PermissionErr.WithMsg("invalid play token action"))
 		c.Abort()
 		return
 	}
-	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
-		c.String(401, "play token expired")
+
+	if claims.ExpiresAt <= 0 || time.Now().Unix() > claims.ExpiresAt {
+		api.WriteResp(c, nil, common.TokenExpired.WithMsg("play token expired"))
+		c.Abort()
+		return
+	}
+
+	if claims.UserID <= 0 ||
+		claims.BucketID <= 0 ||
+		strings.TrimSpace(claims.BucketName) == "" ||
+		claims.ObjectID <= 0 ||
+		strings.TrimSpace(claims.ObjectKey) == "" ||
+		strings.TrimSpace(claims.VersionID) == "" ||
+		claims.TranscodeID <= 0 {
+		api.WriteResp(c, nil, common.TokenInvalid.WithMsg("play token missing required binding fields"))
 		c.Abort()
 		return
 	}
@@ -390,6 +408,15 @@ func (h *playTokenHandler) Handle(ctx context.Context, c *app.RequestContext, ne
 	c.Set(common.PlayTokenClaimsKey, tempClient)
 	c.Next(ctx)
 }
+
+func isVideoPlaybackPath(c *app.RequestContext) bool {
+	fullPath := c.FullPath()
+	return fullPath == "/api/v1/video/keys/:key_id" ||
+		fullPath == "/api/v1/video/hls/:transcode_id/master.m3u8" ||
+		fullPath == "/api/v1/video/hls/:transcode_id/:profile/index.m3u8" ||
+		fullPath == "/api/v1/video/hls/:transcode_id/:profile/:segment"
+}
+
 func extractPlayToken(c *app.RequestContext) string {
 	// 优先从 header 取
 	if token := strings.TrimSpace(string(c.GetHeader(consts.HeaderPlayToken))); token != "" {
@@ -462,7 +489,6 @@ func NewAccessKeyMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		&downloadTokenHandler{repo: repo, adaptor: adaptor},
 		&ossTokenHandler{repo: repo, adaptor: adaptor},
 		&hmacSignatureHandler{repo: repo, adaptor: adaptor},
-		&playTokenHandler{playToken: redis.NewPlayToken(adaptor)},
 
 		// 未来新增认证方式：在此追加一行，其余代码不动
 	})

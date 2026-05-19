@@ -26,6 +26,7 @@ type IPlayToken interface {
 	GetPlayToken(ctx context.Context, token string) (*dto.VideoPlayToken, error)
 	GetPlayTokenFields(ctx context.Context, token string, fields ...string) (map[string]string, error)
 	DeletePlayToken(ctx context.Context, token string) error
+	DeletePlayTokensByObjectVersion(ctx context.Context, objectID int64, versionID string) error
 }
 
 type PlayToken struct {
@@ -42,11 +43,18 @@ func playTokenKey(token string) string {
 	return fmt.Sprintf("%s:video:play:%s", consts.ServerName, token)
 }
 
+func playTokenObjectVersionIndexKey(objectID int64, versionID string) string {
+	return fmt.Sprintf("%s:video:play:index:object:%d:%s", consts.ServerName, objectID, versionID)
+}
+
 func (t *PlayToken) CreatePlayToken(ctx context.Context, token string, req *dto.VideoPlayToken, expire time.Duration) error {
 	key := playTokenKey(token)
+	indexKey := playTokenObjectVersionIndexKey(req.ObjectID, req.VersionID)
 	_, err := t.rds.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HMSet(ctx, key, playTokenFields(req))
 		pipe.Expire(ctx, key, expire)
+		pipe.SAdd(ctx, indexKey, token)
+		pipe.Expire(ctx, indexKey, expire)
 		return nil
 	})
 	return err
@@ -104,4 +112,27 @@ func parsePlayToken(vals map[string]string) *dto.VideoPlayToken {
 func parseInt64(raw string) int64 {
 	value, _ := strconv.ParseInt(raw, 10, 64)
 	return value
+}
+
+func (t *PlayToken) DeletePlayTokensByObjectVersion(ctx context.Context, objectID int64, versionID string) error {
+	if objectID <= 0 || versionID == "" {
+		return nil
+	}
+	indexKey := playTokenObjectVersionIndexKey(objectID, versionID)
+	tokens, err := t.rds.SMembers(ctx, indexKey).Result()
+	if err != nil {
+		return err
+	}
+	if len(tokens) == 0 {
+		return t.rds.Del(ctx, indexKey).Err()
+	}
+	keys := make([]string, 0, len(tokens)+1)
+	for _, token := range tokens {
+		if token == "" {
+			continue
+		}
+		keys = append(keys, playTokenKey(token))
+	}
+	keys = append(keys, indexKey)
+	return t.rds.Del(ctx, keys...).Err()
 }

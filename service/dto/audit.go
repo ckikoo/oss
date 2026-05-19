@@ -1,8 +1,6 @@
 package dto
 
-import (
-	"oss/common"
-)
+import "oss/common"
 
 type ListOperationLogsReq struct {
 	BucketName string `form:"bucket_name,omitempty"`

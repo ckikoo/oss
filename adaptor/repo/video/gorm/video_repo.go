@@ -99,7 +99,22 @@ func (r *VideoRepo) UpdateTranscode(ctx context.Context, transcodeID int64, in *
 
 func (r *VideoRepo) MarkTranscodeDeleted(ctx context.Context, transcodeID int64) error {
 	status := consts.TranscodeStatusDeleted
-	return r.UpdateTranscode(ctx, transcodeID, &do.UpdateVideoTranscode{Status: &status})
+	now := time.Now()
+	return r.UpdateTranscode(ctx, transcodeID, &do.UpdateVideoTranscode{Status: &status, FinishedAt: &now})
+}
+
+func (r *VideoRepo) MarkProfilesDeleted(ctx context.Context, transcodeID int64) error {
+	if transcodeID <= 0 {
+		return repoerr.ErrInvalidData
+	}
+	q := query.Use(r.db).VideoTranscodeProfile
+	now := time.Now()
+	_, err := q.WithContext(ctx).Where(q.TranscodeID.Eq(transcodeID), q.Status.Neq(consts.TranscodeStatusDeleted)).Updates(map[string]interface{}{
+		q.Status.ColumnName().String():     consts.TranscodeStatusDeleted,
+		q.UpdatedAt.ColumnName().String():  now,
+		q.FinishedAt.ColumnName().String(): now,
+	})
+	return repoerr.Wrap(err)
 }
 
 func (r *VideoRepo) CreateProfiles(ctx context.Context, transcodeID int64, profiles []*do.CreateVideoProfile) ([]*do.VideoProfileDo, error) {
@@ -442,4 +457,13 @@ func toVideoEncryptKeyDo(modelKey *model.VideoEncryptKey) *do.VideoEncryptKeyDo 
 		CreatedAt:    modelKey.CreatedAt,
 		UpdatedAt:    modelKey.UpdatedAt,
 	}
+}
+
+func (r *VideoRepo) DeleteEncryptKeysByTranscodeID(ctx context.Context, transcodeID int64) error {
+	if transcodeID <= 0 {
+		return repoerr.ErrInvalidData
+	}
+	q := query.Use(r.db).VideoEncryptKey
+	_, err := q.WithContext(ctx).Where(q.TranscodeID.Eq(transcodeID)).Delete()
+	return repoerr.Wrap(err)
 }

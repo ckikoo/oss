@@ -60,6 +60,7 @@ type Service struct {
 	eventRepo      eventI.IEventDeliveryRepo
 	eventQueue     redis.IEventQueue
 	videoScheduler *videoSvc.Scheduler
+	videoCleanup   *videoSvc.CleanupService
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
@@ -79,6 +80,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		eventRepo:      gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
 		eventQueue:     redis.NewEventQueue(adaptor),
 		videoScheduler: videoSvc.NewScheduler(adaptor),
+		videoCleanup:   videoSvc.NewCleanupService(adaptor),
 		logger:         logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
@@ -548,6 +550,14 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		deltaSize = -oldObject.Size
 	}
 
+	videoCleanupPlan, err := srv.videoCleanup.PlanObjectVersionCleanup(ctx, oldObjectToCleanup)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+	if videoCleanupPlan != nil && videoCleanupPlan.DerivedSize > 0 {
+		deltaSize -= videoCleanupPlan.DerivedSize
+	}
+
 	var taskID int64
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 		objRepo := srv.objRepo.WithTx(tx)
@@ -563,6 +573,9 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
 					return err
 				}
+			}
+			if err := srv.videoCleanup.MarkDeletedInTx(ctx1, tx, videoCleanupPlan); err != nil {
+				return err
 			}
 		}
 
@@ -627,6 +640,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 				}
 			}
 		}
+		srv.videoCleanup.AfterCommit(ctx, videoCleanupPlan)
 	}
 
 	srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)

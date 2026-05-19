@@ -67,7 +67,87 @@ func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		c.Next(ctx)
 	}
 }
+func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
+	corsService := corssvc.NewService(adaptor)
 
+	return func(ctx context.Context, c *app.RequestContext) {
+		origin := strings.TrimSpace(string(c.GetHeader("Origin")))
+		if origin == "" {
+			c.Next(ctx)
+			return
+		}
+
+		corsConf := adaptor.GetConfig().CORS
+
+		// Browser preflight does not carry the X-Play-Token value.
+		// So preflight can only validate method/header shape and global CORS defaults.
+		if isPreflight(c) {
+			headers := corsRequestHeaders(c)
+			if headers == "" {
+				headers = defaultCORSHeaders
+			}
+
+			setCORSHeaders(
+				c,
+				"*",
+				[]string{"GET", "HEAD", "OPTIONS"},
+				headers,
+				globalMaxAge(corsConf),
+			)
+			c.AbortWithStatus(204)
+			return
+		}
+
+		claims, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
+		if !pass {
+			abortCORS(c, common.AuthErr.WithMsg("play token claims missing"))
+			return
+		}
+
+		// Actual HLS requests have already passed play-token auth, so we can
+		// evaluate bucket CORS using the bucket bound into the token.
+		result, errno := corsService.CheckBucketCors(
+			ctx,
+			claims.UserID,
+			claims.BucketName,
+			origin,
+			corsRequestMethod(c),
+		)
+		if errno.NotOk() {
+			allowedOrigin, ok := matchGlobalOrigin(corsConf, origin)
+			if !ok {
+				abortCORS(c, errno)
+				return
+			}
+
+			setCORSHeaders(
+				c,
+				allowedOrigin,
+				[]string{"GET", "HEAD", "OPTIONS"},
+				defaultCORSHeaders,
+				globalMaxAge(corsConf),
+			)
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+			c.Next(ctx)
+			return
+		}
+
+		headers := corsRequestHeaders(c)
+		if headers == "" {
+			headers = defaultCORSHeaders
+		}
+
+		setCORSHeaders(
+			c,
+			result.AllowedOrigin,
+			result.AllowedMethods,
+			headers,
+			result.MaxAgeSeconds,
+		)
+		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		c.Next(ctx)
+	}
+}
 func isPreflight(c *app.RequestContext) bool {
 	return strings.EqualFold(string(c.Method()), "OPTIONS")
 }

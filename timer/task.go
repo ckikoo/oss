@@ -267,8 +267,8 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					)
 				}
 				cancel()
-
 			case consts.TaskTypeTranscode:
+				//转码
 				result, err := videoProcessor.HandleTask(taskCtx, task)
 				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -291,6 +291,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 
 			case consts.TaskTypeAbortMultipart:
+				// 放弃合并
 				if uploadID == "" {
 					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "task biz_id is empty")
 					return
