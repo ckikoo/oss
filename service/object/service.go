@@ -34,6 +34,7 @@ import (
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/service/event"
+	videoSvc "oss/service/video"
 	"oss/utils/ip"
 	"oss/utils/logger"
 	"oss/utils/tools"
@@ -45,40 +46,42 @@ import (
 )
 
 type Service struct {
-	txManger      tx.ITxManager
-	adaptor       adaptor.IAdaptor
-	userRepo      admin.IUser
-	objRepo       object.IObjectRepo
-	bucketRepo    bucket.IBucketRepo
-	multipartRepo Imultipart.IMultipartRepo
-	meteringRepo  metering.IMeteringRepo
-	storage       storage.IStorage
-	eventService  *event.Service
-	locker        redis.ILock
-	logger        *zap.Logger
-	lifecycleRepo lifecycle.ILifecycleRepo
-	lifeRedis     redis.ILifecycle
-	eventRepo     eventI.IEventDeliveryRepo
-	eventQueue    redis.IEventQueue
+	txManger       tx.ITxManager
+	adaptor        adaptor.IAdaptor
+	userRepo       admin.IUser
+	objRepo        object.IObjectRepo
+	bucketRepo     bucket.IBucketRepo
+	multipartRepo  Imultipart.IMultipartRepo
+	meteringRepo   metering.IMeteringRepo
+	storage        storage.IStorage
+	eventService   *event.Service
+	locker         redis.ILock
+	logger         *zap.Logger
+	lifecycleRepo  lifecycle.ILifecycleRepo
+	lifeRedis      redis.ILifecycle
+	eventRepo      eventI.IEventDeliveryRepo
+	eventQueue     redis.IEventQueue
+	videoScheduler *videoSvc.Scheduler
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		txManger:      adaptor.GetTxManager(),
-		adaptor:       adaptor,
-		userRepo:      gormAdmin.NewUserRepo(adaptor),
-		objRepo:       gormObject.NewObjectRepo(adaptor),
-		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
-		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
-		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
-		storage:       adaptor.GetStorage(),
-		eventService:  event.NewService(adaptor),
-		logger:        logger.GetLogger().With(zap.String("module", "object")),
-		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
-		lifeRedis:     redis.NewLifecycle(adaptor),
-		locker:        redis.NewLock(adaptor),
-		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
-		eventQueue:    redis.NewEventQueue(adaptor),
+		txManger:       adaptor.GetTxManager(),
+		adaptor:        adaptor,
+		userRepo:       gormAdmin.NewUserRepo(adaptor),
+		objRepo:        gormObject.NewObjectRepo(adaptor),
+		bucketRepo:     gormBucket.NewBucketRepo(adaptor),
+		multipartRepo:  gormMultipart.NewObjectRepo(adaptor.GetGORM()),
+		meteringRepo:   gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		storage:        adaptor.GetStorage(),
+		eventService:   event.NewService(adaptor),
+		logger:         logger.GetLogger().With(zap.String("module", "object")),
+		lifecycleRepo:  gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
+		lifeRedis:      redis.NewLifecycle(adaptor),
+		locker:         redis.NewLock(adaptor),
+		eventRepo:      gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:     redis.NewEventQueue(adaptor),
+		videoScheduler: videoSvc.NewScheduler(adaptor),
 	}
 }
 
@@ -339,6 +342,19 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		srv.deleteObjectStorage(ctx, oldObjectToCleanup)
 	}
 
+	srv.scheduleVideoTranscode(ctx, &videoSvc.TranscodeSource{
+		UserID:        ctx.UserID,
+		BucketID:      bucketID,
+		BucketName:    req.BucketName,
+		ObjectID:      id,
+		ObjectKey:     req.ObjectKey,
+		ObjectKeyHash: objectKeyHash,
+		VersionID:     versionID,
+		SourceEtag:    putResult.Etag,
+		SourceSize:    putResult.Size,
+		ContentType:   req.ContentType,
+	})
+
 	now := time.Now()
 	for _, rule := range rules {
 		prefix := ""
@@ -449,6 +465,20 @@ func (srv *Service) scheduleObjectEvents(
 		}
 	}
 }
+
+func (srv *Service) scheduleVideoTranscode(ctx context.Context, source *videoSvc.TranscodeSource) {
+	if srv.videoScheduler == nil {
+		return
+	}
+	if err := srv.videoScheduler.ScheduleTranscode(ctx, source); err != nil {
+		srv.logger.Warn("failed to schedule video transcode",
+			zap.String("bucket_name", source.BucketName),
+			zap.String("object_key", source.ObjectKey),
+			zap.String("version_id", source.VersionID),
+			zap.Error(err))
+	}
+}
+
 func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {

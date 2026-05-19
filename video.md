@@ -394,10 +394,10 @@ afterPutObject(object):
 
 验收：
 
-- [ ] 上传视频后出现一条 `video_transcodes`。
-- [ ] 默认出现 4 条 `video_transcode_profiles`。
-- [ ] 出现 4 条 `async_tasks`，`task_type=TRANSCODE`，`biz_type=video_profile`。
-- [ ] 重复触发不会创建重复 profile/task。
+- [x] 上传视频后出现一条 `video_transcodes`。
+- [x] 默认出现 4 条 `video_transcode_profiles`。
+- [x] 出现 4 条 `async_tasks`，`task_type=TRANSCODE`，`biz_type=video_profile`。
+- [x] 重复触发不会创建重复 profile/task。
 
 ---
 
