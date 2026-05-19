@@ -17,74 +17,83 @@ import (
 
 func Use(db *gorm.DB, opts ...gen.DOOption) *Query {
 	return &Query{
-		db:              db,
-		AccessKey:       newAccessKey(db, opts...),
-		AsyncTask:       newAsyncTask(db, opts...),
-		Bucket:          newBucket(db, opts...),
-		BucketCorsRule:  newBucketCorsRule(db, opts...),
-		BucketPolicy:    newBucketPolicy(db, opts...),
-		EventDelivery:   newEventDelivery(db, opts...),
-		EventRule:       newEventRule(db, opts...),
-		LifecycleRule:   newLifecycleRule(db, opts...),
-		MeteringDaily:   newMeteringDaily(db, opts...),
-		MultipartPart:   newMultipartPart(db, opts...),
-		MultipartUpload: newMultipartUpload(db, opts...),
-		Object:          newObject(db, opts...),
-		OperationLog:    newOperationLog(db, opts...),
-		PolicyAction:    newPolicyAction(db, opts...),
-		PolicyCondition: newPolicyCondition(db, opts...),
-		PolicyPrincipal: newPolicyPrincipal(db, opts...),
-		PolicyResource:  newPolicyResource(db, opts...),
-		User:            newUser(db, opts...),
+		db:                    db,
+		AccessKey:             newAccessKey(db, opts...),
+		AsyncTask:             newAsyncTask(db, opts...),
+		Bucket:                newBucket(db, opts...),
+		BucketCorsRule:        newBucketCorsRule(db, opts...),
+		BucketPolicy:          newBucketPolicy(db, opts...),
+		EventDelivery:         newEventDelivery(db, opts...),
+		EventRule:             newEventRule(db, opts...),
+		LifecycleRule:         newLifecycleRule(db, opts...),
+		MeteringDaily:         newMeteringDaily(db, opts...),
+		MultipartPart:         newMultipartPart(db, opts...),
+		MultipartUpload:       newMultipartUpload(db, opts...),
+		Object:                newObject(db, opts...),
+		OperationLog:          newOperationLog(db, opts...),
+		PolicyAction:          newPolicyAction(db, opts...),
+		PolicyCondition:       newPolicyCondition(db, opts...),
+		PolicyPrincipal:       newPolicyPrincipal(db, opts...),
+		PolicyResource:        newPolicyResource(db, opts...),
+		User:                  newUser(db, opts...),
+		VideoEncryptKey:       newVideoEncryptKey(db, opts...),
+		VideoTranscode:        newVideoTranscode(db, opts...),
+		VideoTranscodeProfile: newVideoTranscodeProfile(db, opts...),
 	}
 }
 
 type Query struct {
 	db *gorm.DB
 
-	AccessKey       accessKey
-	AsyncTask       asyncTask
-	Bucket          bucket
-	BucketCorsRule  bucketCorsRule
-	BucketPolicy    bucketPolicy
-	EventDelivery   eventDelivery
-	EventRule       eventRule
-	LifecycleRule   lifecycleRule
-	MeteringDaily   meteringDaily
-	MultipartPart   multipartPart
-	MultipartUpload multipartUpload
-	Object          object
-	OperationLog    operationLog
-	PolicyAction    policyAction
-	PolicyCondition policyCondition
-	PolicyPrincipal policyPrincipal
-	PolicyResource  policyResource
-	User            user
+	AccessKey             accessKey
+	AsyncTask             asyncTask
+	Bucket                bucket
+	BucketCorsRule        bucketCorsRule
+	BucketPolicy          bucketPolicy
+	EventDelivery         eventDelivery
+	EventRule             eventRule
+	LifecycleRule         lifecycleRule
+	MeteringDaily         meteringDaily
+	MultipartPart         multipartPart
+	MultipartUpload       multipartUpload
+	Object                object
+	OperationLog          operationLog
+	PolicyAction          policyAction
+	PolicyCondition       policyCondition
+	PolicyPrincipal       policyPrincipal
+	PolicyResource        policyResource
+	User                  user
+	VideoEncryptKey       videoEncryptKey
+	VideoTranscode        videoTranscode
+	VideoTranscodeProfile videoTranscodeProfile
 }
 
 func (q *Query) Available() bool { return q.db != nil }
 
 func (q *Query) clone(db *gorm.DB) *Query {
 	return &Query{
-		db:              db,
-		AccessKey:       q.AccessKey.clone(db),
-		AsyncTask:       q.AsyncTask.clone(db),
-		Bucket:          q.Bucket.clone(db),
-		BucketCorsRule:  q.BucketCorsRule.clone(db),
-		BucketPolicy:    q.BucketPolicy.clone(db),
-		EventDelivery:   q.EventDelivery.clone(db),
-		EventRule:       q.EventRule.clone(db),
-		LifecycleRule:   q.LifecycleRule.clone(db),
-		MeteringDaily:   q.MeteringDaily.clone(db),
-		MultipartPart:   q.MultipartPart.clone(db),
-		MultipartUpload: q.MultipartUpload.clone(db),
-		Object:          q.Object.clone(db),
-		OperationLog:    q.OperationLog.clone(db),
-		PolicyAction:    q.PolicyAction.clone(db),
-		PolicyCondition: q.PolicyCondition.clone(db),
-		PolicyPrincipal: q.PolicyPrincipal.clone(db),
-		PolicyResource:  q.PolicyResource.clone(db),
-		User:            q.User.clone(db),
+		db:                    db,
+		AccessKey:             q.AccessKey.clone(db),
+		AsyncTask:             q.AsyncTask.clone(db),
+		Bucket:                q.Bucket.clone(db),
+		BucketCorsRule:        q.BucketCorsRule.clone(db),
+		BucketPolicy:          q.BucketPolicy.clone(db),
+		EventDelivery:         q.EventDelivery.clone(db),
+		EventRule:             q.EventRule.clone(db),
+		LifecycleRule:         q.LifecycleRule.clone(db),
+		MeteringDaily:         q.MeteringDaily.clone(db),
+		MultipartPart:         q.MultipartPart.clone(db),
+		MultipartUpload:       q.MultipartUpload.clone(db),
+		Object:                q.Object.clone(db),
+		OperationLog:          q.OperationLog.clone(db),
+		PolicyAction:          q.PolicyAction.clone(db),
+		PolicyCondition:       q.PolicyCondition.clone(db),
+		PolicyPrincipal:       q.PolicyPrincipal.clone(db),
+		PolicyResource:        q.PolicyResource.clone(db),
+		User:                  q.User.clone(db),
+		VideoEncryptKey:       q.VideoEncryptKey.clone(db),
+		VideoTranscode:        q.VideoTranscode.clone(db),
+		VideoTranscodeProfile: q.VideoTranscodeProfile.clone(db),
 	}
 }
 
@@ -98,69 +107,78 @@ func (q *Query) WriteDB() *Query {
 
 func (q *Query) ReplaceDB(db *gorm.DB) *Query {
 	return &Query{
-		db:              db,
-		AccessKey:       q.AccessKey.replaceDB(db),
-		AsyncTask:       q.AsyncTask.replaceDB(db),
-		Bucket:          q.Bucket.replaceDB(db),
-		BucketCorsRule:  q.BucketCorsRule.replaceDB(db),
-		BucketPolicy:    q.BucketPolicy.replaceDB(db),
-		EventDelivery:   q.EventDelivery.replaceDB(db),
-		EventRule:       q.EventRule.replaceDB(db),
-		LifecycleRule:   q.LifecycleRule.replaceDB(db),
-		MeteringDaily:   q.MeteringDaily.replaceDB(db),
-		MultipartPart:   q.MultipartPart.replaceDB(db),
-		MultipartUpload: q.MultipartUpload.replaceDB(db),
-		Object:          q.Object.replaceDB(db),
-		OperationLog:    q.OperationLog.replaceDB(db),
-		PolicyAction:    q.PolicyAction.replaceDB(db),
-		PolicyCondition: q.PolicyCondition.replaceDB(db),
-		PolicyPrincipal: q.PolicyPrincipal.replaceDB(db),
-		PolicyResource:  q.PolicyResource.replaceDB(db),
-		User:            q.User.replaceDB(db),
+		db:                    db,
+		AccessKey:             q.AccessKey.replaceDB(db),
+		AsyncTask:             q.AsyncTask.replaceDB(db),
+		Bucket:                q.Bucket.replaceDB(db),
+		BucketCorsRule:        q.BucketCorsRule.replaceDB(db),
+		BucketPolicy:          q.BucketPolicy.replaceDB(db),
+		EventDelivery:         q.EventDelivery.replaceDB(db),
+		EventRule:             q.EventRule.replaceDB(db),
+		LifecycleRule:         q.LifecycleRule.replaceDB(db),
+		MeteringDaily:         q.MeteringDaily.replaceDB(db),
+		MultipartPart:         q.MultipartPart.replaceDB(db),
+		MultipartUpload:       q.MultipartUpload.replaceDB(db),
+		Object:                q.Object.replaceDB(db),
+		OperationLog:          q.OperationLog.replaceDB(db),
+		PolicyAction:          q.PolicyAction.replaceDB(db),
+		PolicyCondition:       q.PolicyCondition.replaceDB(db),
+		PolicyPrincipal:       q.PolicyPrincipal.replaceDB(db),
+		PolicyResource:        q.PolicyResource.replaceDB(db),
+		User:                  q.User.replaceDB(db),
+		VideoEncryptKey:       q.VideoEncryptKey.replaceDB(db),
+		VideoTranscode:        q.VideoTranscode.replaceDB(db),
+		VideoTranscodeProfile: q.VideoTranscodeProfile.replaceDB(db),
 	}
 }
 
 type queryCtx struct {
-	AccessKey       *accessKeyDo
-	AsyncTask       *asyncTaskDo
-	Bucket          *bucketDo
-	BucketCorsRule  *bucketCorsRuleDo
-	BucketPolicy    *bucketPolicyDo
-	EventDelivery   *eventDeliveryDo
-	EventRule       *eventRuleDo
-	LifecycleRule   *lifecycleRuleDo
-	MeteringDaily   *meteringDailyDo
-	MultipartPart   *multipartPartDo
-	MultipartUpload *multipartUploadDo
-	Object          *objectDo
-	OperationLog    *operationLogDo
-	PolicyAction    *policyActionDo
-	PolicyCondition *policyConditionDo
-	PolicyPrincipal *policyPrincipalDo
-	PolicyResource  *policyResourceDo
-	User            *userDo
+	AccessKey             *accessKeyDo
+	AsyncTask             *asyncTaskDo
+	Bucket                *bucketDo
+	BucketCorsRule        *bucketCorsRuleDo
+	BucketPolicy          *bucketPolicyDo
+	EventDelivery         *eventDeliveryDo
+	EventRule             *eventRuleDo
+	LifecycleRule         *lifecycleRuleDo
+	MeteringDaily         *meteringDailyDo
+	MultipartPart         *multipartPartDo
+	MultipartUpload       *multipartUploadDo
+	Object                *objectDo
+	OperationLog          *operationLogDo
+	PolicyAction          *policyActionDo
+	PolicyCondition       *policyConditionDo
+	PolicyPrincipal       *policyPrincipalDo
+	PolicyResource        *policyResourceDo
+	User                  *userDo
+	VideoEncryptKey       *videoEncryptKeyDo
+	VideoTranscode        *videoTranscodeDo
+	VideoTranscodeProfile *videoTranscodeProfileDo
 }
 
 func (q *Query) WithContext(ctx context.Context) *queryCtx {
 	return &queryCtx{
-		AccessKey:       q.AccessKey.WithContext(ctx),
-		AsyncTask:       q.AsyncTask.WithContext(ctx),
-		Bucket:          q.Bucket.WithContext(ctx),
-		BucketCorsRule:  q.BucketCorsRule.WithContext(ctx),
-		BucketPolicy:    q.BucketPolicy.WithContext(ctx),
-		EventDelivery:   q.EventDelivery.WithContext(ctx),
-		EventRule:       q.EventRule.WithContext(ctx),
-		LifecycleRule:   q.LifecycleRule.WithContext(ctx),
-		MeteringDaily:   q.MeteringDaily.WithContext(ctx),
-		MultipartPart:   q.MultipartPart.WithContext(ctx),
-		MultipartUpload: q.MultipartUpload.WithContext(ctx),
-		Object:          q.Object.WithContext(ctx),
-		OperationLog:    q.OperationLog.WithContext(ctx),
-		PolicyAction:    q.PolicyAction.WithContext(ctx),
-		PolicyCondition: q.PolicyCondition.WithContext(ctx),
-		PolicyPrincipal: q.PolicyPrincipal.WithContext(ctx),
-		PolicyResource:  q.PolicyResource.WithContext(ctx),
-		User:            q.User.WithContext(ctx),
+		AccessKey:             q.AccessKey.WithContext(ctx),
+		AsyncTask:             q.AsyncTask.WithContext(ctx),
+		Bucket:                q.Bucket.WithContext(ctx),
+		BucketCorsRule:        q.BucketCorsRule.WithContext(ctx),
+		BucketPolicy:          q.BucketPolicy.WithContext(ctx),
+		EventDelivery:         q.EventDelivery.WithContext(ctx),
+		EventRule:             q.EventRule.WithContext(ctx),
+		LifecycleRule:         q.LifecycleRule.WithContext(ctx),
+		MeteringDaily:         q.MeteringDaily.WithContext(ctx),
+		MultipartPart:         q.MultipartPart.WithContext(ctx),
+		MultipartUpload:       q.MultipartUpload.WithContext(ctx),
+		Object:                q.Object.WithContext(ctx),
+		OperationLog:          q.OperationLog.WithContext(ctx),
+		PolicyAction:          q.PolicyAction.WithContext(ctx),
+		PolicyCondition:       q.PolicyCondition.WithContext(ctx),
+		PolicyPrincipal:       q.PolicyPrincipal.WithContext(ctx),
+		PolicyResource:        q.PolicyResource.WithContext(ctx),
+		User:                  q.User.WithContext(ctx),
+		VideoEncryptKey:       q.VideoEncryptKey.WithContext(ctx),
+		VideoTranscode:        q.VideoTranscode.WithContext(ctx),
+		VideoTranscodeProfile: q.VideoTranscodeProfile.WithContext(ctx),
 	}
 }
 

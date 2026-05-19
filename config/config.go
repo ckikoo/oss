@@ -25,6 +25,7 @@ type Config struct {
 	Redis    Redis              `yaml:"redis"`
 	Security Security           `yaml:"security"`
 	CORS     CORS               `yaml:"cors"`
+	Video    Video              `yaml:"video"`
 	AppConf  map[string]AppConf `yaml:"app_conf"`
 }
 
@@ -46,6 +47,33 @@ type CORS struct {
 	AllowedMethods []string `yaml:"allowed_methods"`
 	AllowedHeaders []string `yaml:"allowed_headers"`
 	MaxAgeSeconds  int32    `yaml:"max_age_seconds"`
+}
+
+type Video struct {
+	TranscodeMaxConcurrency int `yaml:"transcode_max_concurrency"`
+	SegmentDurationSeconds  int `yaml:"segment_duration_seconds"`
+	PlayTokenTTLSeconds     int `yaml:"play_token_ttl_seconds"`
+}
+
+func (v Video) GetTranscodeMaxConcurrency() int {
+	if v.TranscodeMaxConcurrency <= 0 {
+		return consts.DefaultTranscodeMaxConcurrency
+	}
+	return v.TranscodeMaxConcurrency
+}
+
+func (v Video) GetSegmentDurationSeconds() int {
+	if v.SegmentDurationSeconds <= 0 {
+		return consts.HLSSegmentDurationSeconds
+	}
+	return v.SegmentDurationSeconds
+}
+
+func (v Video) GetPlayTokenTTLSeconds() int {
+	if v.PlayTokenTTLSeconds <= 0 {
+		return consts.DefaultPlayTokenTTLSeconds
+	}
+	return v.PlayTokenTTLSeconds
 }
 
 type Mysql struct {
