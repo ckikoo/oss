@@ -454,7 +454,7 @@ update transcode aggregate(done_profile_count, derived_size, status)
 key.info 内容：
 
 ```text
-{base_url}/api/v1/video/keys/{key_id}
+/api/v1/video/keys/{key_id}
 {tmpDir}/enc.key
 ```
 
@@ -462,6 +462,7 @@ key.info 内容：
 
 - 不写第三行固定 IV，避免所有 segment 共用同一 IV。
 - 每个 profile 独立 key，减少 IV 重复风险。
+- key URI 当前写入根相对路径 `/api/v1/video/keys/{key_id}`，由同源播放接口承载，避免依赖部署时的外部 base_url 配置。
 - key URI 不包含 token，token 通过 `X-Play-Token` header 传递。
 
 ffmpeg 执行规范：
@@ -481,11 +482,11 @@ ffmpeg 执行规范：
 
 验收：
 
-- [ ] ffmpeg 不存在时任务失败且错误可见。
-- [ ] 转码成功后 profile 状态为 done。
-- [ ] 转码失败后 staging 目录被清理。
-- [ ] 重试不会破坏已完成 profile。
-- [ ] worker 并发数可配置。
+- [x] ffmpeg 不存在时任务失败且错误可见。
+- [x] 转码成功后 profile 状态为 done。
+- [x] 转码失败后 staging 目录被清理。
+- [x] 重试不会破坏已完成 profile。
+- [x] worker 并发数可配置。
 
 ---
 

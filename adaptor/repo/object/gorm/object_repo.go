@@ -301,6 +301,21 @@ func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 	})
 }
 
+func (r *objectRepo) GetByIDAndVersion(ctx context.Context, objectID int64, versionID string) (*do.ObjectDo, error) {
+	if objectID <= 0 || versionID == "" {
+		return nil, repoerr.ErrInvalidData
+	}
+
+	q := query.Use(r.db).Object
+	modelObject, err := q.WithContext(ctx).
+		Where(q.ID.Eq(objectID), q.VersionID.Eq(versionID)).
+		First()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+	return r.toObjectDo(modelObject), nil
+}
+
 func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
 	q := query.Use(r.db)
 	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.Status.Eq(consts.ObjectStatusNormal))

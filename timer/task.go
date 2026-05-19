@@ -13,6 +13,7 @@ import (
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
+	videoSvc "oss/service/video"
 	"oss/utils/pool"
 	"sort"
 	"strconv"
@@ -35,6 +36,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	txManager := adaptor.GetTxManager()
+	videoProcessor := videoSvc.NewProcessor(adaptor)
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
 	if err != nil {
 		log.Error("timer fail to dequeue task", zap.Error(err))
@@ -265,6 +267,28 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					)
 				}
 				cancel()
+
+			case consts.TaskTypeTranscode:
+				result, err := videoProcessor.HandleTask(taskCtx, task)
+				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err != nil {
+					log.Error("timer.handlerTask transcode task failed",
+						zap.Error(err),
+						zap.Int64("taskID", taskID),
+						zap.String("bizID", task.BizID))
+					if statusErr := updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error()); statusErr != nil {
+						log.Error("timer.handlerTask update transcode task failed status failed",
+							zap.Error(statusErr),
+							zap.Int64("taskID", taskID))
+					}
+					return
+				}
+				if _, err := taskRepo.CompleteAsyncTask(writeCtx, task.ID, result); err != nil {
+					log.Error("timer.handlerTask update transcode task completed failed",
+						zap.Error(err),
+						zap.Int64("taskID", taskID))
+				}
 
 			case consts.TaskTypeAbortMultipart:
 				if uploadID == "" {
