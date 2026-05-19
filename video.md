@@ -514,6 +514,7 @@ query token 仅作为兼容方案：
 ```
 
 默认推荐 header，避免 token 出现在日志、Referer 和持久化 playlist 中。
+公开 HLS 路由需要支持 `X-Play-Token` 的 CORS preflight。
 
 校验逻辑：
 
@@ -550,11 +551,11 @@ Content-Type: video/MP2T
 
 验收：
 
-- [ ] 无 token 访问 master/profile/segment 返回 401。
-- [ ] token 绑定 transcode 不匹配返回 403。
-- [ ] 已完成 profile 会出现在 master.m3u8。
-- [ ] 未完成 profile 不出现在 master.m3u8。
-- [ ] segment 不暴露本地物理路径。
+- [x] 无 token 访问 master/profile/segment 返回 401。
+- [x] token 绑定 transcode 不匹配返回 403。
+- [x] 已完成 profile 会出现在 master.m3u8。
+- [x] 未完成 profile 不出现在 master.m3u8。
+- [x] segment 不暴露本地物理路径。
 
 ---
 
@@ -586,11 +587,11 @@ Header: X-Play-Token: {token}
 
 验收：
 
-- [ ] 有效 token 返回 16 字节 binary。
-- [ ] token 过期返回 401。
-- [ ] token 和 key 不属于同一 transcode 返回 403。
-- [ ] key 不存在返回 404。
-- [ ] 日志不包含 raw key。
+- [x] 有效 token 返回 16 字节 binary。
+- [x] token 过期返回 401。
+- [x] token 和 key 不属于同一 transcode 返回 403。
+- [x] key 不存在返回 404。
+- [x] 日志不包含 raw key。
 
 ---
 
@@ -668,10 +669,10 @@ hls.attachMedia(videoElement)
 
 验收：
 
-- [ ] 未认证用户不能创建 play token。
-- [ ] 无对象权限不能创建 play token。
-- [ ] token 绑定 version_id。
-- [ ] hls.js playlist、segment、key 请求都能通过 header 携带 token。
+- [x] 未认证用户不能创建 play token。
+- [x] 无对象权限不能创建 play token。
+- [x] token 绑定 version_id。
+- [x] hls.js playlist、segment、key 请求都能通过 header 携带 token。
 
 ---
 
@@ -707,9 +708,9 @@ GET /api/v1/buckets/:bucket_name/objects/:object_key/transcode?version_id=xxx
 
 验收：
 
-- [ ] 查询返回 transcode 主状态。
-- [ ] 查询返回每个 profile 的状态和错误。
-- [ ] 未触发转码的视频返回明确状态。
+- [x] 查询返回 transcode 主状态。
+- [x] 查询返回每个 profile 的状态和错误。
+- [x] 未触发转码的视频返回明确状态。
 
 ---
 

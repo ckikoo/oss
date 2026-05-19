@@ -13,7 +13,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
-const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token"
+const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token, X-Play-Token"
 
 func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	corsService := corssvc.NewService(adaptor)
@@ -129,7 +129,7 @@ func globalAllowedMethods(conf config.CORS) []string {
 
 func globalAllowedHeaders(conf config.CORS) []string {
 	if len(conf.AllowedHeaders) == 0 {
-		return []string{"Authorization", "Content-Type", "X-OSS-Token", "X-Oss-Token"}
+		return []string{"Authorization", "Content-Type", "X-OSS-Token", "X-Oss-Token", "X-Play-Token"}
 	}
 
 	headers := make([]string, 0, len(conf.AllowedHeaders))

@@ -14,11 +14,6 @@ type UserInfoCtx struct {
 	SecretKey string
 }
 
-func SetContextWithUserInfo(ctx context.Context, c *app.RequestContext, userInfo *UserInfoCtx) context.Context {
-	c.Set(consts.UserInfoContext, userInfo)
-	return ctx
-}
-
 func GetUserInfoFromContext(ctx context.Context, c *app.RequestContext) (*UserInfoCtx, bool) {
 	if v, ok := c.Get(consts.UserInfoContext); ok {
 		if userInfo, ok := v.(*UserInfoCtx); ok {
@@ -43,11 +38,6 @@ func GetUserInfoFromContext(ctx context.Context, c *app.RequestContext) (*UserIn
 
 const currentActionToken = "current_action_token_"
 
-func SetTokenWithContext(ctx context.Context, c *app.RequestContext, token string) context.Context {
-	c.Set(currentActionToken, token)
-	return ctx
-}
-
 func GetTokenFromContext(ctx context.Context, c *app.RequestContext) (string, bool) {
 	if v, ok := c.Get(currentActionToken); ok {
 		if token, ok := v.(string); ok {
@@ -56,4 +46,31 @@ func GetTokenFromContext(ctx context.Context, c *app.RequestContext) (string, bo
 	}
 
 	return "", false
+}
+
+const PlayTokenClaimsKey = "play_token_claims"
+
+type VideoPlayTokenCtx struct {
+	context.Context
+	Token       string
+	UserID      int64
+	BucketID    int64
+	BucketName  string
+	ObjectID    int64
+	ObjectKey   string
+	VersionID   string
+	TranscodeID int64
+	ExpiresAt   int64
+	Action      string
+}
+
+func GetPlayTokenClaimsFromContext(ctx context.Context, c *app.RequestContext) (*VideoPlayTokenCtx, bool) {
+	if v, ok := c.Get(PlayTokenClaimsKey); ok {
+		if token, ok := v.(*VideoPlayTokenCtx); ok {
+			token.Context = ctx
+			return token, true
+		}
+	}
+
+	return nil, false
 }

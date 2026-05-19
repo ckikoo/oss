@@ -9,16 +9,16 @@ import (
 	"oss/common"
 	"oss/consts"
 	"oss/service/do"
+	"oss/utils/tools"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/google/uuid"
 )
 
 // NewOperationLogMiddleware creates a middleware that logs all operations
 func NewOperationLogMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	auditRepo := gorm.NewOperationLogRepo(adaptor.GetGORM())
 	return func(ctx context.Context, c *app.RequestContext) {
-		requestID := uuid.NewString()
+		requestID := tools.UUIDHex()
 		c.Set("request_id", requestID)
 
 		startTime := time.Now()

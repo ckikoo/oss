@@ -23,6 +23,10 @@ const (
 )
 
 const (
+	HeaderPlayToken = "X-Play-Token"
+)
+
+const (
 	HLSAssetPrefix                 = "_video"
 	HLSEncryptionAlgorithm         = "HLS-AES-128"
 	HLSSegmentDurationSeconds      = 10

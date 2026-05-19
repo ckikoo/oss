@@ -18,7 +18,6 @@ import (
 
 func NewPolicyMiddleware(adp adaptor.IAdaptor) app.HandlerFunc {
 	bRepo := bucketgorm.NewBucketRepo(adp)
-	// pRepo := policygorm.NewPolicyRepo(adp)
 	svc := policy.NewService(adp)
 
 	return func(ctx context.Context, c *app.RequestContext) {
@@ -81,6 +80,8 @@ func resolvePolicyAction(c *app.RequestContext) string {
 	p := string(c.Path())
 
 	switch {
+	case method == "GET" && strings.Contains(p, "/objects") && strings.HasSuffix(p, "/transcode"):
+		return consts.GetTranscodeStatusAction
 	case method == "GET" && strings.Contains(p, "/objects"):
 		return "GetObject"
 	case method == "PUT" && strings.Contains(p, "/objects"):
