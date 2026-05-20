@@ -33,7 +33,6 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	if len(deliveryIDs) == 0 {
-		log.Info("no pending event deliveries")
 		return
 	}
 

@@ -653,19 +653,6 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 			zap.Error(err))
 	}
 
-	srv.scheduleVideoTranscode(ctx, &videoSvc.TranscodeSource{
-		UserID:        ctx.UserID,
-		BucketID:      upload.BucketID,
-		BucketName:    upload.BucketName,
-		ObjectID:      objectID,
-		ObjectKey:     upload.ObjectKey,
-		ObjectKeyHash: upload.ObjectKeyHash,
-		VersionID:     upload.VersionID,
-		SourceEtag:    resultEtag,
-		SourceSize:    totalSize,
-		ContentType:   contentType,
-	})
-
 	// 回调事件
 	if createReqMap[redis.FieldCallbackURL] != "" {
 		callbackURL := createReqMap[redis.FieldCallbackURL]

@@ -418,9 +418,7 @@ func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 
 	updates[q.UpdatedAt.ColumnName().String()] = time.Now()
 
-	qs := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey))
-
-	qs = qs.Where(q.VersionID.Eq(versionID))
+	qs := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey), q.VersionID.Eq(versionID))
 
 	_, err := qs.Updates(updates)
 	if err != nil {

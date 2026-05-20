@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/hertz-contrib/logger/accesslog"
 	"github.com/hertz-contrib/pprof"
 )
 
@@ -44,11 +45,16 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 }
 
 func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) {
+	if adaptor.GetConfig().Server.Env == "dev" {
+		h.Use(accesslog.New(
+			accesslog.WithFormat("[${time}] ${status} ${latency} ${ip} ${method} ${path}\n"),
+		))
+		h.StaticFile("/debug/video", "./web/video-test-client/index.html")
+	}
+
 	if adaptor.GetConfig().Server.EnablePprof {
 		pprof.Register(h)
 	}
-
-	h.Static("/debug/video", "./web/debug")
 
 	registerPublicRoutes(h, deps)
 
