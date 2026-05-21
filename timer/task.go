@@ -296,6 +296,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					SourceEtag:    saveInfo.Etag,
 					SourceSize:    saveInfo.Size,
 					ContentType:   contentType,
+					SourcePath:    saveInfo.StoragePath,
 				}); err != nil {
 					log.Warn("timer.handlerTask schedule transcode after physical merge failed",
 						zap.Error(err),

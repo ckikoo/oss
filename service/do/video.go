@@ -62,6 +62,7 @@ type VideoProfileDo struct {
 	AudioBitrate string
 	Width        int32
 	Height       int32
+	Fps          int32
 	AssetPrefix  string
 	PlaylistKey  string
 	Size         int64
@@ -81,6 +82,7 @@ type CreateVideoProfile struct {
 	AudioBitrate string
 	Width        int32
 	Height       int32
+	Fps          int32
 	AssetPrefix  string
 	PlaylistKey  string
 	Size         int64

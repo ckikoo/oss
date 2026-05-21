@@ -44,44 +44,42 @@ import (
 )
 
 type Service struct {
-	txManger       tx.ITxManager
-	userRepo       admin.IUser
-	objRepo        object.IObjectRepo
-	multipartRepo  multipart.IMultipartRepo
-	bucketRepo     bucket.IBucketRepo
-	rdsmultipart   redis.IMultipart
-	storage        storage.IStorage
-	asyncRepo      async.IAsyncTaskRepo
-	asyncRedis     redis.ITask
-	eventService   *event.Service
-	tokenRedis     redis.IToken
-	meteringRepo   metering.IMeteringRepo
-	logger         *zap.Logger
-	eventRepo      eventI.IEventDeliveryRepo
-	eventQueue     redis.IEventQueue
-	videoScheduler *videoSvc.Scheduler
-	videoCleanup   *videoSvc.CleanupService
+	txManger      tx.ITxManager
+	userRepo      admin.IUser
+	objRepo       object.IObjectRepo
+	multipartRepo multipart.IMultipartRepo
+	bucketRepo    bucket.IBucketRepo
+	rdsmultipart  redis.IMultipart
+	storage       storage.IStorage
+	asyncRepo     async.IAsyncTaskRepo
+	asyncRedis    redis.ITask
+	eventService  *event.Service
+	tokenRedis    redis.IToken
+	meteringRepo  metering.IMeteringRepo
+	logger        *zap.Logger
+	eventRepo     eventI.IEventDeliveryRepo
+	eventQueue    redis.IEventQueue
+	videoCleanup  *videoSvc.CleanupService
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		txManger:       adaptor.GetTxManager(),
-		userRepo:       gormAdmin.NewUserRepo(adaptor),
-		objRepo:        gormObject.NewObjectRepo(adaptor),
-		bucketRepo:     gormBucket.NewBucketRepo(adaptor),
-		multipartRepo:  gormMultipart.NewObjectRepo(adaptor.GetGORM()),
-		rdsmultipart:   redis.NewMultipart(adaptor),
-		storage:        adaptor.GetStorage(),
-		asyncRepo:      gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
-		asyncRedis:     redis.NewTask(adaptor),
-		eventService:   event.NewService(adaptor),
-		tokenRedis:     redis.NewToken(adaptor),
-		meteringRepo:   gormMetering.NewMeteringRepo(adaptor.GetGORM()),
-		eventRepo:      gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
-		eventQueue:     redis.NewEventQueue(adaptor),
-		videoScheduler: videoSvc.NewScheduler(adaptor),
-		videoCleanup:   videoSvc.NewCleanupService(adaptor),
-		logger:         logger.GetLogger().With(zap.String("module", "multipart")),
+		txManger:      adaptor.GetTxManager(),
+		userRepo:      gormAdmin.NewUserRepo(adaptor),
+		objRepo:       gormObject.NewObjectRepo(adaptor),
+		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
+		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
+		rdsmultipart:  redis.NewMultipart(adaptor),
+		storage:       adaptor.GetStorage(),
+		asyncRepo:     gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
+		asyncRedis:    redis.NewTask(adaptor),
+		eventService:  event.NewService(adaptor),
+		tokenRedis:    redis.NewToken(adaptor),
+		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:    redis.NewEventQueue(adaptor),
+		videoCleanup:  videoSvc.NewCleanupService(adaptor),
+		logger:        logger.GetLogger().With(zap.String("module", "multipart")),
 	}
 }
 func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName string, req *dto.CreateMultipartUploadReq) (*dto.CreateMultipartUploadResp, common.Errno) {
@@ -752,19 +750,6 @@ func (srv *Service) enqueueAsyncTask(ctx context.Context, taskID int64) error {
 	}
 
 	return srv.asyncRedis.EnqueueTask(ctx, taskID)
-}
-
-func (srv *Service) scheduleVideoTranscode(ctx context.Context, source *videoSvc.TranscodeSource) {
-	if srv.videoScheduler == nil {
-		return
-	}
-	if err := srv.videoScheduler.ScheduleTranscode(ctx, source); err != nil {
-		srv.logger.Warn("failed to schedule video transcode",
-			zap.String("bucket_name", source.BucketName),
-			zap.String("object_key", source.ObjectKey),
-			zap.String("version_id", source.VersionID),
-			zap.Error(err))
-	}
 }
 
 func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {

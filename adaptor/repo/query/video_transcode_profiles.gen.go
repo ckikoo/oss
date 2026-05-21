@@ -34,6 +34,7 @@ func newVideoTranscodeProfile(db *gorm.DB, opts ...gen.DOOption) videoTranscodeP
 	_videoTranscodeProfile.VideoBitrate = field.NewString(tableName, "video_bitrate")
 	_videoTranscodeProfile.AudioBitrate = field.NewString(tableName, "audio_bitrate")
 	_videoTranscodeProfile.Width = field.NewInt32(tableName, "width")
+	_videoTranscodeProfile.Fps = field.NewInt32(tableName, "fps")
 	_videoTranscodeProfile.Height = field.NewInt32(tableName, "height")
 	_videoTranscodeProfile.AssetPrefix = field.NewString(tableName, "asset_prefix")
 	_videoTranscodeProfile.PlaylistKey = field.NewString(tableName, "playlist_key")
@@ -62,6 +63,7 @@ type videoTranscodeProfile struct {
 	VideoBitrate field.String
 	AudioBitrate field.String
 	Width        field.Int32
+	Fps          field.Int32
 	Height       field.Int32
 	AssetPrefix  field.String
 	PlaylistKey  field.String
@@ -96,6 +98,7 @@ func (v *videoTranscodeProfile) updateTableName(table string) *videoTranscodePro
 	v.VideoBitrate = field.NewString(table, "video_bitrate")
 	v.AudioBitrate = field.NewString(table, "audio_bitrate")
 	v.Width = field.NewInt32(table, "width")
+	v.Fps = field.NewInt32(table, "fps")
 	v.Height = field.NewInt32(table, "height")
 	v.AssetPrefix = field.NewString(table, "asset_prefix")
 	v.PlaylistKey = field.NewString(table, "playlist_key")
@@ -135,7 +138,7 @@ func (v *videoTranscodeProfile) GetFieldByName(fieldName string) (field.OrderExp
 }
 
 func (v *videoTranscodeProfile) fillFieldMap() {
-	v.fieldMap = make(map[string]field.Expr, 18)
+	v.fieldMap = make(map[string]field.Expr, 19)
 	v.fieldMap["id"] = v.ID
 	v.fieldMap["transcode_id"] = v.TranscodeID
 	v.fieldMap["profile"] = v.Profile
@@ -143,6 +146,7 @@ func (v *videoTranscodeProfile) fillFieldMap() {
 	v.fieldMap["video_bitrate"] = v.VideoBitrate
 	v.fieldMap["audio_bitrate"] = v.AudioBitrate
 	v.fieldMap["width"] = v.Width
+	v.fieldMap["fps"] = v.Fps
 	v.fieldMap["height"] = v.Height
 	v.fieldMap["asset_prefix"] = v.AssetPrefix
 	v.fieldMap["playlist_key"] = v.PlaylistKey

@@ -434,7 +434,14 @@ func (p *Processor) decryptProfileKey(key *do.VideoEncryptKeyDo) (*profileKey, e
 }
 
 func (p *Processor) runFFmpeg(ctx context.Context, inputPath string, outputDir string, keyInfoPath string, profile *do.VideoProfileDo) error {
-	args := buildFFmpegArgs(inputPath, outputDir, keyInfoPath, profile, p.segmentDurationSeconds)
+	args := make([]string, 0)
+	switch profile.Profile {
+	case consts.VideoProfileOriginal:
+		args = BuildOriginalArgs(inputPath, outputDir, keyInfoPath)
+	default:
+		gopSize := strconv.Itoa(consts.HLSSegmentDurationSeconds * int(profile.Fps))
+		args = buildFFmpegArgs(inputPath, outputDir, keyInfoPath, profile, gopSize)
+	}
 	output, err := p.ffmpegRunner.Run(ctx, args)
 	if err != nil {
 		if output == "" {
@@ -454,10 +461,20 @@ func (commandFFmpegRunner) Run(ctx context.Context, args []string) (string, erro
 	return out.String(), err
 }
 
-func buildFFmpegArgs(inputPath string, outputDir string, keyInfoPath string, profile *do.VideoProfileDo, segmentSeconds int) []string {
-	if segmentSeconds <= 0 {
-		segmentSeconds = consts.HLSSegmentDurationSeconds
+func BuildOriginalArgs(inputPath, outputDir, keyInfoPath string) []string {
+	return []string{
+		"-y",
+		"-i", inputPath,
+		"-c", "copy",
+		"-hls_key_info_file", keyInfoPath,
+		"-hls_time", strconv.Itoa(consts.HLSSegmentDurationSeconds),
+		"-hls_playlist_type", "vod",
+		"-hls_segment_filename", filepath.Join(outputDir, hlsSegmentGlob),
+		filepath.Join(outputDir, hlsPlaylistName),
 	}
+}
+
+func buildFFmpegArgs(inputPath, outputDir, keyInfoPath string, profile *do.VideoProfileDo, gopSize string) []string {
 	height := profile.Height
 	if height <= 0 {
 		height = 720
@@ -473,13 +490,20 @@ func buildFFmpegArgs(inputPath string, outputDir string, keyInfoPath string, pro
 	return []string{
 		"-y",
 		"-i", inputPath,
-		"-hls_key_info_file", keyInfoPath,
-		"-hls_time", strconv.Itoa(segmentSeconds),
-		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", filepath.Join(outputDir, hlsSegmentGlob),
+		"-c:v", "libx264",
+		"-c:a", "aac",
+		"-preset", "fast",
+		"-g", gopSize,
+		"-keyint_min", gopSize,
+		"-sc_threshold", "0",
 		"-vf", fmt.Sprintf("scale=-2:%d", height),
 		"-b:v", videoBitrate,
 		"-b:a", audioBitrate,
+		"-threads", "0",
+		"-hls_key_info_file", keyInfoPath,
+		"-hls_time", strconv.Itoa(consts.HLSSegmentDurationSeconds),
+		"-hls_playlist_type", "vod",
+		"-hls_segment_filename", filepath.Join(outputDir, hlsSegmentGlob),
 		filepath.Join(outputDir, hlsPlaylistName),
 	}
 }

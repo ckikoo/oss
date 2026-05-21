@@ -367,6 +367,7 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		SourceEtag:    putResult.Etag,
 		SourceSize:    putResult.Size,
 		ContentType:   req.ContentType,
+		SourcePath:    putResult.StoragePath,
 	})
 
 	now := time.Now()

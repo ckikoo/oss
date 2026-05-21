@@ -3,7 +3,10 @@ package video
 import (
 	"context"
 	"fmt"
+	"math"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"oss/adaptor"
 	"oss/adaptor/redis"
@@ -38,6 +41,7 @@ type TranscodeSource struct {
 	SourceEtag    string
 	SourceSize    int64
 	ContentType   string
+	SourcePath    string
 }
 
 type transcodeTaskRef struct {
@@ -60,6 +64,7 @@ func (s *Scheduler) ScheduleTranscode(ctx context.Context, source *TranscodeSour
 	if source == nil {
 		return nil
 	}
+
 	if !consts.IsVideoObject(source.ContentType, source.ObjectKey) {
 		return nil
 	}
@@ -67,9 +72,15 @@ func (s *Scheduler) ScheduleTranscode(ctx context.Context, source *TranscodeSour
 		return err
 	}
 
-	defaultProfiles := consts.DefaultVideoTranscodeProfiles()
+	height, fps, err := getVideoMeta(source.SourcePath)
+	if err != nil {
+		return fmt.Errorf("schedule Transcode error: %v", err)
+	}
+
+	defaultProfiles := AvailableProfiles(height)
+
 	taskRefs := make([]transcodeTaskRef, 0, len(defaultProfiles))
-	err := s.txManager.RunInTx(ctx, func(ctx context.Context, tx tx.Tx) error {
+	err = s.txManager.RunInTx(ctx, func(ctx context.Context, tx tx.Tx) error {
 		videoRepo := s.videoRepo.WithTx(tx)
 		asyncRepo := s.asyncRepo.WithTx(tx)
 
@@ -90,7 +101,7 @@ func (s *Scheduler) ScheduleTranscode(ctx context.Context, source *TranscodeSour
 			return fmt.Errorf("create video transcode: %w", err)
 		}
 
-		profiles, err := videoRepo.CreateProfiles(ctx, transcode.ID, buildDefaultProfileCreates(defaultProfiles))
+		profiles, err := videoRepo.CreateProfiles(ctx, transcode.ID, buildDefaultProfileCreates(defaultProfiles, fps))
 		if err != nil {
 			return fmt.Errorf("create video profiles: %w", err)
 		}
@@ -151,13 +162,83 @@ func validateTranscodeSource(source *TranscodeSource) error {
 	if source.SourceEtag == "" {
 		return fmt.Errorf("source_etag is required")
 	}
+
+	if source.SourcePath == "" {
+		return fmt.Errorf("source_path is required")
+	}
+
 	return nil
 }
 
-func buildDefaultProfileCreates(defaultProfiles []consts.VideoTranscodeProfile) []*do.CreateVideoProfile {
+// AvailableProfiles 根据源视频高度过滤可用档位
+func AvailableProfiles(srcHeight int) []consts.VideoTranscodeProfile {
+	var profiles []consts.VideoTranscodeProfile
+	for _, p := range consts.DefaultVideoTranscodeProfiles() {
+		if int(p.Height) <= srcHeight {
+			profiles = append(profiles, p)
+		} else if float64(p.Height) <= float64(srcHeight)*1.1 {
+			// 接近标准档位，用源分辨率代替，避免上采样
+			profiles = append(profiles, consts.VideoTranscodeProfile{
+				Profile:      p.Profile,
+				Height:       int32(srcHeight),
+				VideoBitrate: p.VideoBitrate,
+				AudioBitrate: p.AudioBitrate,
+			})
+			break
+		}
+	}
+
+	// 兜底：至少保留一个档位
+	if len(profiles) == 0 {
+		profiles = append(profiles, consts.VideoTranscodeProfile{
+			Height:       int32(srcHeight),
+			VideoBitrate: "400k",
+			AudioBitrate: "64k",
+		})
+	}
+
+	return profiles
+}
+
+// GetVideoHeight 通过 ffprobe 获取视频高度，本地文件 100~500ms
+func getVideoMeta(inputPath string) (height, fps int, err error) {
+	out, err := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=height,r_frame_rate",
+		"-of", "csv=p=0",
+		inputPath,
+	).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("ffprobe failed: %w", err)
+	}
+	// 输出格式: "1080,30000/1001"
+	parts := strings.Split(strings.TrimSpace(string(out)), ",")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("unexpected output: %s", out)
+	}
+	height, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	fpsParts := strings.Split(parts[1], "/")
+	if len(fpsParts) == 2 {
+		num, _ := strconv.Atoi(fpsParts[0])
+		den, _ := strconv.Atoi(fpsParts[1])
+		if den > 0 {
+			fps = int(math.Round(float64(num) / float64(den)))
+		}
+	}
+	if fps <= 0 {
+		fps = 30
+	}
+	return
+}
+func buildDefaultProfileCreates(defaultProfiles []consts.VideoTranscodeProfile, fps int) []*do.CreateVideoProfile {
 	profiles := make([]*do.CreateVideoProfile, 0, len(defaultProfiles))
 	for _, profile := range defaultProfiles {
 		profiles = append(profiles, &do.CreateVideoProfile{
+			Fps:          int32(fps),
 			Profile:      profile.Profile,
 			Status:       consts.TranscodeStatusPending,
 			VideoBitrate: profile.VideoBitrate,

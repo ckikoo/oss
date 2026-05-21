@@ -18,7 +18,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		VideoBitrate: "800k",
 		AudioBitrate: "96k",
 	}
-	args := buildFFmpegArgs("input.mp4", "out", "key.info", profile, 6)
+	args := buildFFmpegArgs("input.mp4", "out", "key.info", profile, "30")
 	joined := strings.Join(args, " ")
 
 	for _, want := range []string{

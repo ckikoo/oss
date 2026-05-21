@@ -19,7 +19,8 @@ type VideoTranscodeProfile struct {
 	VideoBitrate string     `gorm:"column:video_bitrate;not null" json:"video_bitrate"`
 	AudioBitrate string     `gorm:"column:audio_bitrate;not null" json:"audio_bitrate"`
 	Width        int32      `gorm:"column:width;not null" json:"width"`
-	Height       int32      `gorm:"column:height;not null" json:"height"`
+	Fps          int32      `gorm:"column:fps;not null" json:"fps"`
+	Height       int32      `gorm:"column:height;not null;default:0000000000" json:"height"`
 	AssetPrefix  string     `gorm:"column:asset_prefix;not null" json:"asset_prefix"`
 	PlaylistKey  string     `gorm:"column:playlist_key;not null" json:"playlist_key"`
 	Size         int64      `gorm:"column:size;not null" json:"size"`

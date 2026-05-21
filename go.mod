@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/bytedance/sonic v1.15.0
 	github.com/cloudwego/hertz v0.10.4
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-redis/redis/v8 v8.11.5
@@ -27,7 +28,6 @@ require (
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect

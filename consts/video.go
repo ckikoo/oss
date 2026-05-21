@@ -35,20 +35,27 @@ const (
 )
 
 const (
-	VideoProfile1080P = "1080p"
-	VideoProfile720P  = "720p"
-	VideoProfile480P  = "480p"
-	VideoProfile360P  = "360p"
+	VideoProfileOriginal = "original" // 原画，不重新编码
+	VideoProfile2160P    = "2160p"
+	VideoProfile1080P    = "1080p"
+	VideoProfile720P     = "720p"
+	VideoProfile480P     = "480p"
+	VideoProfile360P     = "360p"
 )
 
 type VideoTranscodeProfile struct {
 	Profile      string
 	Height       int32
+	Fps          int32
 	VideoBitrate string
 	AudioBitrate string
 }
 
+var StandardHeights = []int{360, 480, 720, 1080, 2160}
+
 var defaultVideoTranscodeProfiles = []VideoTranscodeProfile{
+	{Profile: VideoProfileOriginal, Height: 0, VideoBitrate: "", AudioBitrate: ""}, // Height=0 代表原画
+	{Profile: VideoProfile2160P, Height: 2160, VideoBitrate: "16000k", AudioBitrate: "192k"},
 	{Profile: VideoProfile1080P, Height: 1080, VideoBitrate: "4000k", AudioBitrate: "128k"},
 	{Profile: VideoProfile720P, Height: 720, VideoBitrate: "2000k", AudioBitrate: "128k"},
 	{Profile: VideoProfile480P, Height: 480, VideoBitrate: "800k", AudioBitrate: "96k"},
