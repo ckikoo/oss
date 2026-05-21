@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"oss/config"
 	"oss/utils/logger"
@@ -47,27 +46,27 @@ func InitMySQL(conf *config.Mysql) (*sql.DB, error) {
 	sqlDB.SetConnMaxLifetime(3 * time.Minute)
 	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
 
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
+	// go func() {
+	// 	ticker := time.NewTicker(1 * time.Second)
+	// 	defer ticker.Stop()
 
-		for range ticker.C {
-			s := sqlDB.Stats()
-			log.Printf(
-				"db stats: db=%p sqlDB=%p maxOpen=%d open=%d inuse=%d idle=%d wait=%d waitDuration=%s maxIdleClosed=%d maxLifetimeClosed=%d",
-				sqlDB,
-				sqlDB,
-				s.MaxOpenConnections,
-				s.OpenConnections,
-				s.InUse,
-				s.Idle,
-				s.WaitCount,
-				s.WaitDuration,
-				s.MaxIdleClosed,
-				s.MaxLifetimeClosed,
-			)
-		}
-	}()
+	// 	for range ticker.C {
+	// 		s := sqlDB.Stats()
+	// 		log.Printf(
+	// 			"db stats: db=%p sqlDB=%p maxOpen=%d open=%d inuse=%d idle=%d wait=%d waitDuration=%s maxIdleClosed=%d maxLifetimeClosed=%d",
+	// 			sqlDB,
+	// 			sqlDB,
+	// 			s.MaxOpenConnections,
+	// 			s.OpenConnections,
+	// 			s.InUse,
+	// 			s.Idle,
+	// 			s.WaitCount,
+	// 			s.WaitDuration,
+	// 			s.MaxIdleClosed,
+	// 			s.MaxLifetimeClosed,
+	// 		)
+	// 	}
+	// }()
 	return sqlDB, nil
 }
 

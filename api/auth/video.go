@@ -2,13 +2,16 @@ package auth
 
 import (
 	"context"
+	"io"
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
 	"oss/service/dto"
 	"oss/service/video"
+	"oss/utils/ioutil"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/hertz/pkg/app"
 )
@@ -145,16 +148,34 @@ func writeHLSContent(c *app.RequestContext, content *video.HLSContent, errno com
 		writeHLSError(c, common.ServerErr.WithMsg("empty HLS content"))
 		return
 	}
-	defer content.Body.Close()
 
 	c.Header("Content-Type", content.ContentType)
 	c.Header("Cache-Control", "no-store")
-	c.Response.SetBodyStream(content.Body, -1)
-	// if _, err := io.Copy(c.Response.BodyWriter(), content.Body); err != nil {
-	// 	writeHLSError(c, common.ServerErr.WithErr(err))
-	// }
+	c.Response.SetBodyStream(ioutil.WrapOnClose(content.Body), -1)
 }
 
 func writeHLSError(c *app.RequestContext, errno common.Errno) {
 	api.WriteResp(c, nil, errno)
+}
+
+type onCloseReader struct {
+	io.ReadCloser
+	once sync.Once
+}
+
+func newOnCloseReader(rc io.ReadCloser) *onCloseReader {
+	return &onCloseReader{ReadCloser: rc}
+}
+
+func (r *onCloseReader) Read(p []byte) (n int, err error) {
+	n, err = r.ReadCloser.Read(p)
+	if err == io.EOF {
+		r.once.Do(func() { r.ReadCloser.Close() })
+	}
+	return
+}
+
+func (r *onCloseReader) Close() error {
+	r.once.Do(func() { r.ReadCloser.Close() })
+	return nil
 }

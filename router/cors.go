@@ -2,7 +2,6 @@ package router
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -68,6 +67,7 @@ func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		c.Next(ctx)
 	}
 }
+
 func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	corsService := corssvc.NewService(adaptor)
 
@@ -250,7 +250,6 @@ func setCORSHeaders(c *app.RequestContext, origin string, methods []string, head
 }
 
 func abortCORS(c *app.RequestContext, errno common.Errno) {
-	fmt.Println("??")
 	c.JSON(403, errno)
 	c.Abort()
 }
