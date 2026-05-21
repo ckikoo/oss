@@ -17,16 +17,17 @@ import (
 
 type LifecycleRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ lifecycle.ILifecycleRepo = (*LifecycleRepo)(nil)
 
 func NewLifecycleRepo(db *gorm.DB) *LifecycleRepo {
-	return &LifecycleRepo{db: db}
+	return &LifecycleRepo{db: db, q: query.Use(db)}
 }
 
 func (r *LifecycleRepo) WithTx(tx tx.Tx) lifecycle.ILifecycleRepo {
-	return &LifecycleRepo{db: tx.(*gorm.DB)}
+	return &LifecycleRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 
 func (r *LifecycleRepo) toLifecycleRuleDo(modelRule *model.LifecycleRule) *do.LifecycleRuleDo {
@@ -65,14 +66,14 @@ func (r *LifecycleRepo) CreateLifecycleRule(ctx context.Context, rule *do.Create
 		model.AbortIncompleteMultipartDays = *rule.AbortIncompleteMultipartDays
 	}
 
-	if err := query.Use(r.db).LifecycleRule.WithContext(ctx).Create(&model); err != nil {
+	if err := r.q.LifecycleRule.WithContext(ctx).Create(&model); err != nil {
 		return 0, repoerr.Wrap(err)
 	}
 	return model.ID, nil
 }
 
 func (r *LifecycleRepo) ListLifecycleRules(ctx context.Context, bucketID int64) ([]*do.LifecycleRuleDo, error) {
-	modelRules, err := query.Use(r.db).LifecycleRule.WithContext(ctx).Where(query.Use(r.db).LifecycleRule.BucketID.Eq(bucketID)).Order(query.Use(r.db).LifecycleRule.ID.Desc()).Find()
+	modelRules, err := r.q.LifecycleRule.WithContext(ctx).Where(r.q.LifecycleRule.BucketID.Eq(bucketID)).Order(r.q.LifecycleRule.ID.Desc()).Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -85,7 +86,7 @@ func (r *LifecycleRepo) ListLifecycleRules(ctx context.Context, bucketID int64) 
 }
 
 func (r *LifecycleRepo) ListAllActiveLifecycleRulesByCursor(ctx context.Context, cursor int64, limit int) ([]*do.LifecycleRuleDo, error) {
-	q := query.Use(r.db).LifecycleRule
+	q := r.q.LifecycleRule
 
 	modelRules, err := q.WithContext(ctx).
 		Where(q.Status.Eq(1), q.ID.Gt(cursor)). // ID > cursor
@@ -104,7 +105,7 @@ func (r *LifecycleRepo) ListAllActiveLifecycleRulesByCursor(ctx context.Context,
 }
 
 func (r *LifecycleRepo) GetLifecycleRule(ctx context.Context, bucketID, ruleID int64) (*do.LifecycleRuleDo, error) {
-	modelRule, err := query.Use(r.db).LifecycleRule.WithContext(ctx).Where(query.Use(r.db).LifecycleRule.BucketID.Eq(bucketID), query.Use(r.db).LifecycleRule.ID.Eq(ruleID)).First()
+	modelRule, err := r.q.LifecycleRule.WithContext(ctx).Where(r.q.LifecycleRule.BucketID.Eq(bucketID), r.q.LifecycleRule.ID.Eq(ruleID)).First()
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, repoerr.ErrNotFound
@@ -115,32 +116,32 @@ func (r *LifecycleRepo) GetLifecycleRule(ctx context.Context, bucketID, ruleID i
 }
 
 func (r *LifecycleRepo) UpdateLifecycleRule(ctx context.Context, bucketID, ruleID int64, update *do.UpdateLifecycleRule) (*do.LifecycleRuleDo, error) {
-	qs := query.Use(r.db).LifecycleRule.WithContext(ctx)
+	qs := r.q.LifecycleRule.WithContext(ctx)
 	updates := map[string]interface{}{}
 	if update.RuleName != nil {
-		updates[query.Use(r.db).LifecycleRule.RuleName.ColumnName().String()] = *update.RuleName
+		updates[r.q.LifecycleRule.RuleName.ColumnName().String()] = *update.RuleName
 	}
 	if update.Prefix != nil {
-		updates[query.Use(r.db).LifecycleRule.Prefix.ColumnName().String()] = update.Prefix
+		updates[r.q.LifecycleRule.Prefix.ColumnName().String()] = update.Prefix
 	}
 	if update.TransitionDays != nil {
-		updates[query.Use(r.db).LifecycleRule.TransitionDays.ColumnName().String()] = *update.TransitionDays
+		updates[r.q.LifecycleRule.TransitionDays.ColumnName().String()] = *update.TransitionDays
 	}
 	if update.TransitionStorageClass != nil {
-		updates[query.Use(r.db).LifecycleRule.TransitionStorageClass.ColumnName().String()] = *update.TransitionStorageClass
+		updates[r.q.LifecycleRule.TransitionStorageClass.ColumnName().String()] = *update.TransitionStorageClass
 	}
 	if update.ExpirationDays != nil {
-		updates[query.Use(r.db).LifecycleRule.ExpirationDays.ColumnName().String()] = *update.ExpirationDays
+		updates[r.q.LifecycleRule.ExpirationDays.ColumnName().String()] = *update.ExpirationDays
 	}
 	if update.Status != nil {
-		updates[query.Use(r.db).LifecycleRule.Status.ColumnName().String()] = *update.Status
+		updates[r.q.LifecycleRule.Status.ColumnName().String()] = *update.Status
 	}
 	if len(updates) == 0 {
 		return nil, repoerr.Wrap(errors.New("no update fields"))
 	}
-	updates[query.Use(r.db).LifecycleRule.UpdatedAt.ColumnName().String()] = time.Now()
+	updates[r.q.LifecycleRule.UpdatedAt.ColumnName().String()] = time.Now()
 
-	if _, err := qs.Where(query.Use(r.db).LifecycleRule.BucketID.Eq(bucketID), query.Use(r.db).LifecycleRule.ID.Eq(ruleID)).Updates(updates); err != nil {
+	if _, err := qs.Where(r.q.LifecycleRule.BucketID.Eq(bucketID), r.q.LifecycleRule.ID.Eq(ruleID)).Updates(updates); err != nil {
 		return nil, repoerr.Wrap(err)
 	}
 
@@ -148,13 +149,13 @@ func (r *LifecycleRepo) UpdateLifecycleRule(ctx context.Context, bucketID, ruleI
 }
 
 func (r *LifecycleRepo) DeleteLifecycleRule(ctx context.Context, bucketID, ruleID int64) error {
-	modelRule, err := query.Use(r.db).LifecycleRule.WithContext(ctx).Where(query.Use(r.db).LifecycleRule.BucketID.Eq(bucketID), query.Use(r.db).LifecycleRule.ID.Eq(ruleID)).First()
+	modelRule, err := r.q.LifecycleRule.WithContext(ctx).Where(r.q.LifecycleRule.BucketID.Eq(bucketID), r.q.LifecycleRule.ID.Eq(ruleID)).First()
 	if err != nil {
 		return repoerr.Wrap(err)
 	}
 	if modelRule == nil {
 		return repoerr.Wrap(errors.New("lifecycle rule not found"))
 	}
-	_, err = query.Use(r.db).LifecycleRule.WithContext(ctx).Delete(modelRule)
+	_, err = r.q.LifecycleRule.WithContext(ctx).Delete(modelRule)
 	return repoerr.Wrap(err)
 }

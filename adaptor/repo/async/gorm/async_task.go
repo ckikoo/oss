@@ -18,6 +18,7 @@ import (
 
 type AsyncTaskRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ async.IAsyncTaskRepo = (*AsyncTaskRepo)(nil)
@@ -25,11 +26,16 @@ var _ async.IAsyncTaskRepo = (*AsyncTaskRepo)(nil)
 func NewAsyncTaskRepo(db *gorm.DB) async.IAsyncTaskRepo {
 	return &AsyncTaskRepo{
 		db: db,
+		q:  query.Use(db),
 	}
 }
 
 func (r *AsyncTaskRepo) WithTx(tx tx.Tx) async.IAsyncTaskRepo {
-	return &AsyncTaskRepo{db: tx.(*gorm.DB)}
+	txDB, _ := tx.(*gorm.DB)
+	return &AsyncTaskRepo{
+		db: txDB,
+		q:  query.Use(txDB),
+	}
 }
 
 func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyncTask) (int64, error) {
@@ -62,7 +68,7 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 		modelTask.LastError = &task.LastError
 	}
 
-	err := r.db.WithContext(ctx).Model(&model.AsyncTask{}).Create(modelTask).Error
+	err := r.q.AsyncTask.WithContext(ctx).Create(modelTask)
 	if err != nil {
 		wrapped := repoerr.Wrap(err)
 		if errors.Is(wrapped, repoerr.ErrDuplicate) {
@@ -79,7 +85,7 @@ func (r *AsyncTaskRepo) CreateAsyncTask(ctx context.Context, task *do.CreateAsyn
 }
 
 func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do.AsyncTaskDo, error) {
-	q := query.Use(r.db)
+	q := r.q
 	modelTask, err := q.AsyncTask.WithContext(ctx).Where(q.AsyncTask.ID.Eq(taskID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -301,7 +307,7 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, updat
 }
 
 func (r *AsyncTaskRepo) getAsyncTaskByBiz(ctx context.Context, taskType string, bizID string) (*do.AsyncTaskDo, error) {
-	q := query.Use(r.db).AsyncTask
+	q := r.q.AsyncTask
 	modelTask, err := q.WithContext(ctx).
 		Where(q.TaskType.Eq(taskType), q.BizID.Eq(bizID)).
 		First()

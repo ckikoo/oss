@@ -26,6 +26,7 @@ import (
 
 type AccessKeyRepo struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
@@ -36,6 +37,7 @@ var _ accesskey.IAccessKeyRepo = (*AccessKeyRepo)(nil)
 func NewAccessKeyRepo(a adaptor.IAdaptor) *AccessKeyRepo {
 	return &AccessKeyRepo{
 		db:           a.GetGORM(),
+		q:            query.Use(a.GetGORM()),
 		rds:          a.GetRedis(),
 		g:            &singleflight.Group{},
 		cacheManager: a.GetCache(),
@@ -43,8 +45,10 @@ func NewAccessKeyRepo(a adaptor.IAdaptor) *AccessKeyRepo {
 }
 
 func (r *AccessKeyRepo) WithTx(tx tx.Tx) accesskey.IAccessKeyRepo {
+	txDB, _ := tx.(*gorm.DB)
 	return &AccessKeyRepo{
-		db:           tx.(*gorm.DB),
+		db:           txDB,
+		q:            query.Use(txDB),
 		rds:          r.rds,
 		g:            r.g,
 		cacheManager: r.cacheManager,
@@ -204,7 +208,7 @@ func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccess
 		Status:     consts.AccessKeyStatusEnable,
 		CreatedAt:  time.Now(),
 	}
-	qs := query.Use(r.db).AccessKey.WithContext(ctx)
+	qs := r.q.AccessKey.WithContext(ctx)
 	err := qs.Create(modelAK)
 	if err != nil {
 		return 0, repoerr.Wrap(err)
@@ -217,7 +221,7 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 
 	return r.getByKey(ctx, cacheKey, func() (*do.AccessKeyDo, error) {
 		// Cache miss, query database
-		q := query.Use(r.db)
+		q := r.q
 		qs := q.AccessKey.WithContext(ctx)
 		modelAK, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).First()
 		if err != nil {
@@ -228,14 +232,14 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 }
 
 func (r *AccessKeyRepo) CheckAccessKeyAndSecret(ctx context.Context, accessKey string, secretKeyHash string) bool {
-	qs := query.Use(r.db).AccessKey
+	qs := r.q.AccessKey
 
 	count, _ := qs.WithContext(ctx).Where(qs.SecretKey.Eq(secretKeyHash), qs.AccessKey.Eq(accessKey)).Count()
 	return count > 0
 }
 
 func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.AccessKeyDo, error) {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	if userID > 0 {
 		qs = qs.Where(q.AccessKey.UserID.Eq(userID))
@@ -255,7 +259,7 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 }
 
 func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, status int32) (*do.AccessKeyDo, error) {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Update(q.AccessKey.Status, status)
 	if err != nil {
@@ -269,7 +273,7 @@ func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, stat
 }
 
 func (r *AccessKeyRepo) DeleteAccessKey(ctx context.Context, accessKey string) error {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Delete()
 	if err != nil {

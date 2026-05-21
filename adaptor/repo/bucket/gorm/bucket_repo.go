@@ -26,6 +26,7 @@ import (
 
 type BucketRepo struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager // 只是持有
 	g            *singleflight.Group
@@ -35,6 +36,7 @@ var _ bucket.IBucketRepo = (*BucketRepo)(nil)
 
 func NewBucketRepo(a adaptor.IAdaptor) *BucketRepo {
 	return &BucketRepo{
+		q:            query.Use(a.GetGORM()),
 		db:           a.GetGORM(),
 		rds:          a.GetRedis(),
 		g:            &singleflight.Group{},
@@ -44,8 +46,9 @@ func NewBucketRepo(a adaptor.IAdaptor) *BucketRepo {
 
 func (r *BucketRepo) WithTx(tx tx.Tx) bucket.IBucketRepo {
 	return &BucketRepo{
+		q:            query.Use(tx.(*gorm.DB)),
 		db:           tx.(*gorm.DB),
-		rds:          r.rds, // Reuse redis client in tx context
+		rds:          r.rds,
 		g:            r.g,
 		cacheManager: r.cacheManager,
 	}
@@ -181,7 +184,7 @@ func (r *BucketRepo) getByKey(
 func (r *BucketRepo) CreateBucket(ctx context.Context, bucket *do.CreateBucket) (int64, error) {
 	var err error
 
-	q := query.Use(r.db).Bucket
+	q := r.q.Bucket
 
 	modelBucket := &model.Bucket{
 		UserID:       bucket.UserID,
@@ -214,8 +217,8 @@ func (r *BucketRepo) GetByUserAndName(ctx context.Context, userID int64, name st
 
 	return r.getByKey(ctx, cacheKey, func() (*do.BucketDo, error) {
 		// Cache miss, query database
-		q := query.Use(r.db)
-		modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).First()
+		q := r.q.Bucket
+		modelBucket, err := q.WithContext(ctx).Where(q.UserID.Eq(userID), q.Name.Eq(name)).First()
 		if err != nil {
 			return nil, repoerr.Wrap(err)
 		}
@@ -230,8 +233,8 @@ func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error
 
 	return r.getByKey(ctx, cacheKey, func() (*do.BucketDo, error) {
 		// Cache miss, query database
-		q := query.Use(r.db)
-		modelBucket, err := q.Bucket.WithContext(ctx).Where(q.Bucket.ID.Eq(id)).First()
+		q := r.q.Bucket
+		modelBucket, err := q.WithContext(ctx).Where(q.ID.Eq(id)).First()
 		if err != nil {
 			return nil, repoerr.Wrap(err)
 		}
@@ -243,15 +246,15 @@ func (r *BucketRepo) GetByID(ctx context.Context, id int64) (*do.BucketDo, error
 
 func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.BucketDo, error) {
 	// Cache miss or filtered query, query database
-	q := query.Use(r.db)
-	qs := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID))
+	q := r.q.Bucket
+	qs := q.WithContext(ctx).Where(q.UserID.Eq(userID))
 	if status > 0 {
-		qs = qs.Where(q.Bucket.Status.Eq(status))
+		qs = qs.Where(q.Status.Eq(status))
 	} else {
-		qs = qs.Where(q.Bucket.Status.Neq(consts.BucketStatusDeleted))
+		qs = qs.Where(q.Status.Neq(consts.BucketStatusDeleted))
 	}
 
-	modelBuckets, err := qs.Order(q.Bucket.ID.Desc()).Find()
+	modelBuckets, err := qs.Order(q.ID.Desc()).Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -265,7 +268,7 @@ func (r *BucketRepo) ListByFilter(ctx context.Context, userID int64, status int3
 }
 
 func (r *BucketRepo) UpdateBucket(ctx context.Context, userID int64, id int64, name string, update *do.UpdateBucket) (*do.BucketDo, error) {
-	qs := query.Use(r.db).Bucket
+	qs := r.q.Bucket
 
 	updates := map[string]interface{}{}
 	if update.Acl != nil {
@@ -301,8 +304,8 @@ func (r *BucketRepo) UpdateBucket(ctx context.Context, userID int64, id int64, n
 }
 
 func (r *BucketRepo) DeleteBucket(ctx context.Context, userID int64, id int64, name string) error {
-	q := query.Use(r.db)
-	_, err := q.Bucket.WithContext(ctx).Where(q.Bucket.UserID.Eq(userID), q.Bucket.Name.Eq(name)).Update(q.Bucket.Status, consts.BucketStatusDeleted)
+	q := r.q.Bucket
+	_, err := q.WithContext(ctx).Where(q.UserID.Eq(userID), q.Name.Eq(name)).Update(q.Status, consts.BucketStatusDeleted)
 	if err != nil {
 		return repoerr.Wrap(err) // ← 失败直接返回，不失效缓存
 	}
@@ -318,7 +321,7 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucket
 		return repoerr.Wrap(err)
 	}
 
-	q := query.Use(r.db).Bucket
+	q := r.q.Bucket
 
 	updateMap := map[string]interface{}{}
 

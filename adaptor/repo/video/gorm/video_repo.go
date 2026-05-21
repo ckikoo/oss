@@ -19,16 +19,17 @@ import (
 
 type VideoRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ video.IVideoRepo = (*VideoRepo)(nil)
 
 func NewVideoRepo(db *gorm.DB) video.IVideoRepo {
-	return &VideoRepo{db: db}
+	return &VideoRepo{db: db, q: query.Use(db)}
 }
 
 func (r *VideoRepo) WithTx(tx tx.Tx) video.IVideoRepo {
-	return &VideoRepo{db: tx.(*gorm.DB)}
+	return &VideoRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 
 func (r *VideoRepo) CreateTranscode(ctx context.Context, in *do.CreateVideoTranscode) (*do.VideoTranscodeDo, error) {
@@ -71,7 +72,7 @@ func (r *VideoRepo) CreateTranscode(ctx context.Context, in *do.CreateVideoTrans
 }
 
 func (r *VideoRepo) GetTranscodeByObjectVersion(ctx context.Context, objectID int64, versionID string) (*do.VideoTranscodeDo, error) {
-	q := query.Use(r.db).VideoTranscode
+	q := r.q.VideoTranscode
 	modelTranscode, err := q.WithContext(ctx).
 		Where(q.ObjectID.Eq(objectID), q.VersionID.Eq(versionID)).
 		First()
@@ -82,7 +83,7 @@ func (r *VideoRepo) GetTranscodeByObjectVersion(ctx context.Context, objectID in
 }
 
 func (r *VideoRepo) GetTranscodeByID(ctx context.Context, transcodeID int64) (*do.VideoTranscodeDo, error) {
-	q := query.Use(r.db).VideoTranscode
+	q := r.q.VideoTranscode
 	modelTranscode, err := q.WithContext(ctx).
 		Where(q.ID.Eq(transcodeID)).
 		First()
@@ -107,7 +108,7 @@ func (r *VideoRepo) MarkProfilesDeleted(ctx context.Context, transcodeID int64) 
 	if transcodeID <= 0 {
 		return repoerr.ErrInvalidData
 	}
-	q := query.Use(r.db).VideoTranscodeProfile
+	q := r.q.VideoTranscodeProfile
 	now := time.Now()
 	_, err := q.WithContext(ctx).Where(q.TranscodeID.Eq(transcodeID), q.Status.Neq(consts.TranscodeStatusDeleted)).Updates(map[string]interface{}{
 		q.Status.ColumnName().String():     consts.TranscodeStatusDeleted,
@@ -164,7 +165,7 @@ func (r *VideoRepo) CreateProfiles(ctx context.Context, transcodeID int64, profi
 		return nil, repoerr.Wrap(err)
 	}
 
-	q := query.Use(r.db).VideoTranscodeProfile
+	q := r.q.VideoTranscodeProfile
 	modelResult, err := q.WithContext(ctx).
 		Where(q.TranscodeID.Eq(transcodeID), q.Profile.In(profileNames...)).
 		Order(q.Height.Desc(), q.ID.Asc()).
@@ -176,7 +177,7 @@ func (r *VideoRepo) CreateProfiles(ctx context.Context, transcodeID int64, profi
 }
 
 func (r *VideoRepo) GetProfileByID(ctx context.Context, profileID int64) (*do.VideoProfileDo, error) {
-	q := query.Use(r.db).VideoTranscodeProfile
+	q := r.q.VideoTranscodeProfile
 	modelProfile, err := q.WithContext(ctx).Where(q.ID.Eq(profileID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -185,7 +186,7 @@ func (r *VideoRepo) GetProfileByID(ctx context.Context, profileID int64) (*do.Vi
 }
 
 func (r *VideoRepo) ListProfiles(ctx context.Context, transcodeID int64) ([]*do.VideoProfileDo, error) {
-	q := query.Use(r.db).VideoTranscodeProfile
+	q := r.q.VideoTranscodeProfile
 	modelProfiles, err := q.WithContext(ctx).
 		Where(q.TranscodeID.Eq(transcodeID)).
 		Order(q.Height.Desc(), q.ID.Asc()).
@@ -197,7 +198,7 @@ func (r *VideoRepo) ListProfiles(ctx context.Context, transcodeID int64) ([]*do.
 }
 
 func (r *VideoRepo) ListDoneProfiles(ctx context.Context, transcodeID int64) ([]*do.VideoProfileDo, error) {
-	q := query.Use(r.db).VideoTranscodeProfile
+	q := r.q.VideoTranscodeProfile
 	modelProfiles, err := q.WithContext(ctx).
 		Where(q.TranscodeID.Eq(transcodeID), q.Status.Eq(consts.TranscodeStatusDone)).
 		Order(q.Height.Desc(), q.ID.Asc()).
@@ -256,7 +257,7 @@ func (r *VideoRepo) SaveEncryptKey(ctx context.Context, in *do.CreateVideoEncryp
 }
 
 func (r *VideoRepo) GetEncryptKeyByKeyID(ctx context.Context, keyID string) (*do.VideoEncryptKeyDo, error) {
-	q := query.Use(r.db).VideoEncryptKey
+	q := r.q.VideoEncryptKey
 	modelKey, err := q.WithContext(ctx).Where(q.KeyID.Eq(keyID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -265,7 +266,7 @@ func (r *VideoRepo) GetEncryptKeyByKeyID(ctx context.Context, keyID string) (*do
 }
 
 func (r *VideoRepo) GetEncryptKeyByProfileID(ctx context.Context, profileID int64) (*do.VideoEncryptKeyDo, error) {
-	q := query.Use(r.db).VideoEncryptKey
+	q := r.q.VideoEncryptKey
 	modelKey, err := q.WithContext(ctx).Where(q.ProfileID.Eq(profileID)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -463,7 +464,7 @@ func (r *VideoRepo) DeleteEncryptKeysByTranscodeID(ctx context.Context, transcod
 	if transcodeID <= 0 {
 		return repoerr.ErrInvalidData
 	}
-	q := query.Use(r.db).VideoEncryptKey
+	q := r.q.VideoEncryptKey
 	_, err := q.WithContext(ctx).Where(q.TranscodeID.Eq(transcodeID)).Delete()
 	return repoerr.Wrap(err)
 }

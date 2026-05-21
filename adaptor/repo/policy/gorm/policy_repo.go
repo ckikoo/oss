@@ -19,20 +19,21 @@ import (
 
 type PolicyRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ policy.IPolicyRepo = (*PolicyRepo)(nil)
 
 func NewPolicyRepo(adaptor adaptor.IAdaptor) *PolicyRepo {
-	return &PolicyRepo{db: adaptor.GetGORM()}
+	return &PolicyRepo{db: adaptor.GetGORM(), q: query.Use(adaptor.GetGORM())}
 }
 
 func (r *PolicyRepo) WithTx(tx tx.Tx) policy.IPolicyRepo {
-	return &PolicyRepo{db: tx.(*gorm.DB)}
+	return &PolicyRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 
 func (r *PolicyRepo) CreateBucketPolicy(ctx context.Context, bucketID int64, policy *do.CreateBucketPolicy) (int64, error) {
-	q := query.Use(r.db)
+	q := r.q
 	var policyID int64
 	err := q.Transaction(func(tx *query.Query) error {
 		modelPolicy := &model.BucketPolicy{
@@ -114,8 +115,8 @@ func (r *PolicyRepo) CreateBucketPolicy(ctx context.Context, bucketID int64, pol
 }
 
 func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]*do.BucketPolicyDo, error) {
-	q := query.Use(r.db)
-	modelPolicies, err := q.BucketPolicy.WithContext(ctx).Where(q.BucketPolicy.BucketID.Eq(bucketID)).Order(q.BucketPolicy.ID.Desc()).Find()
+	q := r.q.BucketPolicy
+	modelPolicies, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID)).Order(q.ID.Desc()).Find()
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +146,7 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 		idx := idx
 		modelPolicy := modelPolicy
 		if err := p.RunGo(func() {
-			localQ := query.Use(r.db)
+			localQ := r.q
 
 			principals, err := localQ.PolicyPrincipal.WithContext(ctx).Where(localQ.PolicyPrincipal.PolicyID.Eq(modelPolicy.ID)).Find()
 			if err != nil {
@@ -224,7 +225,7 @@ func (r *PolicyRepo) ListBucketPolicies(ctx context.Context, bucketID int64) ([]
 
 func (r *PolicyRepo) ListPoliciesWithSubTablesByBucketID(ctx context.Context, bucketID int64) ([]*do.BucketPolicyDo, error) {
 
-	q := query.Use(r.db)
+	q := r.q
 
 	records, err := q.BucketPolicy.WithContext(ctx).
 		Where(q.BucketPolicy.BucketID.Eq(bucketID)).

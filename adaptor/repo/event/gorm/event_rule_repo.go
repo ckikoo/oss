@@ -14,19 +14,20 @@ import (
 
 type eventRuleRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ event.IEventRuleRepo = (*eventRuleRepo)(nil)
 
 func NewEventRuleRepo(db *gorm.DB) event.IEventRuleRepo {
-	return &eventRuleRepo{db: db}
+	return &eventRuleRepo{db: db, q: query.Use(db)}
 }
 
 func (r *eventRuleRepo) WithTx(tx tx.Tx) event.IEventRuleRepo {
-	return &eventRuleRepo{db: tx.(*gorm.DB)}
+	return &eventRuleRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 func (r *eventRuleRepo) CreateEventRule(ctx context.Context, rule *do.EventRuleDo) (int64, error) {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 	model := &model.EventRule{
 		BucketID:   rule.BucketID,
 		RuleName:   rule.RuleName,
@@ -49,7 +50,7 @@ func (r *eventRuleRepo) CreateEventRule(ctx context.Context, rule *do.EventRuleD
 
 func (r *eventRuleRepo) GetByID(ctx context.Context, ruleID int64) (*do.EventRuleDo, error) {
 
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 
 	model, err := q.WithContext(ctx).Where(q.ID.Eq(ruleID)).First()
 	if err != nil {
@@ -76,7 +77,7 @@ func (r *eventRuleRepo) GetByID(ctx context.Context, ruleID int64) (*do.EventRul
 }
 
 func (r *eventRuleRepo) GetByBucketIDAndRuleName(ctx context.Context, bucketID int64, ruleName string) (*do.EventRuleDo, error) {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 	model, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID), (q.RuleName.Eq(ruleName))).First()
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -102,7 +103,7 @@ func (r *eventRuleRepo) GetByBucketIDAndRuleName(ctx context.Context, bucketID i
 }
 
 func (r *eventRuleRepo) ListByBucketID(ctx context.Context, bucketID int64) ([]*do.EventRuleDo, error) {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 	list, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID)).Order(q.CreatedAt.Desc()).Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -130,7 +131,7 @@ func (r *eventRuleRepo) ListByBucketID(ctx context.Context, bucketID int64) ([]*
 }
 
 func (r *eventRuleRepo) ListActiveRulesByBucketID(ctx context.Context, bucketID int64) ([]*do.EventRuleDo, error) {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 
 	models, err := q.WithContext(ctx).Where(q.BucketID.Eq(bucketID), (q.Status.Eq(1))).Find()
 	if err != nil {
@@ -159,7 +160,7 @@ func (r *eventRuleRepo) ListActiveRulesByBucketID(ctx context.Context, bucketID 
 }
 
 func (r *eventRuleRepo) UpdateEventRule(ctx context.Context, ruleID int64, update *do.UpdateEventRule) error {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 	model := make(map[string]interface{})
 
 	if update.RuleName != nil {
@@ -195,7 +196,7 @@ func (r *eventRuleRepo) UpdateEventRule(ctx context.Context, ruleID int64, updat
 }
 
 func (r *eventRuleRepo) DeleteEventRule(ctx context.Context, ruleID int64) error {
-	q := query.Use(r.db).EventRule
+	q := r.q.EventRule
 
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(ruleID)).Delete()
 	if err != nil {

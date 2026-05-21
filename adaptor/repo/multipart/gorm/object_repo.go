@@ -19,20 +19,21 @@ import (
 
 type ObjectRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ multipart.IMultipartRepo = (*ObjectRepo)(nil)
 
 func NewObjectRepo(db *gorm.DB) *ObjectRepo {
-	return &ObjectRepo{db: db}
+	return &ObjectRepo{db: db, q: query.Use(db)}
 }
 
 func (r *ObjectRepo) WithTx(tx tx.Tx) multipart.IMultipartRepo {
-	return &ObjectRepo{db: tx.(*gorm.DB)}
+	return &ObjectRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 
 func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.CreateMultipartUpload) (int64, error) {
-	qs := query.Use(r.db).MultipartUpload
+	qs := r.q.MultipartUpload
 	modelUpload := &model.MultipartUpload{
 		UploadID:      upload.UploadID,
 		BucketID:      upload.BucketID,
@@ -56,7 +57,7 @@ func (r *ObjectRepo) CreateMultipartUpload(ctx context.Context, upload *do.Creat
 }
 
 func (r *ObjectRepo) GetMultipartUploadByID(ctx context.Context, userId int64, uploadID string) (*do.MultipartUploadDo, error) {
-	q := query.Use(r.db).MultipartUpload
+	q := r.q.MultipartUpload
 
 	expr := q.WithContext(ctx).Where(q.UploadID.Eq(uploadID))
 	if userId != 0 {
@@ -177,7 +178,7 @@ func (r *ObjectRepo) GetMultipartPart(ctx context.Context, userID int64, uploadI
 		return nil, repoerr.ErrNotFound
 	}
 
-	q := query.Use(r.db)
+	q := r.q
 	modelPart, err := q.MultipartPart.WithContext(ctx).Where(q.MultipartPart.UploadID.Eq(uploadID), q.MultipartPart.PartNumber.Eq(partNumber)).First()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
@@ -204,7 +205,7 @@ func (r *ObjectRepo) ListMultipartParts(ctx context.Context, userID int64, uploa
 		return nil, repoerr.ErrNotFound
 	}
 
-	q := query.Use(r.db)
+	q := r.q
 	modelParts, err := q.MultipartPart.WithContext(ctx).Where(q.MultipartPart.UploadID.Eq(uploadID)).Order(q.MultipartPart.PartNumber).Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)

@@ -65,6 +65,7 @@ func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) 
 	playGroup.OPTIONS("/video/*cors_path", func(ctx context.Context, c *app.RequestContext) {
 		c.AbortWithStatus(204)
 	})
+
 	registerVideoPlaybackRoutes(playGroup, deps)
 
 	authGroup := h.Group(

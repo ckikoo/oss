@@ -16,19 +16,20 @@ import (
 
 type eventDeliveryRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ event.IEventDeliveryRepo = (*eventDeliveryRepo)(nil)
 
 func NewEventDeliveryRepo(db *gorm.DB) event.IEventDeliveryRepo {
-	return &eventDeliveryRepo{db: db}
+	return &eventDeliveryRepo{db: db, q: query.Use(db)}
 }
 
 func (r *eventDeliveryRepo) WithTx(tx tx.Tx) event.IEventDeliveryRepo {
-	return &eventDeliveryRepo{db: tx.(*gorm.DB)}
+	return &eventDeliveryRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 func (r *eventDeliveryRepo) CreateEventDelivery(ctx context.Context, delivery *do.EventDeliveryDo) (int64, error) {
-	q := query.Use(r.db).EventDelivery
+	q := r.q.EventDelivery
 
 	model := &model.EventDelivery{
 		RuleID:    delivery.RuleID,
@@ -106,7 +107,7 @@ func (r *eventDeliveryRepo) GetEventDeliveryByID(ctx context.Context, deliveryID
 }
 
 func (r *eventDeliveryRepo) UpdateEventDelivery(ctx context.Context, deliveryID int64, update *do.UpdateEventDelivery) error {
-	q := query.Use(r.db).EventDelivery
+	q := r.q.EventDelivery
 	model := make(map[string]interface{})
 
 	if update.Status != nil {
@@ -133,7 +134,7 @@ func (r *eventDeliveryRepo) UpdateEventDelivery(ctx context.Context, deliveryID 
 }
 
 func (r *eventDeliveryRepo) DeleteEventDelivery(ctx context.Context, deliveryID int64) error {
-	q := query.Use(r.db).EventDelivery
+	q := r.q.EventDelivery
 	_, err := q.WithContext(ctx).Where(q.ID.Eq(deliveryID)).Delete()
 	return repoerr.Wrap(err)
 }

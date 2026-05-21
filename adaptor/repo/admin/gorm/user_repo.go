@@ -26,6 +26,7 @@ import (
 
 type User struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
@@ -36,15 +37,18 @@ var _ admin.IUser = (*User)(nil)
 func NewUserRepo(a adaptor.IAdaptor) *User {
 	return &User{
 		db:           a.GetGORM(),
+		q:            query.Use(a.GetGORM()),
 		rds:          a.GetRedis(),
-		cacheManager: a.GetCache(),
 		g:            &singleflight.Group{},
+		cacheManager: a.GetCache(),
 	}
 }
 
 func (u *User) WithTx(tx tx.Tx) admin.IUser {
+	txDB, _ := tx.(*gorm.DB)
 	return &User{
-		db:           tx.(*gorm.DB),
+		db:           txDB,
+		q:            query.Use(txDB),
 		rds:          u.rds,
 		cacheManager: u.cacheManager,
 		g:            u.g,
@@ -52,7 +56,7 @@ func (u *User) WithTx(tx tx.Tx) admin.IUser {
 }
 
 func (u *User) CreateUser(ctx context.Context, req *do.CreateUser) (int64, error) {
-	qs := query.Use(u.db).User
+	qs := u.q.User
 
 	timeNow := time.Now()
 
@@ -76,7 +80,7 @@ func (u *User) GetUserInfoById(ctx context.Context, id int64) (*do.UserDo, error
 	cacheKey := consts.UserCacheKeyByID(id)
 
 	return u.getByKey(ctx, cacheKey, func() (*do.UserDo, error) {
-		qs := query.Use(u.db).User
+		qs := u.q.User
 
 		uinfo, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).First()
 		if err != nil {
@@ -97,7 +101,7 @@ func (u *User) GetUserInfoById(ctx context.Context, id int64) (*do.UserDo, error
 
 func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) error {
 
-	qs := query.Use(u.db).User
+	qs := u.q.User
 	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumnSimple(qs.StorageUsed.Add(storage))
 	if err != nil {
 		fmt.Printf("gorm update error: %v\n", err)

@@ -16,17 +16,19 @@ import (
 
 type MeteringRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ metering.IMeteringRepo = (*MeteringRepo)(nil)
 
 func NewMeteringRepo(db *gorm.DB) *MeteringRepo {
-	return &MeteringRepo{db: db}
+	return &MeteringRepo{db: db, q: query.Use(db)}
 }
 
 func (r *MeteringRepo) WithTx(tx tx.Tx) metering.IMeteringRepo {
-	return &MeteringRepo{db: tx.(*gorm.DB)}
+	return &MeteringRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
+
 func (r *MeteringRepo) UpdateDailyMetrics(ctx context.Context, userID int64, bucketID *int64, statDate time.Time, deltaStorageSize, deltaObjectCount, deltaUploadFlow, deltaDownloadFlow, deltaGetRequestCount, deltaPutRequestCount, deltaDelRequestCount int64) error {
 	if userID <= 0 {
 		return fmt.Errorf("user_id must be positive")
@@ -82,25 +84,25 @@ func (r *MeteringRepo) upsertDailyMetrics(ctx context.Context, db *gorm.DB, user
 }
 
 func (r *MeteringRepo) ListDailyMetrics(ctx context.Context, userID int64, bucketID int64, hasBucketID bool, dateFrom, dateTo *time.Time) ([]*model.MeteringDaily, error) {
-	q := query.Use(r.db)
-	qs := q.MeteringDaily.WithContext(ctx)
+	q := r.q.MeteringDaily
+	qs := q.WithContext(ctx)
 	if userID > 0 {
-		qs = qs.Where(q.MeteringDaily.UserID.Eq(userID))
+		qs = qs.Where(q.UserID.Eq(userID))
 	}
 	if hasBucketID {
 		if bucketID > 0 {
-			qs = qs.Where(q.MeteringDaily.BucketID.Eq(bucketID))
+			qs = qs.Where(q.BucketID.Eq(bucketID))
 		} else {
-			qs = qs.Where(q.MeteringDaily.BucketID.IsNull())
+			qs = qs.Where(q.BucketID.IsNull())
 		}
 	}
 	if dateFrom != nil {
-		qs = qs.Where(q.MeteringDaily.StatDate.Gte(*dateFrom))
+		qs = qs.Where(q.StatDate.Gte(*dateFrom))
 	}
 	if dateTo != nil {
-		qs = qs.Where(q.MeteringDaily.StatDate.Lte(*dateTo))
+		qs = qs.Where(q.StatDate.Lte(*dateTo))
 	}
-	qs = qs.Order(q.MeteringDaily.StatDate)
+	qs = qs.Order(q.StatDate)
 	item, err := qs.Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)

@@ -20,7 +20,7 @@ import (
 func main() {
 	config := config.InitConfig()
 	logger.SetLogLevel(config.Server.LogLevel)
-
+	fmt.Printf("config: %+v\n", config)
 	db, err := bootstrap.InitMySQL(&config.Mysql)
 	bootstrap.HandleFatal(err)
 	defer db.Close()

@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"oss/config"
 	"oss/utils/logger"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
@@ -42,6 +44,30 @@ func InitMySQL(conf *config.Mysql) (*sql.DB, error) {
 
 	sqlDB.SetMaxIdleConns(conf.MaxIdle)
 	sqlDB.SetMaxOpenConns(conf.MaxOpen)
+	sqlDB.SetConnMaxLifetime(3 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			s := sqlDB.Stats()
+			log.Printf(
+				"db stats: db=%p sqlDB=%p maxOpen=%d open=%d inuse=%d idle=%d wait=%d waitDuration=%s maxIdleClosed=%d maxLifetimeClosed=%d",
+				sqlDB,
+				sqlDB,
+				s.MaxOpenConnections,
+				s.OpenConnections,
+				s.InUse,
+				s.Idle,
+				s.WaitCount,
+				s.WaitDuration,
+				s.MaxIdleClosed,
+				s.MaxLifetimeClosed,
+			)
+		}
+	}()
 	return sqlDB, nil
 }
 

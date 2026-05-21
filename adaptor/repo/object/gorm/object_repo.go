@@ -26,6 +26,7 @@ import (
 
 type objectRepo struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
@@ -35,6 +36,7 @@ var _ object.IObjectRepo = (*objectRepo)(nil)
 
 func NewObjectRepo(a adaptor.IAdaptor) object.IObjectRepo {
 	return &objectRepo{
+		q:            query.Use(a.GetGORM()),
 		db:           a.GetGORM(),
 		rds:          a.GetRedis(),
 		cacheManager: a.GetCache(),
@@ -44,6 +46,7 @@ func NewObjectRepo(a adaptor.IAdaptor) object.IObjectRepo {
 
 func (r *objectRepo) WithTx(tx tx.Tx) object.IObjectRepo {
 	return &objectRepo{
+		q:            query.Use(tx.(*gorm.DB)),
 		db:           tx.(*gorm.DB),
 		rds:          r.rds,
 		cacheManager: r.cacheManager,

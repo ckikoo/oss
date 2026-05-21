@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -249,6 +250,7 @@ func setCORSHeaders(c *app.RequestContext, origin string, methods []string, head
 }
 
 func abortCORS(c *app.RequestContext, errno common.Errno) {
+	fmt.Println("??")
 	c.JSON(403, errno)
 	c.Abort()
 }

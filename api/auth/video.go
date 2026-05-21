@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"io"
 	"oss/adaptor"
 	"oss/api"
 	"oss/common"
@@ -141,6 +140,7 @@ func writeHLSContent(c *app.RequestContext, content *video.HLSContent, errno com
 		writeHLSError(c, errno)
 		return
 	}
+
 	if content == nil || content.Body == nil {
 		writeHLSError(c, common.ServerErr.WithMsg("empty HLS content"))
 		return
@@ -149,9 +149,10 @@ func writeHLSContent(c *app.RequestContext, content *video.HLSContent, errno com
 
 	c.Header("Content-Type", content.ContentType)
 	c.Header("Cache-Control", "no-store")
-	if _, err := io.Copy(c.Response.BodyWriter(), content.Body); err != nil {
-		writeHLSError(c, common.ServerErr.WithErr(err))
-	}
+	c.Response.SetBodyStream(content.Body, -1)
+	// if _, err := io.Copy(c.Response.BodyWriter(), content.Body); err != nil {
+	// 	writeHLSError(c, common.ServerErr.WithErr(err))
+	// }
 }
 
 func writeHLSError(c *app.RequestContext, errno common.Errno) {

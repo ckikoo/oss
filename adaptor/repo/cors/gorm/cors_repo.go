@@ -27,6 +27,7 @@ import (
 
 type BucketCorsRepo struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
@@ -36,6 +37,7 @@ var _ corsrepo.IBucketCorsRepo = (*BucketCorsRepo)(nil)
 
 func NewBucketCorsRepo(adaptor adaptor.IAdaptor) *BucketCorsRepo {
 	return &BucketCorsRepo{
+		q:            query.Use(adaptor.GetGORM()),
 		db:           adaptor.GetGORM(),
 		rds:          adaptor.GetRedis(),
 		cacheManager: adaptor.GetCache(),
@@ -45,6 +47,7 @@ func NewBucketCorsRepo(adaptor adaptor.IAdaptor) *BucketCorsRepo {
 
 func (r *BucketCorsRepo) WithTx(tx tx.Tx) corsrepo.IBucketCorsRepo {
 	return &BucketCorsRepo{
+		q:            query.Use(tx.(*gorm.DB)),
 		db:           tx.(*gorm.DB),
 		rds:          r.rds,
 		cacheManager: r.cacheManager,
@@ -109,7 +112,7 @@ func (r *BucketCorsRepo) Create(ctx context.Context, rule *do.CreateBucketCorsRu
 		return nil, err
 	}
 
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	existingRule, err := q.WithContext(ctx).
 		Where(q.UserID.Eq(modelRule.UserID), q.BucketName.Eq(modelRule.BucketName), q.AllowedOrigin.Eq(modelRule.AllowedOrigin)).
 		First()
@@ -157,7 +160,7 @@ func (r *BucketCorsRepo) Create(ctx context.Context, rule *do.CreateBucketCorsRu
 }
 
 func (r *BucketCorsRepo) ListByBucket(ctx context.Context, userID int64, bucketName string) ([]*do.BucketCorsRuleDo, error) {
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	modelRules, err := q.WithContext(ctx).
 		Where(q.UserID.Eq(userID), q.BucketName.Eq(bucketName), q.Enabled.Eq(1)).
 		Order(q.ID.Desc()).
@@ -192,7 +195,7 @@ func (r *BucketCorsRepo) GetMatchedRule(ctx context.Context, userID int64, bucke
 }
 
 func (r *BucketCorsRepo) getMatchedRuleDB(ctx context.Context, userID int64, bucketName, origin string) (*do.BucketCorsRuleDo, error) {
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	modelRule, err := q.WithContext(ctx).
 		Where(q.UserID.Eq(userID), q.BucketName.Eq(bucketName), q.AllowedOrigin.Eq(origin), q.Enabled.Eq(1)).
 		First()
@@ -203,7 +206,7 @@ func (r *BucketCorsRepo) getMatchedRuleDB(ctx context.Context, userID int64, buc
 }
 
 func (r *BucketCorsRepo) GetByID(ctx context.Context, userID int64, bucketName string, ruleID int64) (*do.BucketCorsRuleDo, error) {
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	modelRule, err := q.WithContext(ctx).
 		Where(q.UserID.Eq(userID), q.BucketName.Eq(bucketName), q.ID.Eq(ruleID), q.Enabled.Eq(1)).
 		First()
@@ -215,7 +218,7 @@ func (r *BucketCorsRepo) GetByID(ctx context.Context, userID int64, bucketName s
 }
 
 func (r *BucketCorsRepo) Update(ctx context.Context, userID int64, bucketName string, ruleID int64, update *do.UpdateBucketCorsRule) (*do.BucketCorsRuleDo, error) {
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	updates := map[string]interface{}{}
 
 	if update.Origin != nil {
@@ -267,7 +270,7 @@ func (r *BucketCorsRepo) Update(ctx context.Context, userID int64, bucketName st
 }
 
 func (r *BucketCorsRepo) Delete(ctx context.Context, userID int64, bucketName string, ruleID int64) error {
-	q := query.Use(r.db).BucketCorsRule
+	q := r.q.BucketCorsRule
 	modelRule, err := q.WithContext(ctx).
 		Where(q.UserID.Eq(userID), q.BucketName.Eq(bucketName), q.ID.Eq(ruleID), q.Enabled.Eq(1)).
 		First()
