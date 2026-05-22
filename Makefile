@@ -1,5 +1,5 @@
 .PHONY: help gen run run-task build build-task clean install-tools
-SOURCE = main.go
+SOURCE = cmd/server/main.go
 BINARY = oss
 TASK_BINARY = oss-task
 TASK_MODE ?= all

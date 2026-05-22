@@ -175,11 +175,23 @@ MD5(part1-etag + part2-etag + ... + partN-etag + "-" + N)
 
 ### Memory Usage
 - Parts are streamed directly to disk
-- No in-memory buffering for large files
-- GetObject uses chunked transfer encoding
+## 缓存考虑（Cache Considerations）
 
-### Concurrent Access
-- Multiple parts can be uploaded simultaneously
+- **结论**：不建议对 `multipart`（包括 `multipart_uploads` 会话和 `multipart_parts` 分片记录）引入全局缓存（如本地 LRU + Redis）。
+
+- **原因**：
+  - 上传过程中元数据和分片频繁写入/更新（`LastActiveAt`、`status`、parts 的频繁覆盖），属于 "写多" 场景；
+  - 完成/Abort/Timeout 等操作要求读取到强一致的最新状态，缓存失效窗口会导致错误判断（例如重复删除物理文件或错误完成）；
+  - 失效逻辑会非常复杂：需要覆盖事务内写、后台定时器、重复上传、部分回滚等多种路径，维护成本高且易出错；
+  - 系统已有机制（Redis timeout list、异步任务队列）用于超时/清理，已满足主要性能需求。
+
+- **替代优化建议**：
+  - 在单个请求范围内使用短生命周期的本地缓存以避免重复 DB 读（request-scoped cache）；
+  - 优化 SQL 索引和查询（例如 `upload_id, part_number` 索引已存在）；
+  - 保持 MySQL 为单一可信数据源，避免为高写数据添加跨实例缓存层；
+  - 如果必须引入缓存，只对只读、读多写少的元数据（例如 object 元数据、video/transcode/profile）做缓存，见 [VIDEO_CACHE_DESIGN.md](VIDEO_CACHE_DESIGN.md)。
+
+以上策略与项目整体的缓存设计保持一致：对稳定的只读数据采用本地+Redis缓存并通过发布/订阅机制做失效，对高写场景保持走 DB 保持简单正确。
 - Complete operation is atomic
 - Read operations are thread-safe
 

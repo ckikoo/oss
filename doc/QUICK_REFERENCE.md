@@ -14,6 +14,12 @@ GET /api/v1/buckets/{bucket}/objects/{key}?token={token}
 
 ---
 
+## 缓存策略（简要）
+
+- 对于稳定的只读元数据（例如 `bucket`、`object` 元数据、`video` 的 transcode/profile 信息），系统采用本地 LRU + Redis 的分层缓存以降低读延迟。写操作会触发失效并通过发布/订阅广播到其他实例，详细设计见 `doc/VIDEO_CACHE_DESIGN.md`。
+- 对于高写且易变的数据（例如 multipart uploads / multipart parts），不使用跨实例缓存，直接以数据库为单一可信数据源；相关考量见 `doc/MULTIPART_GUIDE.md` 的“缓存考虑”节。
+
+
 ## Bucket 操作
 
 ### 创建 Bucket

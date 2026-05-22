@@ -40,6 +40,12 @@
 - **流式处理**: 大文件上传/下载流式处理，避免内存溢出
 - **并发控制**: Redis 分布式锁确保并发安全
 
+## 缓存策略（Cache Strategy）
+
+- 对于**稳定的只读元数据**（例如 `bucket`、`object` 元数据、`video` 的 transcode/profile 信息），系统采用本地 LRU + Redis 的分层缓存，并通过发布/订阅机制在实例间广播失效，详见 [doc/VIDEO_CACHE_DESIGN.md](doc/VIDEO_CACHE_DESIGN.md)。
+- 对于**高写、易变的数据**（例如 multipart uploads / multipart parts），不使用跨实例缓存，直接以数据库为单一信任源；相关考量见 `doc/MULTIPART_GUIDE.md` 的“缓存考虑”节。
+
+
 > **快速链接**：[项目索引](doc/PROJECT_INDEX.md) | [对象版本设计](doc/OBJECT_VERSIONING_DESIGN.md) | [多部分上传](doc/MULTIPART_GUIDE.md) | [权限 API](doc/POLICY_API.md) | [视频处理](doc/video.md)
 
 ## API 认证方式
