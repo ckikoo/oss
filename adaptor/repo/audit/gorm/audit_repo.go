@@ -15,19 +15,20 @@ import (
 
 type OperationLogRepo struct {
 	db *gorm.DB
+	q  *query.Query
 }
 
 var _ audit.IOperationLogRepo = (*OperationLogRepo)(nil)
 
 func NewOperationLogRepo(db *gorm.DB) *OperationLogRepo {
-	return &OperationLogRepo{db: db}
+	return &OperationLogRepo{db: db, q: query.Use(db)}
 }
 
 func (r *OperationLogRepo) WithTx(tx tx.Tx) audit.IOperationLogRepo {
-	return &OperationLogRepo{db: tx.(*gorm.DB)}
+	return &OperationLogRepo{db: tx.(*gorm.DB), q: query.Use(tx.(*gorm.DB))}
 }
 func (r *OperationLogRepo) ListByFilter(ctx context.Context, filter *do.OperationLogFilter) ([]*do.OperationLogDo, int64, error) {
-	ql := query.Use(r.db).OperationLog
+	ql := r.q.OperationLog
 	q := ql.WithContext(ctx)
 	if filter.UserID > 0 {
 		q = q.Where(ql.UserID.Eq(filter.UserID))
@@ -89,5 +90,5 @@ func (r *OperationLogRepo) CreateOperationLog(ctx context.Context, operation *do
 		DurationMs:   operation.DurationMs,
 	}
 
-	return query.Use(r.db).OperationLog.WithContext(ctx).Create(modelLog)
+	return r.q.OperationLog.WithContext(ctx).Create(modelLog)
 }

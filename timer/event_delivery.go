@@ -23,7 +23,7 @@ import (
 
 func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	eventDeliveryRepo := gormEvent.NewEventDeliveryRepo(adaptor.GetGORM())
-	eventRuleRepo := gormEvent.NewEventRuleRepo(adaptor.GetGORM())
+	eventRuleRepo := gormEvent.NewEventRuleRepo(adaptor)
 	eventQueue := redis.NewEventQueue(adaptor)
 
 	deliveryIDs, err := eventQueue.DequeueDeliveryIDs(ctx, 50, time.Second*5)
@@ -33,7 +33,6 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	if len(deliveryIDs) == 0 {
-		log.Info("no pending event deliveries")
 		return
 	}
 

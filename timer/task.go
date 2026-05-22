@@ -13,6 +13,7 @@ import (
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
+	videoSvc "oss/service/video"
 	"oss/utils/pool"
 	"sort"
 	"strconv"
@@ -35,7 +36,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	txManager := adaptor.GetTxManager()
+	videoProcessor := videoSvc.NewProcessor(adaptor)
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
+	videoScheduler := videoSvc.NewScheduler(adaptor)
 	if err != nil {
 		log.Error("timer fail to dequeue task", zap.Error(err))
 		return
@@ -116,7 +119,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 				resourcekey := buildLockKey(consts.ServerName, "multipart", info.BucketName, info.ObjectKey)
 
-				get, err := locker.AcquireLock(ctx, resourcekey, workerID, time.Minute*10)
+				get, err := locker.AcquireLock(taskCtx, resourcekey, workerID, time.Minute*10)
 				if err != nil {
 					log.Error("timer.handlerTask fail to acquire multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey), zap.Int64("taskID", taskID))
 					return
@@ -129,8 +132,9 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						zap.String("uploadID", info.UploadID))
 					return
 				}
+
 				defer func() {
-					if err := locker.ReleaseLock(ctx, resourcekey, workerID); err != nil {
+					if err := locker.ReleaseLock(taskCtx, resourcekey, workerID); err != nil {
 						log.Error("timer.handlerTask fail to release multipart lock", zap.Error(err), zap.String("resourceKey", resourcekey))
 					}
 				}()
@@ -169,7 +173,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						zap.Int64("taskID", taskID),
 					)
 
-					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					writeCtx, cancel := context.WithTimeout(taskCtx, 5*time.Second)
 					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
@@ -207,7 +211,6 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				status := int32(consts.ObjectIsMultipartNormal)
 				physicalStatus := int32(consts.MultipartUploadStatusMergedPhysical)
 				err = txManager.RunInTx(taskCtx, func(ctx context.Context, tx tx.Tx) error {
-
 					fileTxRepo := fileRepo.WithTx(tx)
 					multipartTxRepo := multipart.WithTx(tx)
 
@@ -252,6 +255,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					cancel()
 					return
 				}
+
 				err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
 				if err != nil {
 					log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.Int64("taskID", taskID))
@@ -266,7 +270,66 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 				cancel()
 
+				mergedObj, objErr := fileRepo.GetByKey(taskCtx, info.BucketName, info.ObjectKey, info.VersionID)
+				if objErr != nil {
+					log.Error("timer.handlerTask load merged object for transcode failed",
+						zap.Error(objErr),
+						zap.String("bucket", info.BucketName),
+						zap.String("objectKey", info.ObjectKey),
+						zap.String("versionID", info.VersionID),
+						zap.Int64("taskID", taskID))
+					return
+				}
+				contentType := ""
+				if mergedObj.ContentType != nil {
+					contentType = *mergedObj.ContentType
+				}
+
+				if err := videoScheduler.ScheduleTranscode(taskCtx, &videoSvc.TranscodeSource{
+					UserID:        task.UserId,
+					BucketID:      mergedObj.BucketID,
+					BucketName:    mergedObj.BucketName,
+					ObjectID:      mergedObj.ID,
+					ObjectKey:     mergedObj.ObjectKey,
+					ObjectKeyHash: mergedObj.ObjectKeyHash,
+					VersionID:     mergedObj.VersionID,
+					SourceEtag:    saveInfo.Etag,
+					SourceSize:    saveInfo.Size,
+					ContentType:   contentType,
+					SourcePath:    saveInfo.StoragePath,
+				}); err != nil {
+					log.Warn("timer.handlerTask schedule transcode after physical merge failed",
+						zap.Error(err),
+						zap.String("bucket", info.BucketName),
+						zap.String("objectKey", info.ObjectKey),
+						zap.String("versionID", info.VersionID),
+						zap.Int64("taskID", taskID))
+				}
+			case consts.TaskTypeTranscode:
+				//转码
+				result, err := videoProcessor.HandleTask(taskCtx, task)
+				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err != nil {
+					log.Error("timer.handlerTask transcode task failed",
+						zap.Error(err),
+						zap.Int64("taskID", taskID),
+						zap.String("bizID", task.BizID))
+					if statusErr := updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error()); statusErr != nil {
+						log.Error("timer.handlerTask update transcode task failed status failed",
+							zap.Error(statusErr),
+							zap.Int64("taskID", taskID))
+					}
+					return
+				}
+				if _, err := taskRepo.CompleteAsyncTask(writeCtx, task.ID, result); err != nil {
+					log.Error("timer.handlerTask update transcode task completed failed",
+						zap.Error(err),
+						zap.Int64("taskID", taskID))
+				}
+
 			case consts.TaskTypeAbortMultipart:
+				// 放弃合并
 				if uploadID == "" {
 					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "task biz_id is empty")
 					return

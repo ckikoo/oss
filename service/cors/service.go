@@ -9,6 +9,7 @@ import (
 	bucketgorm "oss/adaptor/repo/bucket/gorm"
 	corsrepo "oss/adaptor/repo/cors"
 	corsgorm "oss/adaptor/repo/cors/gorm"
+	"oss/adaptor/repo/repoerr"
 	"oss/common"
 	"oss/service/do"
 	"oss/service/dto"
@@ -142,7 +143,7 @@ func (srv *Service) CheckBucketCors(ctx context.Context, userID int64, bucketNam
 	}
 
 	rule, err := srv.corsRepo.GetMatchedRule(ctx, userID, bucketName, origin)
-	if err != nil {
+	if err != nil && err != repoerr.ErrNotFound {
 		srv.logger.Error("cors check: get matched bucket cors rule failed",
 			zap.Error(err),
 			zap.Int64("user_id", userID),
@@ -150,6 +151,15 @@ func (srv *Service) CheckBucketCors(ctx context.Context, userID int64, bucketNam
 			zap.String("origin", origin),
 		)
 		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.PermissionErr.WithMsg("bucket cors rule denied"))
+	}
+
+	// 未建立跨域请求，允许任何源
+	if rule == nil {
+		return &dto.BucketCorsCheckResult{
+			AllowedOrigin:  "*",
+			AllowedMethods: []string{omethod},
+			MaxAgeSeconds:  60,
+		}, common.OK
 	}
 
 	hasPass := false

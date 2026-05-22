@@ -4,7 +4,9 @@
 
 package model
 
-import "time"
+import (
+	"time"
+)
 
 const TableNameAsyncTask = "async_tasks"
 

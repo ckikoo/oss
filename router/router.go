@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/hertz-contrib/logger/accesslog"
 	"github.com/hertz-contrib/pprof"
 )
 
@@ -23,6 +24,7 @@ type RouterDeps struct {
 	CorsHandler      auth.ICorsHandler
 	TokenHandler     auth.ITokenHandler
 	EventHandler     auth.IEventHandler
+	VideoHandler     auth.IVideoHandler
 }
 
 func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
@@ -38,38 +40,71 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 		CorsHandler:      auth.NewCorsCtrl(adaptor),
 		TokenHandler:     auth.NewTokenCtrl(adaptor),
 		EventHandler:     auth.NewEventCtrl(adaptor),
+		VideoHandler:     auth.NewVideoCtrl(adaptor),
 	}
 }
 
 func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) {
+	if adaptor.GetConfig().Server.Env == "dev" {
+		h.Use(accesslog.New(
+			accesslog.WithFormat("[${time}] ${status} ${latency} ${ip} ${method} ${path}\n"),
+		))
+		h.StaticFile("/debug/video", "./web/video-test-client/index.html")
+	}
 
 	if adaptor.GetConfig().Server.EnablePprof {
 		pprof.Register(h)
 	}
 
 	registerPublicRoutes(h, deps)
-	authGroup := h.Group("/api/v1", NewAccessKeyMiddleware(adaptor), newAuthenticatedCORSMiddleware(adaptor), NewOperationLogMiddleware(adaptor))
+
+	playGroup := h.Group("/api/v1",
+		NewVideoPlayTokenMiddleware(adaptor),
+		newVideoPlaybackCORSMiddleware(adaptor),
+	)
+	playGroup.OPTIONS("/video/*cors_path", func(ctx context.Context, c *app.RequestContext) {
+		c.AbortWithStatus(204)
+	})
+
+	registerVideoPlaybackRoutes(playGroup, deps)
+
+	authGroup := h.Group(
+		"/api/v1",
+		NewAccessKeyMiddleware(adaptor),
+		newAuthenticatedCORSMiddleware(adaptor),
+		NewOperationLogMiddleware(adaptor),
+	)
 	authGroup.OPTIONS("/*cors_path", func(ctx context.Context, c *app.RequestContext) {
 		c.AbortWithStatus(204)
 	})
+
 	registerAuthRoutes(authGroup, deps)
 	registerBucketRoutes(authGroup, deps, adaptor)
 	registerObjectRoutes(authGroup, deps, adaptor)
 	registerAdminRoutes(authGroup, deps)
 }
 
+func registerVideoPlaybackRoutes(playGroup *route.RouterGroup, deps RouterDeps) {
+	videoGroup := playGroup.Group("/video")
+	videoGroup.GET("/hls/:transcode_id/master.m3u8", deps.VideoHandler.GetHLSMasterPlaylist)
+	videoGroup.GET("/hls/:transcode_id/:profile/index.m3u8", deps.VideoHandler.GetHLSProfilePlaylist)
+	videoGroup.GET("/hls/:transcode_id/:profile/:segment", deps.VideoHandler.GetHLSSegment)
+	videoGroup.GET("/keys/:key_id", deps.VideoHandler.GetHLSKey)
+}
+
 func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
-	// Access key management is public to the app, but still part of the OSS API surface.
 	h.POST("/api/v1/access-keys", deps.AccessKeyHandler.CreateAccessKey)
 	h.GET("/api/v1/access-keys", deps.AccessKeyHandler.ListAccessKeys)
 	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
 	h.PATCH("/api/v1/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
-
 }
 
 func registerAuthRoutes(authGroup *route.RouterGroup, deps RouterDeps) {
 	authGroup.POST("/upload/tokens", deps.TokenHandler.CreateUploadToken)
 	authGroup.POST("/download/tokens", deps.TokenHandler.CreateDownloadToken)
+
+	// Management API: AK/SK + policy/ACL boundary.
+	authGroup.POST("/video/play-tokens", deps.VideoHandler.CreatePlayToken)
 }
 
 func registerBucketRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor adaptor.IAdaptor) {
@@ -105,6 +140,10 @@ func registerObjectRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor
 	objectGroup.GET("/buckets/:bucket_name/objects", deps.ObjectHandler.ListObjects)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/metadata", deps.ObjectHandler.GetObjectMetadata)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/versions", deps.ObjectHandler.GetObjectVersions)
+
+	// Management API: AK/SK + policy/ACL boundary.
+	objectGroup.GET("/buckets/:bucket_name/objects/:object_key/transcode", deps.VideoHandler.GetTranscodeStatus)
+
 	objectGroup.POST("/buckets/:bucket_name/objects/:object_key/versions/:version_id/restore", deps.ObjectHandler.RestoreObjectVersion)
 	objectGroup.PUT("/buckets/:bucket_name/objects/:object_key", deps.ObjectHandler.PutObject)
 	objectGroup.GET("/buckets/:bucket_name/objects/:object_key", deps.ObjectHandler.GetObject)

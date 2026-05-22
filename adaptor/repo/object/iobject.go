@@ -12,6 +12,7 @@ type IObjectRepo interface {
 	CreateObject(ctx context.Context, object *do.CreateObject) (int64, error)
 	CreateDeleteMarker(ctx context.Context, marker *do.CreateDeleteMarker) (int64, error)
 	GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error)
+	GetByIDAndVersion(ctx context.Context, objectID int64, versionID string) (*do.ObjectDo, error)
 	ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error)
 	ListVersionsByFilter(ctx context.Context, bucketName, objectKey string) ([]*do.ObjectDo, error)
 	UpdateObject(ctx context.Context, bucketName, objectKey, versionID string, update *do.UpdateObject) (*do.ObjectDo, error)

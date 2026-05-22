@@ -34,6 +34,7 @@ import (
 	"oss/service/do"
 	"oss/service/dto"
 	"oss/service/event"
+	videoSvc "oss/service/video"
 	"oss/utils/ip"
 	"oss/utils/logger"
 	"oss/utils/tools"
@@ -45,40 +46,44 @@ import (
 )
 
 type Service struct {
-	txManger      tx.ITxManager
-	adaptor       adaptor.IAdaptor
-	userRepo      admin.IUser
-	objRepo       object.IObjectRepo
-	bucketRepo    bucket.IBucketRepo
-	multipartRepo Imultipart.IMultipartRepo
-	meteringRepo  metering.IMeteringRepo
-	storage       storage.IStorage
-	eventService  *event.Service
-	locker        redis.ILock
-	logger        *zap.Logger
-	lifecycleRepo lifecycle.ILifecycleRepo
-	lifeRedis     redis.ILifecycle
-	eventRepo     eventI.IEventDeliveryRepo
-	eventQueue    redis.IEventQueue
+	txManger       tx.ITxManager
+	adaptor        adaptor.IAdaptor
+	userRepo       admin.IUser
+	objRepo        object.IObjectRepo
+	bucketRepo     bucket.IBucketRepo
+	multipartRepo  Imultipart.IMultipartRepo
+	meteringRepo   metering.IMeteringRepo
+	storage        storage.IStorage
+	eventService   *event.Service
+	locker         redis.ILock
+	logger         *zap.Logger
+	lifecycleRepo  lifecycle.ILifecycleRepo
+	lifeRedis      redis.ILifecycle
+	eventRepo      eventI.IEventDeliveryRepo
+	eventQueue     redis.IEventQueue
+	videoScheduler *videoSvc.Scheduler
+	videoCleanup   *videoSvc.CleanupService
 }
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		txManger:      adaptor.GetTxManager(),
-		adaptor:       adaptor,
-		userRepo:      gormAdmin.NewUserRepo(adaptor),
-		objRepo:       gormObject.NewObjectRepo(adaptor),
-		bucketRepo:    gormBucket.NewBucketRepo(adaptor),
-		multipartRepo: gormMultipart.NewObjectRepo(adaptor.GetGORM()),
-		meteringRepo:  gormMetering.NewMeteringRepo(adaptor.GetGORM()),
-		storage:       adaptor.GetStorage(),
-		eventService:  event.NewService(adaptor),
-		logger:        logger.GetLogger().With(zap.String("module", "object")),
-		lifecycleRepo: gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
-		lifeRedis:     redis.NewLifecycle(adaptor),
-		locker:        redis.NewLock(adaptor),
-		eventRepo:     gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
-		eventQueue:    redis.NewEventQueue(adaptor),
+		txManger:       adaptor.GetTxManager(),
+		adaptor:        adaptor,
+		userRepo:       gormAdmin.NewUserRepo(adaptor),
+		objRepo:        gormObject.NewObjectRepo(adaptor),
+		bucketRepo:     gormBucket.NewBucketRepo(adaptor),
+		multipartRepo:  gormMultipart.NewObjectRepo(adaptor.GetGORM()),
+		meteringRepo:   gormMetering.NewMeteringRepo(adaptor.GetGORM()),
+		storage:        adaptor.GetStorage(),
+		eventService:   event.NewService(adaptor),
+		logger:         logger.GetLogger().With(zap.String("module", "object")),
+		lifecycleRepo:  gormLifecycle.NewLifecycleRepo(adaptor.GetGORM()),
+		lifeRedis:      redis.NewLifecycle(adaptor),
+		locker:         redis.NewLock(adaptor),
+		eventRepo:      gormEvent.NewEventDeliveryRepo(adaptor.GetGORM()),
+		eventQueue:     redis.NewEventQueue(adaptor),
+		videoScheduler: videoSvc.NewScheduler(adaptor),
+		videoCleanup:   videoSvc.NewCleanupService(adaptor),
 	}
 }
 
@@ -289,6 +294,14 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 		deltaSize = putResult.Size - oldObject.Size
 	}
 
+	videoCleanupPlan, err := srv.videoCleanup.PlanObjectVersionCleanup(ctx, oldObjectToCleanup)
+	if err != nil {
+		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
+	}
+	if videoCleanupPlan != nil && videoCleanupPlan.DerivedSize > 0 {
+		deltaSize -= videoCleanupPlan.DerivedSize
+	}
+
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 		objRepo := srv.objRepo.WithTx(tx)
 		if err := objRepo.MarkAllNotLatest(ctx1, createObj.BucketName, createObj.ObjectKey); err != nil {
@@ -303,6 +316,9 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
 					return err
 				}
+			}
+			if err := srv.videoCleanup.MarkDeletedInTx(ctx1, tx, videoCleanupPlan); err != nil {
+				return err
 			}
 		}
 
@@ -337,7 +353,22 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 
 	if oldObjectToCleanup != nil {
 		srv.deleteObjectStorage(ctx, oldObjectToCleanup)
+		srv.videoCleanup.AfterCommit(ctx, videoCleanupPlan)
 	}
+
+	srv.scheduleVideoTranscode(ctx, &videoSvc.TranscodeSource{
+		UserID:        ctx.UserID,
+		BucketID:      bucketID,
+		BucketName:    req.BucketName,
+		ObjectID:      id,
+		ObjectKey:     req.ObjectKey,
+		ObjectKeyHash: objectKeyHash,
+		VersionID:     versionID,
+		SourceEtag:    putResult.Etag,
+		SourceSize:    putResult.Size,
+		ContentType:   req.ContentType,
+		SourcePath:    putResult.StoragePath,
+	})
 
 	now := time.Now()
 	for _, rule := range rules {
@@ -365,7 +396,6 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 	})
 
 	if req.CallbackUrl != "" {
-
 		callbackPayload := map[string]interface{}{
 			"callback_url": req.CallbackUrl,
 			"event_type":   "multipart_complete",
@@ -449,6 +479,20 @@ func (srv *Service) scheduleObjectEvents(
 		}
 	}
 }
+
+func (srv *Service) scheduleVideoTranscode(ctx context.Context, source *videoSvc.TranscodeSource) {
+	if srv.videoScheduler == nil {
+		return
+	}
+	if err := srv.videoScheduler.ScheduleTranscode(ctx, source); err != nil {
+		srv.logger.Warn("failed to schedule video transcode",
+			zap.String("bucket_name", source.BucketName),
+			zap.String("object_key", source.ObjectKey),
+			zap.String("version_id", source.VersionID),
+			zap.Error(err))
+	}
+}
+
 func (srv *Service) GetObject(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string, c *app.RequestContext) common.Errno {
 	obj, err := srv.objRepo.GetByKey(ctx, bucketName, objectKey, versionID)
 	if err != nil {
@@ -585,12 +629,13 @@ func (srv *Service) DeleteObject(ctx *common.UserInfoCtx, bucketName, objectKey,
 		return common.VersioningDisabledErr
 	}
 
-	deletedObj, promotedObj, deltaCount, deltaSize, err := srv.purgeObjectVersion(ctx, bucket, obj)
+	deletedObj, promotedObj, videoCleanupPlan, deltaCount, deltaSize, err := srv.purgeObjectVersion(ctx, bucket, obj)
 	if err != nil {
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	srv.deleteObjectStorage(ctx, deletedObj)
+	srv.videoCleanup.AfterCommit(ctx, videoCleanupPlan)
 
 	go srv.eventService.TriggerEvent(ctx, obj.BucketID, consts.EventTypeDeleteObject, objectKey, map[string]interface{}{
 		"bucket_name": bucketName,
@@ -768,6 +813,8 @@ func (srv *Service) createDeleteMarker(ctx *common.UserInfoCtx, bucket *do.Bucke
 		return common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
+	srv.videoCleanup.InvalidateObjectVersionTokens(ctx, latest)
+
 	go srv.eventService.TriggerEvent(ctx, bucket.ID, consts.EventTypeDeleteObject, latest.ObjectKey, map[string]interface{}{
 		"bucket_name":     bucket.Name,
 		"object_key":      latest.ObjectKey,
@@ -778,20 +825,31 @@ func (srv *Service) createDeleteMarker(ctx *common.UserInfoCtx, bucket *do.Bucke
 	return common.OK
 }
 
-func (srv *Service) purgeObjectVersion(ctx *common.UserInfoCtx, bucket *do.BucketDo, obj *do.ObjectDo) (*do.ObjectDo, *do.ObjectDo, int64, int64, error) {
+func (srv *Service) purgeObjectVersion(ctx *common.UserInfoCtx, bucket *do.BucketDo, obj *do.ObjectDo) (*do.ObjectDo, *do.ObjectDo, *videoSvc.ObjectVersionCleanup, int64, int64, error) {
 	visibleBefore := objectVisible(obj) && obj.IsLatest == 1
 	deltaSize := int64(0)
 	if objectVisible(obj) {
 		deltaSize = -obj.Size
 	}
 
+	videoCleanupPlan, err := srv.videoCleanup.PlanObjectVersionCleanup(ctx, obj)
+	if err != nil {
+		return nil, nil, nil, 0, 0, err
+	}
+	if videoCleanupPlan != nil && videoCleanupPlan.DerivedSize > 0 {
+		deltaSize -= videoCleanupPlan.DerivedSize
+	}
+
 	var deletedObj *do.ObjectDo
 	var promotedObj *do.ObjectDo
-	err := srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
+	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 		objRepo := srv.objRepo.WithTx(tx)
 		var err error
 		deletedObj, err = objRepo.MarkVersionPurged(ctx1, obj.BucketName, obj.ObjectKey, obj.VersionID)
 		if err != nil {
+			return err
+		}
+		if err := srv.videoCleanup.MarkDeletedInTx(ctx1, tx, videoCleanupPlan); err != nil {
 			return err
 		}
 		if obj.IsLatest == 1 {
@@ -819,12 +877,12 @@ func (srv *Service) purgeObjectVersion(ctx *common.UserInfoCtx, bucket *do.Bucke
 		return nil
 	})
 	if err != nil {
-		return nil, nil, 0, 0, err
+		return nil, nil, nil, 0, 0, err
 	}
 
 	visibleAfter := objectVisible(promotedObj)
 	deltaCount := boolToInt64(visibleAfter) - boolToInt64(visibleBefore)
-	return deletedObj, promotedObj, deltaCount, deltaSize, nil
+	return deletedObj, promotedObj, videoCleanupPlan, deltaCount, deltaSize, nil
 }
 
 func (srv *Service) acquireObjectWriteLock(ctx context.Context, bucketName, objectKey string) (func(), common.Errno) {

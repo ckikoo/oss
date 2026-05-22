@@ -7,6 +7,7 @@ import (
 	"log"
 	"oss/adaptor"
 	"oss/config"
+	"oss/consts"
 	"oss/internal/bootstrap"
 	"oss/router"
 	"oss/utils/logger"
@@ -19,7 +20,6 @@ import (
 func main() {
 	config := config.InitConfig()
 	logger.SetLogLevel(config.Server.LogLevel)
-
 	db, err := bootstrap.InitMySQL(&config.Mysql)
 	bootstrap.HandleFatal(err)
 	defer db.Close()
@@ -57,7 +57,9 @@ func startServer(ctx context.Context, conf *config.Config, db *sql.DB, redis *re
 	defer newAdaptor.GetSub().Stop()
 
 	address := fmt.Sprintf("%s:%d", conf.Server.Host, conf.Server.Port)
-	h := server.Default(server.WithHostPorts(address))
+	h := server.Default(
+		server.WithHostPorts(address),
+		server.WithMaxRequestBodySize(consts.MaxPartSize))
 
 	deps := router.NewRouterDeps(newAdaptor)
 	router.RegisterRoutes(h, deps, newAdaptor)

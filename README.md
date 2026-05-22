@@ -13,172 +13,131 @@
 
 ## 功能特性
 
-- **AK/SK 认证**: 支持 Access Key 和 Secret Key 认证，保护所有 bucket、object 和 multipart API。
-- **Bucket 管理**: 创建、列出、获取、更新和删除 bucket。
-- **Object 存储**: 上传、下载、获取元数据和删除对象。
-- **Multipart Upload**: 支持分片上传，实现大文件上传。
-- **权限控制**: 基于 JSON 的细粒度权限系统，支持 bucket policy 及多维策略规则。
-- **策略查询优化**: `bucket_policies` 查询使用 `utils/pool` 控制并发加载子表，避免 N+1 查询卡顿。
-- **版本控制**: 支持对象版本管理；删除标记、永久删除和回滚语义见 [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md)。
-- **存储类型**: 支持 STANDARD、IA、ARCHIVE 存储类。
-- **分布式锁**: 基于 Redis 的文件锁机制，支持并发控制和原子操作。
-- **生命周期管理**: 支持对象存储类转换和过期删除规则。
+### 核心功能
+- **AK/SK 认证**: 支持 Access Key 和 Secret Key 认证，保护所有 API 访问
+- **Bucket 管理**: 创建、列出、获取、更新、删除 bucket，支持 ACL 和版本控制配置
+- **Object 存储**: 上传、下载、获取元数据、删除对象，支持多存储类型
+- **Multipart Upload**: 支持分片上传，虚拟合并策略，高效处理大文件
 
-> 更多项目结构、模块说明和文件索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。对象版本设计见 [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md)。
+### 高级功能
+- **版本控制**: 支持对象版本管理、删除标记、永久删除和版本回滚（详见 [OBJECT_VERSIONING_DESIGN.md](OBJECT_VERSIONING_DESIGN.md)）
+- **权限控制**: 基于 JSON 的细粒度权限系统，支持 Bucket Policy 和多维策略规则
+  - 使用 `utils/pool` 控制并发加载，避免 N+1 查询（详见 [POLICY_API.md](POLICY_API.md)）
+- **生命周期管理**: 支持对象存储类转换、过期删除、分片清理规则
+  - Bucket 创建时自动生成默认规则（30天转IA、90天转Archive、180天删除）
+- **存储类型**: STANDARD、IA（低频访问）、ARCHIVE（归档）三种存储类
 
-## API 认证
+### 企业功能  
+- **视频处理**: 视频转码、HLS 切片、AES-128 播放加密、播放授权（详见 [video.md](doc/video.md)）
+- **事件规则**: 支持 Bucket 事件通知（PUT、DELETE、POST 等），异步任务队列
+- **CORS 规则**: 灵活的跨域资源共享配置
+- **审计日志**: 完整的操作审计，支持数据查询和分析
+- **流量统计**: 日级流量与请求类型统计，支持用户和 Bucket 级粒度
+- **分布式锁**: 基于 Redis 的文件锁机制，支持原子操作和死锁预防
 
-所有 bucket、object 和 multipart 相关的 API 都需要 AK/SK 认证或临时令牌访问。
+### 安全 & 性能
+- **临时 Token**: 支持上传/下载预签名 URL，避免 AK/SK 泄露
+- **流式处理**: 大文件上传/下载流式处理，避免内存溢出
+- **并发控制**: Redis 分布式锁确保并发安全
 
-- **Authorization 方式**:
-  - `Authorization: OSS <access_key>:<timestamp>:<signature>`
-  - timestamp 与服务器时间允许误差不超过 30 秒
-- **临时 token 方式**:
-  - `GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}`
-  - token 可通过 `POST /api/v1/download/tokens` 创建
+> **快速链接**：[项目索引](doc/PROJECT_INDEX.md) | [对象版本设计](doc/OBJECT_VERSIONING_DESIGN.md) | [多部分上传](doc/MULTIPART_GUIDE.md) | [权限 API](doc/POLICY_API.md) | [视频处理](doc/video.md)
 
-可用的临时 token 生成接口：
+## API 认证方式
 
-- `POST /api/v1/upload/tokens`
-- `POST /api/v1/download/tokens`
+所有 Bucket、Object 和 Multipart 相关的 API 都需要 AK/SK 认证或临时令牌访问。
+
+### Authorization 签名方式
+```
+Authorization: OSS <access_key>:<timestamp>:<signature>
+```
+- `timestamp`: 当前时间戳，与服务器时间允许误差不超过 30 秒
+- `signature`: 使用 Secret Key 签名生成
+
+### 临时 Token 方式
+```
+GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}
+```
+- Token 通过 `POST /api/v1/upload/tokens` 或 `POST /api/v1/download/tokens` 生成
+- Token 支持预签名 URL，避免 AK/SK 泄露
+- 可设置过期时间和访问权限
 
 ## Bucket Policy API
 
-权限策略相关接口目前支持 bucket 级别策略管理。详细文档请参见 [POLICY_API.md](POLICY_API.md)。
+权限策略相关接口支持 Bucket 级别策略管理。详细文档请参见 [POLICY_API.md](doc/POLICY_API.md)。
 
-### 创建 Bucket Policy
-- `POST /api/v1/buckets/:bucket_name/policies`
-- 受 AK/SK 认证保护
+**API 端点**:
+- `POST /api/v1/buckets/:bucket_name/policies` - 创建 Bucket Policy
+- `GET /api/v1/buckets/:bucket_name/policies` - 列表 Bucket Policy
+- `PUT /api/v1/buckets/:bucket_name/policies/:policy_id` - 更新 Policy
+- `DELETE /api/v1/buckets/:bucket_name/policies/:policy_id` - 删除 Policy
 
-### 列表 Bucket Policy
-- `GET /api/v1/buckets/:bucket_name/policies`
-- 受 AK/SK 认证保护
-
-### 实现说明
-- `ListBucketPolicies` 先读取 `bucket_policies` 头表
-- 再并发加载 `policy_principals`、`policy_actions`、`policy_resources` 和 `policy_conditions` 子表
-- 使用 `oss/utils/pool` 控制并发数量，避免策略数量多时出现过多数据库连接或查询压力
+**性能优化**:
+- Policy 头表 + 子表（principals、actions、resources、conditions）关联加载
+- 使用 `utils/pool` 控制并发数，避免大量策略时数据库连接压力
 
 ## Multipart Upload
 
-支持大文件分片上传，使用虚拟合并策略实现高性能。详细实现请参考 [MULTIPART_GUIDE.md](MULTIPART_GUIDE.md)。
+支持大文件分片上传，使用虚拟合并策略实现高性能。详细实现请参考 [MULTIPART_GUIDE.md](doc/MULTIPART_GUIDE.md)。
 
-### 上传流程
+**API 流程**:
+1. `POST /api/v1/buckets/{bucket}/multipart/uploads` - 初始化上传，获得 upload_id
+2. `PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}` - 上传分片
+3. `POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete` - 完成上传，创建对象
+4. `DELETE /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}` - 中止上传，清理分片
 
-1. **初始化**: `POST /api/v1/buckets/{bucket}/multipart/uploads`
-2. **上传分片**: `PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}`
-3. **完成上传**: `POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete`
-4. **中止上传**: `DELETE /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}`
+**特性**:
+- ✅ **虚拟合并**: 分片存储独立，完成时仅创建对象记录（无物理文件组装）
+- ✅ **流式上传**: 避免内存溢出，支持大文件
+- ✅ **并发安全**: 基于 Redis 分布式锁确保原子性
+- ✅ **自动清理**: 支持超时清理和手动中止
 
-### 特性
+## 统计与监控
 
-- 虚拟合并，无需物理文件组装
-- 流式上传，避免内存溢出
-- 并发分片上传
-- 自动超时清理
+### 流量统计（Metering）
 
-## Metering／日统计
+项目实现日级流量与请求统计，数据写入 `metering_daily` 表，支持 Bucket 级和用户级粒度。
 
-项目已实现日级流量与请求类型统计，数据写入 `metering_daily` 表。统计包括：
+**统计指标**:
+- `storage_size`: 对象存储量变化（上传增加、删除减少）
+- `object_count`: 对象数量变化
+- `upload_flow`: 上传流量（PUT 请求字节数）
+- `download_flow`: 下载流量（GET 响应字节数，流式计数）
+- `get_request_count`: GET 请求次数
+- `put_request_count`: PUT 请求次数
+- `del_request_count`: DELETE 请求次数
 
-- `storage_size`：当前日期内对象存储量增减（上传增加、删除减少）
-- `object_count`：对象数量变更（上传 +1、删除 -1）
-- `upload_flow`：PUT/上传流量，按对象大小累加
-- `download_flow`：GET/下载流量，按实际传输字节累加（使用 `io.MultiWriter` 流式写出时实时计数）
-- `get_request_count`：GET 请求次数
-- `put_request_count`：PUT 请求次数
-- `del_request_count`：DELETE 请求次数
+**查询接口**: `GET /api/v1/metrics/daily`
 
-统计同时支持 bucket 级和用户总计两种粒度：
+**查询参数**: `user_id`, `bucket_id`, `date_from`, `date_to` (格式: YYYY-MM-DD)
 
-- `bucket_id` 有值时表示该 bucket 的明细统计
-- `bucket_id` 为 NULL 时表示用户级总计统计
+### 生命周期管理
 
-当前接口查询入口为：
+支持对象存储类转换、过期删除、分片清理规则。Bucket 创建时自动生成默认规则。
 
-- `GET /api/v1/metrics/daily`
+**API 端点**:
+- `POST /api/v1/buckets/:bucket_name/lifecycle` - 创建规则
+- `GET /api/v1/buckets/:bucket_name/lifecycle` - 列表规则
+- `GET /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 获取规则
+- `PUT /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 更新规则
+- `DELETE /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 删除规则
 
-支持的查询参数：
+**默认规则**:
+- "Default-IA-Transition": 30 天后转为 IA 存储类
+- "Default-Archive-Transition": 90 天后转为 Archive 存储类
+- "Default-Expiration": 180 天后自动删除对象
 
-- `user_id`：用户 ID
-- `bucket_id`：bucket ID
-- `date_from`：起始统计日期，格式 `YYYY-MM-DD`
-- `date_to`：结束统计日期，格式 `YYYY-MM-DD`
+## 分布式文件锁
 
-## 生命周期管理
+基于 Redis 的分布式锁机制，确保对同一文件对象的并发操作安全。
 
-支持对象的生命周期规则，包括存储类转换和过期删除。详细规则请参考 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
+**特性**:
+- ✅ **原子性**: Redis SET NX 命令确保锁唯一性
+- ✅ **安全性**: Lua 脚本确保只有锁持有者才能释放
+- ✅ **自动过期**: 防止死锁，支持 TTL 设置
+- ✅ **可续期**: 支持锁续期和状态检查
+- ✅ **高性能**: 基于内存的 Redis 操作
 
-### 创建生命周期规则
-- `POST /api/v1/buckets/:bucket_name/lifecycle`
-- 受 AK/SK 认证保护
-
-### 列表生命周期规则
-- `GET /api/v1/buckets/:bucket_name/lifecycle`
-- 受 AK/SK 认证保护
-
-### 获取生命周期规则
-- `GET /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
-- 受 AK/SK 认证保护
-
-### 更新生命周期规则
-- `PUT /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
-- 受 AK/SK 认证保护
-
-### 删除生命周期规则
-- `DELETE /api/v1/buckets/:bucket_name/lifecycle/:rule_id`
-- 受 AK/SK 认证保护
-
-该接口返回按天汇总的统计条目，适用于日常流量审计、费用核算和用户行为分析。
-
-> 注意：对象下载流量统计以实际传输字节为准，避免仅依赖对象元数据 `Size`，已通过 `io.MultiWriter` 统计真实下行流量。
-
-## 分布式锁机制
-
-项目实现了基于 Redis 的分布式文件锁机制，用于控制对同一文件对象的并发访问。
-
-### 锁特性
-
-- **原子性**: 使用 Redis SET NX 命令确保只有一个客户端能获取锁
-- **安全性**: 使用 Lua 脚本确保只有锁的持有者才能释放锁
-- **自动过期**: 锁会自动过期，避免死锁
-- **可续期**: 支持锁的续期操作
-- **高性能**: 基于内存的 Redis 操作
-
-### 锁接口
-
-```go
-type IFileLock interface {
-    // 获取锁
-    AcquireLock(ctx context.Context, bucketName string, objectName string, uuid string, ttl time.Duration) (bool, error)
-    // 释放锁
-    ReleaseLock(ctx context.Context, bucketName string, objectName string, uuid string) error
-    // 刷新锁
-    RefreshLock(ctx context.Context, bucketName string, objectName string, uuid string, ttl time.Duration) (bool, error)
-    // 检查锁状态
-    CheckLock(ctx context.Context, bucketName string, objectName string, uuid string) (bool, error)
-    // 强制释放锁（管理员操作）
-    ForceReleaseLock(ctx context.Context, bucketName string, objectName string) error
-}
-```
-
-### 锁 Key 格式
-
-锁的 Redis Key 格式为: `{ServerName}:lock:file:{bucketName}:{objectName}`
-
-### 使用示例
-
-```go
-// 获取锁
-lockID := "unique-uuid"
-success, err := fileLock.AcquireLock(ctx, "mybucket", "myobject.txt", lockID, 30*time.Second)
-
-// 释放锁
-err = fileLock.ReleaseLock(ctx, "mybucket", "myobject.txt", lockID)
-
-// 刷新锁
-success, err = fileLock.RefreshLock(ctx, "mybucket", "myobject.txt", lockID, 30*time.Second)
-```
+**使用场景**: 分片上传并发控制、对象删除保护、并发更新防护
 
 ## 快速开始
 
@@ -238,189 +197,128 @@ go run ./main.go
 
 - `consts.StorageClassStandard`
 - `consts.StorageClassIA`
-- `consts.StorageClassArchive`
+## 存储类型常量
 
-默认对象和 Bucket 的 `storage_class` 均会回退到 `StorageClassStandard`。
+项目中对象和 Bucket 的 `storage_class` 均使用常量定义：
+- `consts.StorageClassStandard` - 标准存储
+- `consts.StorageClassIA` - 低频访问存储  
+- `consts.StorageClassArchive` - 归档存储
 
-## 项目结构
+默认值均为 `STANDARD`。
 
-更多项目结构、模块说明与详细索引请参见 [PROJECT_INDEX.md](PROJECT_INDEX.md)。
+## 快速开始
 
-## 关键命令
+### 1. 环境要求
+- Go 1.25+
+- MySQL 8.0+
+- Redis 6.0+
 
+### 2. 下载依赖
 ```bash
-# 生成数据库模型和查询代码
+go mod tidy
+```
+
+### 3. 数据库初始化
+```bash
+mysql -uroot -p < init.sql
+```
+
+### 4. 配置服务
+编辑 `config.yaml`，设置 MySQL 和 Redis 连接信息
+
+### 5. 代码生成
+```bash
+# 生成 GORM Model 和 Query
 go run ./tools/gen.go
 
-# 生成对象转换器
+# 生成对象转换器（可选）
 goverter gen ./service
-
-# 启动服务
-go run ./main.go
-
-# 构建二进制
-go build -o oss ./main.go
 ```
 
-## 架构说明
+### 6. 启动服务
+```bash
+go run ./cmd/server/main.go
+```
+服务默认启动在 `http://localhost:8080`
+
+## 项目架构
 
 ### 分层架构
-
-1. **main.go**: 应用入口，负责服务启动和依赖注入
-2. **adaptor**: 适配器层，封装外部依赖 (DB、Redis) 和数据访问实现
-3. **service**: 业务逻辑层，包含领域对象、视图对象和转换器
-4. **config**: 配置管理
-5. **common**: 通用工具和中间件
-
-### 数据流
-
 ```
-HTTP Request -> Handler -> Service -> Adaptor/Repo -> Database
-                      -> VO     -> Converter -> DO
+HTTP Router (Hertz)
+    ↓
+API Handlers (api/auth/*.go)
+    ↓
+Business Logic (service/*/*.go)
+    ↓
+Data Access (adaptor/repo/*/*.go)  +  Storage (adaptor/storage/*/)  +  Cache (adaptor/redis/*/)
+    ↓
+External Systems (MySQL, Redis, Local Storage)
 ```
 
-### 代码生成
+### 核心特性
 
-- **GORM Gen**: 根据数据库表自动生成 Model 和 Query 方法
-- **Govertor**: 根据接口定义生成类型安全对象转换器
+- **完全接口化**: 所有层均定义接口，支持多实现切换
+- **事务一致性**: 通过 `TxManager` 统一管理数据库事务，零 GORM 依赖泄露  
+- **性能优化**: 流式处理大文件、并发控制、连接池复用
+- **错误最小化**: 显式错误处理、结构化日志、可追溯错误链
 
-## 使用示例
+### 文件结构
 
-### 创建用户
-
-```go
-userRepo := user.NewUser(adaptor)
-userID, err := userRepo.CreateUser(ctx, &do.CreateUser{
-    Email:        "user@example.com",
-    StorageQuota: 100 * 1024 * 1024 * 1024,
-})
 ```
+adaptor/          数据访问层：Repository、Storage、Redis、事务管理
+  ├── repo/       数据库 CRUD 操作（接口 + GORM 实现）
+  ├── redis/      Redis 缓存、锁、队列
+  ├── storage/    文件存储（本地、云存储等）
+  └── tx/         事务管理
 
-### 对象转换
+service/          业务逻辑层：Service、DO、DTO、Converter
+  ├── */service.go    业务处理
+  ├── do/             领域对象
+  ├── dto/            请求/响应对象
+  └── converter/      类型转换
 
-```go
-converter := converter.NewConverter()
-userVO := converter.UserToVO(userDO)
-```
+api/              HTTP 层：Handlers、中间件
+  ├── auth/       各模块的 API Handlers
+  └── resp.go     统一响应格式
 
-## 开发指南
+router/           路由注册、认证中间件、权限检查
+cmd/server/       应用入口、依赖注入
 
-### 添加新功能
-
-1. 在 `adaptor/repo/model` 中添加数据库结构并更新 `init.sql`
-2. 运行 `go run ./tools/gen.go` 生成 GORM Model 和 Query
-3. 在 `service/do` 中定义领域对象
-4. 在 `service/vo` 中定义视图对象
-5. 在 `service/converter` 中定义转换接口
-6. 运行 `goverter gen ./service` 生成转换器
-7. 在 `adaptor/repo` 中实现数据访问逻辑
-8. 在 `service` 中实现业务逻辑
-9. 在 `main.go` 或 `route` 中添加路由
-
-### 数据库迁移
-
-修改 `init.sql` 并重新执行初始化脚本。
-
-## 部署
-
-```bash
-go build -o oss ./main.go
-./oss
+config/           配置管理
+consts/           常量定义
+common/           通用错误、工具函数
+utils/            工具库（日志、连接池、加密等）
 ```
 
 ## 关键命令
 
 ```bash
-# 安装工具
-make install-tools
+# 生成 GORM Model 和 Query（修改数据库后执行）
+go run ./tools/gen.go
 
-# 生成数据库模型和查询代码
-make gen
+# 生成类型安全的对象转换器
+goverter gen ./service
 
-# 运行服务
-make run
+# 启动开发服务（带热重载）
+air
 
 # 构建二进制
-make build
+go build -o oss ./cmd/server/main.go
 
-# 生成对象转换器
-goverter gen ./service
+# 运行单元测试
+go test ./...
 ```
 
-## 架构说明
+## 详细文档
 
-### 分层架构
+- [项目完整索引](PROJECT_INDEX.md) - 所有模块的详细说明
+- [多部分上传指南](doc/MULTIPART_GUIDE.md) - 虚拟合并策略详解
+- [对象版本设计](OBJECT_VERSIONING_DESIGN.md) - 版本控制实现
+- [权限 API 文档](doc/POLICY_API.md) - Bucket Policy 详细说明
+- [视频处理计划](doc/video.md) - 视频转码、HLS、加密实现
+- [任务系统](doc/task.md) - 异步任务队列设计
 
-1. **cmd**: 应用入口，负责服务启动和依赖注入
-2. **adaptor**: 适配器层，封装外部依赖 (DB, Redis, 第三方服务)
-3. **service**: 业务逻辑层，包含领域对象、视图对象和转换器
-4. **config**: 配置管理
-5. **common**: 通用工具和中间件
+---
 
-### 数据流
-
-```
-HTTP Request -> Handler -> Service -> Adaptor/Repo -> Database
-                      -> VO     -> Converter -> DO
-```
-
-### 代码生成
-
-- **GORM Gen**: 根据数据库表自动生成 Model 和 Query 方法
-- **Govertor**: 根据接口定义生成类型安全的对象转换器
-
-## 使用示例
-
-### 创建用户
-
-```go
-// 业务层调用
-userRepo := user.NewUser(adaptor)
-userID, err := userRepo.CreateUser(ctx, &do.CreateUser{
-    Email:        "user@example.com",
-    StorageQuota: 100 * 1024 * 1024 * 1024, // 100GB
-})
-
-// 查询用户
-userInfo, err := userRepo.GetUserInfoById(ctx, userID)
-```
-
-### 对象转换
-
-```go
-// 使用生成的转换器
-converter := converter.NewConverter()
-userVO := converter.UserToVO(userDO)
-```
-
-## 开发指南
-
-### 添加新功能
-
-1. 在 `adaptor/repo/model` 中定义数据库表结构
-2. 运行 `make gen` 生成 Model 和 Query
-3. 在 `service/do` 中定义领域对象
-4. 在 `service/vo` 中定义视图对象
-5. 在 `service/converter` 中定义转换接口
-6. 运行 `goverter gen ./service` 生成转换器
-7. 在 `adaptor/repo` 中实现数据访问逻辑
-8. 在 `service` 中实现业务逻辑
-9. 在 `cmd/server` 中添加路由和依赖注入
-
-### 数据库迁移
-
-修改 `init.sql` 并重新运行初始化脚本。
-
-## 部署
-
-```bash
-# 构建
-make build
-
-# 运行
-./oss
-```
-
-## 许可证
-
-[MIT License](LICENSE)
+**最后更新**: 2026-05-22 | **架构版本**: 1.2

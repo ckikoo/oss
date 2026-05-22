@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"oss/adaptor"
 	"oss/api"
@@ -79,15 +80,11 @@ func (ctrl *multipartCtrl) UploadMultipartPart(ctx context.Context, c *app.Reque
 	}
 
 	// 读取 body 中的二进制数据
-	bodyReader := c.Request.BodyStream()
-	if bodyReader == nil {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("body stream is empty"))
-		return
-	}
+	bodyReader := c.Request.Body()
 
 	etag := c.Request.Header.Get("Content-MD5")
 
-	resp, errno := ctrl.object.UploadMultipartPart(ctx1, token, etag, uploadID, int32(partNumber), bodyReader, int64(contentLength))
+	resp, errno := ctrl.object.UploadMultipartPart(ctx1, token, etag, uploadID, int32(partNumber), bytes.NewReader(bodyReader), int64(contentLength))
 	api.WriteResp(c, resp, errno)
 }
 

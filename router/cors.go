@@ -13,7 +13,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
-const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token"
+const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token, X-Play-Token"
+const defaultCORSMEthods = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
 
 func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	corsService := corssvc.NewService(adaptor)
@@ -68,6 +69,88 @@ func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	}
 }
 
+func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
+	corsService := corssvc.NewService(adaptor)
+
+	return func(ctx context.Context, c *app.RequestContext) {
+		origin := strings.TrimSpace(string(c.GetHeader("Origin")))
+		if origin == "" {
+			c.Next(ctx)
+			return
+		}
+
+		corsConf := adaptor.GetConfig().CORS
+
+		// Browser preflight does not carry the X-Play-Token value.
+		// So preflight can only validate method/header shape and global CORS defaults.
+		if isPreflight(c) {
+			headers := corsRequestHeaders(c)
+			if headers == "" {
+				headers = defaultCORSHeaders
+			}
+
+			setCORSHeaders(
+				c,
+				"*",
+				[]string{"GET", "HEAD", "OPTIONS"},
+				headers,
+				globalMaxAge(corsConf),
+			)
+			c.AbortWithStatus(204)
+			return
+		}
+
+		claims, pass := common.GetPlayTokenClaimsFromContext(ctx, c)
+		if !pass {
+			abortCORS(c, common.AuthErr.WithMsg("play token claims missing"))
+			return
+		}
+
+		// Actual HLS requests have already passed play-token auth, so we can
+		// evaluate bucket CORS using the bucket bound into the token.
+		result, errno := corsService.CheckBucketCors(
+			ctx,
+			claims.UserID,
+			claims.BucketName,
+			origin,
+			corsRequestMethod(c),
+		)
+
+		if errno.NotOk() {
+			allowedOrigin, ok := matchGlobalOrigin(corsConf, origin)
+			if !ok {
+				abortCORS(c, errno)
+				return
+			}
+
+			setCORSHeaders(
+				c,
+				allowedOrigin,
+				[]string{"GET", "HEAD", "OPTIONS"},
+				defaultCORSHeaders,
+				globalMaxAge(corsConf),
+			)
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+			c.Next(ctx)
+			return
+		}
+
+		headers := corsRequestHeaders(c)
+		if headers == "" {
+			headers = defaultCORSHeaders
+		}
+
+		setCORSHeaders(
+			c,
+			result.AllowedOrigin,
+			result.AllowedMethods,
+			headers,
+			result.MaxAgeSeconds,
+		)
+		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		c.Next(ctx)
+	}
+}
 func isPreflight(c *app.RequestContext) bool {
 	return strings.EqualFold(string(c.Method()), "OPTIONS")
 }
@@ -129,7 +212,7 @@ func globalAllowedMethods(conf config.CORS) []string {
 
 func globalAllowedHeaders(conf config.CORS) []string {
 	if len(conf.AllowedHeaders) == 0 {
-		return []string{"Authorization", "Content-Type", "X-OSS-Token", "X-Oss-Token"}
+		return []string{"Authorization", "Content-Type", "X-OSS-Token", "X-Oss-Token", "X-Play-Token"}
 	}
 
 	headers := make([]string, 0, len(conf.AllowedHeaders))
@@ -155,6 +238,26 @@ func setDefaultPreflightCORSHeaders(c *app.RequestContext, conf config.CORS) {
 		headers = strings.Join(globalAllowedHeaders(conf), ", ")
 	}
 	setCORSHeaders(c, "*", globalAllowedMethods(conf), headers, globalMaxAge(conf))
+}
+
+func setVideoPlaybackFallbackCORSHeaders(c *app.RequestContext, conf config.CORS) {
+	origin := strings.TrimSpace(string(c.GetHeader("Origin")))
+	if origin == "" {
+		return
+	}
+
+	allowedOrigin, ok := matchGlobalOrigin(conf, origin)
+	if !ok {
+		allowedOrigin = "*"
+	}
+
+	headers := corsRequestHeaders(c)
+	if headers == "" {
+		headers = defaultCORSHeaders
+	}
+
+	setCORSHeaders(c, allowedOrigin, []string{"GET", "HEAD", "OPTIONS"}, headers, globalMaxAge(conf))
+	c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
 }
 
 func setCORSHeaders(c *app.RequestContext, origin string, methods []string, headers string, maxAge int32) {

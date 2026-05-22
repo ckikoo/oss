@@ -21,6 +21,7 @@ import (
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
+	videoSvc "oss/service/video"
 	"oss/utils/pool"
 	"oss/utils/tools"
 
@@ -36,6 +37,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 	storage := adaptor.GetStorage()
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	txManager := adaptor.GetTxManager()
+	videoCleanup := videoSvc.NewCleanupService(adaptor)
 
 	var currentId int64 = 0
 	batchSize := 100
@@ -74,7 +76,7 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 				}
 
 				handleTransitionEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo)
-				handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, txManager, storage)
+				handleExpirationEvents(ctx, adaptor, rule, bucket, lifecycleRedis, objectRepo, bucketRepo, uinfoRepo, txManager, storage, videoCleanup)
 
 			}); err != nil {
 				log.Error("failed to submit lifecycle handler task to pool", zap.Error(err))
@@ -172,7 +174,7 @@ func handleTransitionEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 // 文件失效处理
 func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule *do.LifecycleRuleDo, bucket *do.BucketDo,
 	lifecycleRedis redis.ILifecycle, objectRepo object.IObjectRepo, bucketRepo bucket.IBucketRepo,
-	uinfoRepo admin.IUser, txManager tx.ITxManager, storage storage.IStorage) {
+	uinfoRepo admin.IUser, txManager tx.ITxManager, storage storage.IStorage, videoCleanup *videoSvc.CleanupService) {
 
 	locker := redis.NewLock(adaptor)
 	if rule.ExpirationDays == nil || *rule.ExpirationDays <= 0 {
@@ -240,6 +242,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 		}()
 		var eventDeleted bool
 		var expiredObj *do.ObjectDo
+		var videoCleanupPlan *videoSvc.ObjectVersionCleanup
 		var shouldDeleteStorage bool
 
 		err = txManager.RunInTx(cancelCtx, func(ctx context.Context, tx tx.Tx) error {
@@ -263,6 +266,10 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			}
 
 			if bucket.Versioning == consts.BucketVersioningEnabled {
+				// Lifecycle expiration on a versioned bucket creates a delete marker.
+				// It must not delete historical HLS assets, but current-version play tokens
+				// should be invalidated after the marker is committed.
+				expiredObj = obj
 				if err := objRepo.MarkAllNotLatest(ctx, bucket.Name, objectKey); err != nil {
 					return err
 				}
@@ -280,6 +287,16 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, 0)
 			}
 
+			videoCleanupPlan, err = videoCleanup.PlanObjectVersionCleanup(ctx, obj)
+			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to plan video cleanup",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.String("versionID", obj.VersionID),
+					zap.Error(err))
+				return err
+			}
+
 			expiredObj, err = objRepo.MarkVersionPurged(ctx, bucket.Name, objectKey, obj.VersionID)
 			if err != nil {
 				log.Error("timer.handleExpirationEvents failed to purge object",
@@ -290,9 +307,22 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 					zap.Error(err))
 				return err
 			}
-			shouldDeleteStorage = true
+			if err := videoCleanup.MarkDeletedInTx(ctx, tx, videoCleanupPlan); err != nil {
+				log.Error("timer.handleExpirationEvents failed to mark video deleted",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.String("versionID", obj.VersionID),
+					zap.Error(err))
+				return err
+			}
 
-			if err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, -obj.Size); err != nil {
+			shouldDeleteStorage = true
+			deltaSize := -obj.Size
+			if videoCleanupPlan != nil && videoCleanupPlan.DerivedSize > 0 {
+				deltaSize -= videoCleanupPlan.DerivedSize
+			}
+
+			if err = bucketRepo.WithTx(tx).UpdateBucketStats(ctx, bucket.UserID, bucket.Name, -1, deltaSize); err != nil {
 				log.Error("timer.handleExpirationEvents failed to update bucket stats",
 					zap.String("bucket", bucket.Name),
 					zap.String("objectKey", objectKey),
@@ -302,7 +332,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 				return err
 			}
 
-			if err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, -obj.Size); err != nil {
+			if err = uinfoRepo.WithTx(tx).UpdateStorageUsed(ctx, bucket.UserID, deltaSize); err != nil {
 				log.Error("timer.handleExpirationEvents failed to update user storage used",
 					zap.Error(err),
 					zap.Int64("userId", bucket.UserID),
@@ -315,6 +345,13 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 
 		if !eventDeleted {
 			lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+		}
+		if err == nil {
+			if videoCleanupPlan != nil {
+				videoCleanup.AfterCommit(ctx, videoCleanupPlan)
+			} else if bucket.Versioning == consts.BucketVersioningEnabled && expiredObj != nil {
+				videoCleanup.InvalidateObjectVersionTokens(ctx, expiredObj)
+			}
 		}
 		if err == nil && shouldDeleteStorage && expiredObj != nil {
 			switch expiredObj.IsMultipart {

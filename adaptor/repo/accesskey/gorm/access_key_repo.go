@@ -11,6 +11,7 @@ import (
 	"oss/adaptor/repo/accesskey"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repocache"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -26,9 +27,11 @@ import (
 
 type AccessKeyRepo struct {
 	db           *gorm.DB
+	q            *query.Query
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
+	cacheEnabled bool
 }
 
 var _ accesskey.IAccessKeyRepo = (*AccessKeyRepo)(nil)
@@ -36,18 +39,23 @@ var _ accesskey.IAccessKeyRepo = (*AccessKeyRepo)(nil)
 func NewAccessKeyRepo(a adaptor.IAdaptor) *AccessKeyRepo {
 	return &AccessKeyRepo{
 		db:           a.GetGORM(),
+		q:            query.Use(a.GetGORM()),
 		rds:          a.GetRedis(),
 		g:            &singleflight.Group{},
 		cacheManager: a.GetCache(),
+		cacheEnabled: true,
 	}
 }
 
 func (r *AccessKeyRepo) WithTx(tx tx.Tx) accesskey.IAccessKeyRepo {
+	txDB, _ := tx.(*gorm.DB)
 	return &AccessKeyRepo{
-		db:           tx.(*gorm.DB),
+		db:           txDB,
+		q:            query.Use(txDB),
 		rds:          r.rds,
 		g:            r.g,
 		cacheManager: r.cacheManager,
+		cacheEnabled: false,
 	}
 }
 
@@ -89,6 +97,9 @@ func (r *AccessKeyRepo) toAccessKeyDo(modelAK *model.AccessKey) *do.AccessKeyDo 
 // ─── Cache Helpers ────────────────────────────────────────────────────
 // getCachedRedis retrieves access key from Redis cache, returns nil if not found
 func (r *AccessKeyRepo) getCachedRedis(ctx context.Context, key string) *do.AccessKeyDo {
+	if r.rds == nil {
+		return nil
+	}
 	val, err := r.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -112,6 +123,9 @@ func (r *AccessKeyRepo) setCachedRedis(ctx context.Context, key string, ak *do.A
 
 // setAllCaches 本地 + Redis 同时写入
 func (r *AccessKeyRepo) setAllCaches(ctx context.Context, keys []string, ak *do.AccessKeyDo) {
+	if r.cacheManager == nil {
+		return
+	}
 	for _, key := range keys {
 		r.cacheManager.Set(key, ak, 0) // TTL=0 使用 manager 默认值
 
@@ -130,19 +144,13 @@ func (r *AccessKeyRepo) invalidateAccessKeyCache(ctx context.Context, accessKey 
 	keys := []string{
 		consts.AccessKeyCacheKey(accessKey),
 	}
-	// 删 Redis
-	r.rds.Del(ctx, keys...)
 
-	// 删本地
-	r.cacheManager.Remove(keys...)
-
-	// 广播其他实例删本地
-	if err := r.cacheManager.Publish(ctx, keys...); err != nil {
-		logger.Warn("failed to publish access key cache invalidation",
-			zap.Error(err),
-			zap.Strings("keys", keys),
-		)
-	}
+	repocache.Invalidator{
+		RDS:          r.rds,
+		Local:        r.cacheManager,
+		DoubleDelete: true,
+		LogName:      "accesskey",
+	}.AfterCommit(ctx, keys...)
 }
 
 // ─── 三层查询核心 ────────────────────────────────────────────────────────────
@@ -153,45 +161,59 @@ func (r *AccessKeyRepo) getByKey(
 	cacheKey string,
 	queryFn func() (*do.AccessKeyDo, error),
 ) (*do.AccessKeyDo, error) {
-
-	// ① 本地缓存
-	if entry, ok := r.cacheManager.Get(cacheKey); ok {
-		return entry.Data.(*do.AccessKeyDo), nil
-	}
-
-	// ② Redis 缓存
-	if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-		r.cacheManager.Set(cacheKey, cached, 0) // 回填本地
-		return cached, nil
-	}
-
-	// ③ singleflight → DB（同实例并发合并，防击穿）
-	result, err, _ := r.g.Do(cacheKey, func() (interface{}, error) {
-		// double-check Redis（可能其他实例刚写入）
-		if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		ak, err := queryFn()
-		if err != nil {
-			return nil, err
-		}
-
-		// 回填 Redis + 本地
-		r.setAllCaches(ctx, []string{cacheKey}, ak)
-		return ak, nil
+	return repocache.Accessor[*do.AccessKeyDo]{
+		RDS:     r.rds,
+		Local:   r.cacheManager,
+		Group:   r.g,
+		TTL:     time.Duration(consts.CacheTTLAccessKey) * time.Second,
+		Enabled: r.cacheEnabled,
+		LogName: "accesskey",
+	}.Get(ctx, cacheKey, func(context.Context) (*do.AccessKeyDo, error) {
+		return queryFn()
 	})
 
-	if err != nil {
-		return nil, err
-	}
+	// if !r.cacheEnabled || r.rds == nil || r.cacheManager == nil || r.g == nil {
+	// 	return queryFn()
+	// }
 
-	ak := result.(*do.AccessKeyDo)
+	// // ① 本地缓存
+	// if entry, ok := r.cacheManager.Get(cacheKey); ok {
+	// 	return entry.Data.(*do.AccessKeyDo), nil
+	// }
 
-	// singleflight 共享结果时也要回填本地（其他等待的 goroutine 没有走 setAllCaches）
-	r.cacheManager.Set(cacheKey, ak, 0)
+	// // ② Redis 缓存
+	// if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
+	// 	r.cacheManager.Set(cacheKey, cached, 0) // 回填本地
+	// 	return cached, nil
+	// }
 
-	return ak, nil
+	// // ③ singleflight → DB（同实例并发合并，防击穿）
+	// result, err, _ := r.g.Do(cacheKey, func() (interface{}, error) {
+	// 	// double-check Redis（可能其他实例刚写入）
+	// 	if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
+	// 		return cached, nil
+	// 	}
+
+	// 	ak, err := queryFn()
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+
+	// 	// 回填 Redis + 本地
+	// 	r.setAllCaches(ctx, []string{cacheKey}, ak)
+	// 	return ak, nil
+	// })
+
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	// ak := result.(*do.AccessKeyDo)
+
+	// // singleflight 共享结果时也要回填本地（其他等待的 goroutine 没有走 setAllCaches）
+	// r.cacheManager.Set(cacheKey, ak, 0)
+
+	// return ak, nil
 }
 
 func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccessKey) (int64, error) {
@@ -204,7 +226,7 @@ func (r *AccessKeyRepo) CreateAccessKey(ctx context.Context, ak *do.CreateAccess
 		Status:     consts.AccessKeyStatusEnable,
 		CreatedAt:  time.Now(),
 	}
-	qs := query.Use(r.db).AccessKey.WithContext(ctx)
+	qs := r.q.AccessKey.WithContext(ctx)
 	err := qs.Create(modelAK)
 	if err != nil {
 		return 0, repoerr.Wrap(err)
@@ -217,7 +239,7 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 
 	return r.getByKey(ctx, cacheKey, func() (*do.AccessKeyDo, error) {
 		// Cache miss, query database
-		q := query.Use(r.db)
+		q := r.q
 		qs := q.AccessKey.WithContext(ctx)
 		modelAK, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).First()
 		if err != nil {
@@ -228,14 +250,14 @@ func (r *AccessKeyRepo) GetByAccessKey(ctx context.Context, accessKey string) (*
 }
 
 func (r *AccessKeyRepo) CheckAccessKeyAndSecret(ctx context.Context, accessKey string, secretKeyHash string) bool {
-	qs := query.Use(r.db).AccessKey
+	qs := r.q.AccessKey
 
 	count, _ := qs.WithContext(ctx).Where(qs.SecretKey.Eq(secretKeyHash), qs.AccessKey.Eq(accessKey)).Count()
 	return count > 0
 }
 
 func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status int32) ([]*do.AccessKeyDo, error) {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	if userID > 0 {
 		qs = qs.Where(q.AccessKey.UserID.Eq(userID))
@@ -255,7 +277,7 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 }
 
 func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, status int32) (*do.AccessKeyDo, error) {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Update(q.AccessKey.Status, status)
 	if err != nil {
@@ -269,7 +291,7 @@ func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, stat
 }
 
 func (r *AccessKeyRepo) DeleteAccessKey(ctx context.Context, accessKey string) error {
-	q := query.Use(r.db)
+	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
 	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Delete()
 	if err != nil {

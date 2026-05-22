@@ -160,7 +160,7 @@ func (m *Manager) consume(ctx context.Context) {
 			if err == redis.Nil {
 				continue // 超时无消息，正常
 			}
-			m.logger.Warn("cache subscriber read error", zap.Error(err))
+			// m.logger.Warn("cache subscriber read error", zap.Error(err))
 			time.Sleep(time.Second) // 报错退避
 			continue
 		}

@@ -6,3 +6,7 @@ tmp
 
 test/*
 .agents/*
+.third_part/
+*/*.gz
+web/video-test-client/index.html.hertz.gz
+compose.yml

@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSS Video Upload & HLS Preview Test</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <style>
+    :root { --bg:#0b1020; --card:#121a30; --muted:#8ea0c0; --text:#eef3ff; --line:#27324f; --ok:#45d483; --bad:#ff5c7c; --warn:#ffd166; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:22px 28px; border-bottom:1px solid var(--line); background:#0e1528; position:sticky; top:0; z-index:2; }
+    h1 { margin:0; font-size:20px; }
+    main { max-width:1180px; margin:0 auto; padding:22px; display:grid; gap:18px; }
+    .grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:18px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow: 0 12px 32px rgba(0,0,0,.24); }
+    .card h2 { margin:0 0 14px; font-size:17px; }
+    label { display:block; color:var(--muted); font-size:13px; margin:10px 0 6px; }
+    input, select, textarea { width:100%; border:1px solid var(--line); background:#0b1224; color:var(--text); border-radius:10px; padding:10px 12px; outline:none; }
+    input[type=file] { padding:9px; }
+    textarea { min-height:120px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+    button { border:0; background:#4169e1; color:white; border-radius:10px; padding:10px 13px; cursor:pointer; font-weight:650; }
+    button.secondary { background:#27324f; }
+    button.warn { background:#b7791f; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .row > * { flex:1; }
+    .small { font-size:12px; color:var(--muted); }
+    .status { white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#080d1a; border:1px solid var(--line); border-radius:10px; padding:12px; min-height:72px; max-height:260px; overflow:auto; font-size:12px; }
+    .ok { color:var(--ok); } .bad { color:var(--bad); } .warnText { color:var(--warn); }
+    video { width:100%; max-height:520px; background:#000; border-radius:14px; border:1px solid var(--line); }
+    progress { width:100%; height:14px; }
+
+    /* ── 画质选择器 ─────────────────────────────── */
+    .quality-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .quality-label { font-size:13px; color:var(--muted); white-space:nowrap; }
+    .quality-btn {
+      border: 1px solid var(--line);
+      background: #1a2240;
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 5px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background .15s, color .15s, border-color .15s;
+      flex: none;
+    }
+    .quality-btn:hover { background:#27324f; color:var(--text); }
+    .quality-btn.active {
+      background: #4169e1;
+      border-color: #4169e1;
+      color: white;
+    }
+    .quality-info {
+      font-size: 12px;
+      color: var(--muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>OSS Video Upload / Transcode / HLS Preview / QPS Test</h1>
+  <div class="small">管理接口使用 HMAC Authorization；HLS 预览同时发送 <code>X-Play-Token</code> 和 <code>X-Head-Token</code>。</div>
+</header>
+<main>
+  <section class="card">
+    <h2>1. 后端与认证配置</h2>
+    <div class="grid">
+      <div>
+        <label>API Base URL</label>
+        <input id="baseUrl" value="http://127.0.0.1:8080" />
+      </div>
+      <div>
+        <label>Bucket</label>
+        <input id="bucket" placeholder="video-bucket" />
+      </div>
+      <div>
+        <label>Access Key</label>
+        <input id="accessKey" placeholder="AK..." autocomplete="off" />
+      </div>
+      <div>
+        <label>Secret Key</label>
+        <input id="secretKey" placeholder="SK..." autocomplete="off" type="password" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" class="secondary" onclick="saveConfig()">保存到浏览器</button>
+      <button type="button" class="secondary" onclick="loadConfig()">读取配置</button>
+      <button type="button" class="secondary" onclick="clearLog()">清空日志</button>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>2. 上传视频</h2>
+      <div class="small warnText">分片上传顺序固定为：CreateMultipartUpload → UploadPart(N 次) → CompleteMultipartUpload。不会自动请求 play-token；play-token 只在点击"创建 Play Token"时请求。</div>
+      <label>视频文件</label>
+      <input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/x-msvideo,.mp4,.mov,.mkv,.avi" />
+      <label>Object Key</label>
+      <input id="objectKey" placeholder="demo/movie.mp4" />
+      <div class="row">
+        <div>
+          <label>ACL</label>
+          <select id="acl">
+            <option value="default">default / inherit bucket</option>
+            <option value="private">private</option>
+            <option value="public-read">public-read</option>
+          </select>
+        </div>
+        <div>
+          <label>Storage Class</label>
+          <select id="storageClass">
+            <option value="STANDARD">STANDARD</option>
+            <option value="IA">IA</option>
+            <option value="ARCHIVE">ARCHIVE</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin:12px 0"><progress id="uploadProgress" value="0" max="100"></progress></div>
+      <div class="row">
+        <button type="button" onclick="uploadVideo()">普通上传视频</button>
+        <button type="button" class="secondary" onclick="checkStatus()">查询转码状态</button>
+      </div>
+
+      <div style="height:1px;background:var(--line);margin:16px 0"></div>
+      <h2 style="font-size:15px;margin:0 0 10px">2B. 分片上传视频</h2>
+      <div class="row">
+        <div>
+          <label>分片大小，MB</label>
+          <input id="partSizeMB" type="number" value="8" min="5" max="512" />
+        </div>
+        <div>
+          <label>并发数</label>
+          <input id="multipartConcurrency" type="number" value="3" min="1" max="16" />
+        </div>
+      </div>
+      <label><input id="multipartOverwrite" type="checkbox" checked style="width:auto;margin-right:6px" />允许覆盖同名对象</label>
+      <div class="row">
+        <button type="button" onclick="multipartUploadVideo()">分片上传视频</button>
+        <button type="button" class="warn" onclick="abortCurrentMultipart()">中止当前分片上传</button>
+      </div>
+      <div style="margin:12px 0"><progress id="multipartProgress" value="0" max="100"></progress></div>
+
+      <label>上传结果 / 转码状态</label>
+      <div id="uploadStatus" class="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. 创建播放 Token</h2>
+      <label>Version ID，可空；上传成功会自动填入</label>
+      <input id="versionId" placeholder="可空" />
+      <label>Expires In，秒</label>
+      <input id="expiresIn" type="number" value="14400" />
+      <div class="row" style="margin-top:12px">
+        <button type="button" onclick="createPlayToken()">创建 Play Token</button>
+        <button type="button" class="secondary" onclick="buildPreviewUrl()">只刷新预览 URL</button>
+      </div>
+      <label>Play Token</label>
+      <input id="playToken" placeholder="创建后自动填入，也可以手动粘贴" />
+      <label>HLS URL</label>
+      <input id="hlsUrl" placeholder="/api/v1/video/hls/{transcode_id}/master.m3u8" />
+      <label>返回内容</label>
+      <div id="tokenStatus" class="status"></div>
+    </section>
+  </div>
+
+  <!-- ── 第 4 节：预览 + 画质选择 ─────────────────────────── -->
+  <section class="card">
+    <h2>4. 在线预览，可拖动</h2>
+    <video id="player" controls playsinline></video>
+
+    <!-- 画质选择器 -->
+    <div class="quality-bar" id="qualityBar" style="display:none">
+      <span class="quality-label">画质：</span>
+      <button class="quality-btn active" onclick="setQuality(-1)" data-level="-1">自动</button>
+      <!-- 各码率按钮由 JS 动态填入 -->
+      <span class="quality-info" id="qualityInfo">—</span>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button type="button" onclick="startPreview()">开始预览</button>
+      <button type="button" class="secondary" onclick="stopPreview()">停止</button>
+      <button type="button" class="secondary" onclick="seekForward(10)">快进 10s</button>
+      <button type="button" class="secondary" onclick="seekForward(-10)">后退 10s</button>
+    </div>
+    <div class="small" style="margin-top:8px">
+      Chrome/Edge 使用 hls.js，会对 m3u8、ts、key 请求设置 header。Safari 原生 HLS 不能可靠自定义 header，本页面会自动 fallback 到 query token。
+    </div>
+    <label>播放器日志</label>
+    <div id="playerStatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>5. HLS QPS 测试</h2>
+    <div class="grid">
+      <div>
+        <label>目标 URL，默认使用当前 HLS master.m3u8</label>
+        <input id="qpsUrl" placeholder="/api/v1/video/hls/{transcode_id}/master.m3u8" />
+      </div>
+      <div>
+        <label>请求 Header 名，可填 X-Head-Token；页面仍会附带 X-Play-Token</label>
+        <input id="playHeaderName" value="X-Head-Token" />
+      </div>
+      <div>
+        <label>并发数</label>
+        <input id="qpsConcurrency" type="number" value="8" min="1" max="256" />
+      </div>
+      <div>
+        <label>持续秒数</label>
+        <input id="qpsDuration" type="number" value="10" min="1" max="3600" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" onclick="startQps()">开始 QPS</button>
+      <button type="button" class="warn" onclick="stopQps()">停止 QPS</button>
+    </div>
+    <label>QPS 结果</label>
+    <div id="qpsStatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>调试日志</h2>
+    <div id="log" class="status"></div>
+  </section>
+</main>
+
+<script>
+let hls = null;
+let qpsStop = false;
+let qpsRunning = false;
+let currentMultipartUploadId = '';
+let currentMultipartAbort = false;
+
+window.addEventListener('error', (e) => {
+  const msg = e.error && e.error.stack ? e.error.stack : (e.message || String(e));
+  try { log('JS error: ' + msg, 'uploadStatus'); } catch (_) {}
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason && e.reason.stack ? e.reason.stack : (e.reason && e.reason.message ? e.reason.message : String(e.reason));
+  try { log('Promise rejection: ' + reason, 'uploadStatus'); } catch (_) {}
+});
+
+function $(id) { return document.getElementById(id); }
+function now() { return new Date().toLocaleTimeString(); }
+function log(msg, target = 'log') {
+  const el = $(target);
+  el.textContent += `[${now()}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+function setStatus(id, data) {
+  $(id).textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+}
+function clearLog() { $('log').textContent = ''; }
+function trimSlashRight(s) { return String(s || '').replace(/\/+$/, ''); }
+function enc(s) { return encodeURIComponent(s).replace(/%20/g, '+'); }
+function getBase() { return trimSlashRight($('baseUrl').value || ''); }
+function absUrl(pathOrUrl) {
+  if (!pathOrUrl) return '';
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  return getBase() + (pathOrUrl.startsWith('/') ? pathOrUrl : '/' + pathOrUrl);
+}
+function pathAndQuery(url) {
+  const u = new URL(absUrl(url));
+  return { path: u.pathname, query: u.search ? u.search.slice(1) : '', host: u.host };
+}
+function canonicalQuery(rawQuery) {
+  if (!rawQuery) return '';
+  const params = new URLSearchParams(rawQuery);
+  const pairs = [];
+  for (const [key, value] of params.entries()) pairs.push([key, value]);
+  pairs.sort((a, b) => a[0] === b[0] ? String(a[1]).localeCompare(String(b[1])) : String(a[0]).localeCompare(String(b[0])));
+  return pairs.map(([k, v]) => `${enc(k)}=${enc(v)}`).join('&');
+}
+async function hmacSha256Hex(message, secret) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function buildStringToSign(method, path, query, host, contentType, body, timestamp) {
+  let s = `${method} ${path}`;
+  if (query) s += `?${canonicalQuery(query)}`;
+  s += `\nHost: ${host}`;
+  if (contentType) s += `\nContent-Type: ${contentType}`;
+  s += `\nX-OSS-Timestamp: ${timestamp}\n\n`;
+  if (body) s += body;
+  return s;
+}
+async function authHeaders(method, url, contentType = '', bodyForSign = '') {
+  const ak = $('accessKey').value.trim();
+  const sk = $('secretKey').value.trim();
+  if (!ak || !sk) throw new Error('Access Key / Secret Key 不能为空');
+  const { path, query, host } = pathAndQuery(url);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const stringToSign = buildStringToSign(method, path, query, host, contentType, bodyForSign, timestamp);
+  const signature = await hmacSha256Hex(stringToSign, sk);
+  return {
+    'Authorization': `OSS ${ak}:${timestamp}:${signature}`,
+    'X-OSS-Timestamp': String(timestamp),
+  };
+}
+async function apiFetch(method, pathOrUrl, bodyObj = undefined) {
+  const url = absUrl(pathOrUrl);
+  let body = undefined;
+  let contentType = '';
+  if (bodyObj !== undefined) {
+    body = JSON.stringify(bodyObj);
+    contentType = 'application/json';
+  }
+  const headers = await authHeaders(method, url, contentType, body || '');
+  if (contentType) headers['Content-Type'] = contentType;
+  const res = await fetch(url, { method, headers, body });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+  if (json && typeof json.code === 'number' && json.code !== 200) {
+    throw new Error(`${json.msg || 'ERR'} ${json.err_msg || ''}`.trim() + '\n' + JSON.stringify(json, null, 2));
+  }
+  return json;
+}
+function saveConfig() {
+  const keys = ['baseUrl','bucket','accessKey','secretKey','objectKey','versionId','playToken','hlsUrl','partSizeMB','multipartConcurrency'];
+  const data = Object.fromEntries(keys.map(k => [k, $(k).value]));
+  localStorage.setItem('oss_video_test_config', JSON.stringify(data));
+  log('配置已保存到 localStorage');
+}
+function loadConfig() {
+  const raw = localStorage.getItem('oss_video_test_config');
+  if (!raw) return log('没有已保存配置');
+  const data = JSON.parse(raw);
+  for (const [k, v] of Object.entries(data)) if ($(k)) $(k).value = v || '';
+  log('配置已读取');
+}
+function inferObjectKey(file) {
+  const cur = $('objectKey').value.trim();
+  if (cur) return cur;
+  const name = file ? file.name : `video-${Date.now()}.mp4`;
+  const key = `${Date.now()}-${name}`;
+  $('objectKey').value = key;
+  return key;
+}
+async function buildMultipartBody(file) {
+  const boundary = '----oss-video-' + Math.random().toString(16).slice(2) + Date.now();
+  const fields = {
+    content_type: file.type || 'video/mp4',
+    storage_class: $('storageClass').value || 'STANDARD',
+    acl: $('acl').value || 'default',
+  };
+  const chunks = [];
+  for (const [name, value] of Object.entries(fields)) {
+    chunks.push(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+  }
+  chunks.push(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name.replace(/"/g, '')}"\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`);
+  chunks.push(file);
+  chunks.push(`\r\n--${boundary}--\r\n`);
+  return { body: new Blob(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+async function uploadVideo() {
+  const file = $('videoFile').files[0];
+  if (!file) return alert('请选择视频文件');
+  const bucket = $('bucket').value.trim();
+  if (!bucket) return alert('bucket 不能为空');
+  const objectKey = inferObjectKey(file);
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(objectKey)}`;
+  const url = absUrl(path);
+  const { body, contentType } = await buildMultipartBody(file);
+  const headers = await authHeaders('PUT', url, contentType, '');
+  headers['Content-Type'] = contentType;
+  $('uploadProgress').value = 0;
+  setStatus('uploadStatus', 'uploading...');
+  log(`开始上传: ${objectKey}`);
+  const res = await fetch(url, { method: 'PUT', headers, body });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  $('uploadProgress').value = 100;
+  setStatus('uploadStatus', json);
+  if (!res.ok || (typeof json.code === 'number' && json.code !== 200)) throw new Error(`上传失败: ${text}`);
+  const data = json.data || json;
+  if (data.version_id) $('versionId').value = data.version_id;
+  log(`上传完成: object_key=${data.object_key || objectKey}, version_id=${data.version_id || ''}`);
+  saveConfig();
+}
+
+function objectAclValueForMultipart() {
+  const v = $('acl').value;
+  if (v === 'private') return 1;
+  if (v === 'public-read') return 2;
+  return 0;
+}
+function getJsonData(json) {
+  return json && json.data ? json.data : (json || {});
+}
+async function createMultipartUpload(file, objectKey, totalChunk) {
+  const bucket = $('bucket').value.trim();
+  const req = {
+    object_key: objectKey,
+    content_type: file.type || 'video/mp4',
+    storage_class: $('storageClass').value || 'STANDARD',
+    acl: objectAclValueForMultipart(),
+    total_chunk: totalChunk,
+    file_size: file.size,
+    overwrite: $('multipartOverwrite').checked,
+  };
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/multipart/uploads`;
+  return apiFetch('POST', path, req);
+}
+async function uploadMultipartPart(bucket, uploadId, partNumber, blob) {
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/multipart/uploads/${encodeURIComponent(uploadId)}/parts/${partNumber}`;
+  const url = absUrl(path);
+  const headers = await authHeaders('PUT', url, 'application/octet-stream', '');
+  headers['Content-Type'] = 'application/octet-stream';
+  const res = await fetch(url, { method: 'PUT', headers, body: blob });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  if (!res.ok || (typeof json.code === 'number' && json.code !== 200)) {
+    throw new Error(`part ${partNumber} 上传失败: HTTP ${res.status}: ${text}`);
+  }
+  return getJsonData(json);
+}
+async function completeMultipartUpload(bucket, uploadId, parts) {
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/multipart/uploads/${encodeURIComponent(uploadId)}/complete`;
+  return apiFetch('POST', path, { parts });
+}
+async function abortMultipartUpload(bucket, uploadId) {
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/multipart/uploads/${encodeURIComponent(uploadId)}`;
+  return apiFetch('DELETE', path);
+}
+async function multipartUploadVideo() {
+  const file = $('videoFile').files[0];
+  if (!file) return alert('请选择视频文件');
+  const bucket = $('bucket').value.trim();
+  if (!bucket) return alert('bucket 不能为空');
+  const objectKey = inferObjectKey(file);
+  const partSize = Math.max(5, Number($('partSizeMB').value || 8)) * 1024 * 1024;
+  const concurrency = Math.max(1, Number($('multipartConcurrency').value || 1));
+  const totalChunk = Math.ceil(file.size / partSize);
+  currentMultipartAbort = false;
+  $('multipartProgress').value = 0;
+  setStatus('uploadStatus', `creating multipart upload...\nobject_key=${objectKey}\ntotal_chunk=${totalChunk}`);
+
+  let uploadId = '';
+  try {
+    const createResp = await createMultipartUpload(file, objectKey, totalChunk);
+    const createData = getJsonData(createResp);
+    uploadId = createData.upload_id;
+    currentMultipartUploadId = uploadId;
+    if (!uploadId) throw new Error('create multipart upload 未返回 upload_id\n' + JSON.stringify(createResp, null, 2));
+    log(`分片上传已创建: upload_id=${uploadId}, total_chunk=${totalChunk}`);
+
+    const parts = new Array(totalChunk);
+    let nextPart = 1;
+    let done = 0;
+    async function worker(workerId) {
+      while (!currentMultipartAbort) {
+        const partNumber = nextPart++;
+        if (partNumber > totalChunk) return;
+        const start = (partNumber - 1) * partSize;
+        const end = Math.min(file.size, start + partSize);
+        const blob = file.slice(start, end);
+        log(`worker-${workerId} 上传 part=${partNumber}/${totalChunk}, size=${blob.size}`, 'uploadStatus');
+        const partResp = await uploadMultipartPart(bucket, uploadId, partNumber, blob);
+        parts[partNumber - 1] = { part_number: partResp.part_number || partNumber, etag: partResp.etag || '' };
+        done++;
+        $('multipartProgress').value = Math.round(done * 100 / totalChunk);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, totalChunk) }, (_, i) => worker(i + 1)));
+    if (currentMultipartAbort) { setStatus('uploadStatus', { aborted_locally: true, upload_id: uploadId }); return; }
+
+    const completeParts = parts.filter(Boolean).sort((a, b) => a.part_number - b.part_number);
+    if (completeParts.length !== totalChunk) throw new Error(`parts 数量不完整: ${completeParts.length}/${totalChunk}`);
+    const completeResp = await completeMultipartUpload(bucket, uploadId, completeParts);
+    const completeData = getJsonData(completeResp);
+    setStatus('uploadStatus', completeResp);
+    if (completeData.version_id) $('versionId').value = completeData.version_id;
+    $('multipartProgress').value = 100;
+    currentMultipartUploadId = '';
+    log(`分片上传完成: object_key=${completeData.object_key || objectKey}, version_id=${completeData.version_id || ''}`);
+    saveConfig();
+  } catch (err) {
+    setStatus('uploadStatus', String(err && err.stack ? err.stack : err));
+    log(`分片上传失败: ${err.message || err}`);
+  }
+}
+async function abortCurrentMultipart() {
+  currentMultipartAbort = true;
+  const bucket = $('bucket').value.trim();
+  const uploadId = currentMultipartUploadId;
+  if (!bucket || !uploadId) return alert('没有进行中的 upload_id');
+  try {
+    const resp = await abortMultipartUpload(bucket, uploadId);
+    currentMultipartUploadId = '';
+    setStatus('uploadStatus', resp);
+    log(`已中止分片上传: upload_id=${uploadId}`);
+  } catch (err) {
+    setStatus('uploadStatus', String(err && err.stack ? err.stack : err));
+  }
+}
+async function checkStatus() {
+  const bucket = $('bucket').value.trim();
+  const objectKey = $('objectKey').value.trim();
+  if (!bucket || !objectKey) return alert('bucket / object_key 不能为空');
+  const version = $('versionId').value.trim();
+  const q = version ? `?version_id=${encodeURIComponent(version)}` : '';
+  const path = `/api/v1/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(objectKey)}/transcode${q}`;
+  setStatus('uploadStatus', 'checking...');
+  const json = await apiFetch('GET', path);
+  setStatus('uploadStatus', json);
+  const data = json.data || {};
+  if (data.transcode_id && !$('hlsUrl').value.trim()) $('hlsUrl').value = `/api/v1/video/hls/${data.transcode_id}/master.m3u8`;
+  log(`转码状态: status=${data.status}, transcode_id=${data.transcode_id || ''}`);
+}
+async function createPlayToken() {
+  const bucket = $('bucket').value.trim();
+  const objectKey = $('objectKey').value.trim();
+  if (!bucket || !objectKey) return alert('bucket / object_key 不能为空');
+  const req = {
+    bucket_name: bucket,
+    object_key: objectKey,
+    version_id: $('versionId').value.trim() || undefined,
+    expires_in: Number($('expiresIn').value || 14400),
+  };
+  setStatus('tokenStatus', 'creating...');
+  log('手动创建 Play Token');
+  const json = await apiFetch('POST', '/api/v1/video/play-tokens', req);
+  setStatus('tokenStatus', json);
+  const data = json.data || {};
+  if (data.token) $('playToken').value = data.token;
+  if (data.play_url) $('hlsUrl').value = data.play_url;
+  if (data.play_url) $('qpsUrl').value = data.play_url;
+  log(`Play token: token=${data.token ? 'ok' : 'empty'}, profiles=${(data.profiles || []).join(',')}`);
+  saveConfig();
+}
+function buildPreviewUrl() {
+  const hlsUrl = $('hlsUrl').value.trim();
+  if (!hlsUrl) return alert('HLS URL 不能为空');
+  $('qpsUrl').value = hlsUrl;
+  log(`预览 URL: ${absUrl(hlsUrl)}`);
+}
+function playHeaders() {
+  const token = $('playToken').value.trim();
+  const custom = ($('playHeaderName').value || 'X-Head-Token').trim();
+  const headers = {};
+  if (token) {
+    headers['X-Play-Token'] = token;
+    headers['X-Head-Token'] = token;
+    if (custom) headers[custom] = token;
+  }
+  return headers;
+}
+function urlWithQueryToken(url) {
+  const token = $('playToken').value.trim();
+  const u = new URL(absUrl(url));
+  if (token && !u.searchParams.get('token')) u.searchParams.set('token', token);
+  return u.toString();
+}
+
+// ── 画质选择器 ────────────────────────────────────────────────
+
+// 根据 hls.levels 渲染画质按钮
+function renderQualityBar(levels) {
+  const bar = $('qualityBar');
+  // 清除旧的码率按钮（保留"自动"按钮）
+  bar.querySelectorAll('.quality-btn[data-level]:not([data-level="-1"])').forEach(el => el.remove());
+
+  if (!levels || levels.length === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+
+  // 按分辨率从高到低排列
+  const sorted = levels
+    .map((l, i) => ({ index: i, height: l.height, bitrate: l.bitrate, name: l.name || '' }))
+    .sort((a, b) => b.height - a.height);
+
+  const autoBtn = bar.querySelector('[data-level="-1"]');
+  for (const level of sorted) {
+    const btn = document.createElement('button');
+    btn.className = 'quality-btn';
+    btn.dataset.level = String(level.index);
+    btn.textContent = level.height ? `${level.height}p` : (level.name || `Level ${level.index}`);
+    btn.title = `码率: ${Math.round(level.bitrate / 1000)} kbps`;
+    btn.onclick = () => setQuality(level.index);
+    autoBtn.insertAdjacentElement('afterend', btn);
+  }
+
+  bar.style.display = 'flex';
+  updateQualityActive(-1); // 默认自动
+}
+
+// 设置画质：-1 = 自动，>=0 = 固定码率
+function setQuality(levelIndex) {
+  if (!hls) return;
+
+  if (levelIndex === -1) {
+    hls.currentLevel = -1;      // 交给 hls.js ABR 自动选择
+    hls.autoLevelEnabled = true;
+  } else {
+    hls.autoLevelEnabled = false;
+    hls.currentLevel = levelIndex;
+  }
+
+  updateQualityActive(levelIndex);
+  const level = levelIndex >= 0 ? hls.levels[levelIndex] : null;
+  const label = level ? `${level.height}p (${Math.round(level.bitrate / 1000)} kbps)` : '自动';
+  log(`切换画质 → ${label}`, 'playerStatus');
+}
+
+// 高亮当前选中的画质按钮
+function updateQualityActive(levelIndex) {
+  $('qualityBar').querySelectorAll('.quality-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.level) === levelIndex);
+  });
+}
+
+// 实时更新右侧画质信息（显示当前实际播放的 level）
+function updateQualityInfo(levelIndex) {
+  const info = $('qualityInfo');
+  if (!hls || levelIndex < 0 || !hls.levels[levelIndex]) {
+    info.textContent = '—';
+    return;
+  }
+  const l = hls.levels[levelIndex];
+  info.textContent = `当前: ${l.height}p · ${Math.round(l.bitrate / 1000)} kbps`;
+}
+
+// ── 播放器 ────────────────────────────────────────────────────
+
+function startPreview() {
+  const video = $('player');
+  const src = $('hlsUrl').value.trim();
+  if (!src) return alert('HLS URL 不能为空');
+  const finalUrl = absUrl(src);
+  stopPreview(false);
+
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({
+      lowLatencyMode: false,
+      xhrSetup: function(xhr) {
+        const headers = playHeaders();
+        for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+      },
+      fetchSetup: function(context, initParams) {
+        initParams.headers = Object.assign({}, initParams.headers || {}, playHeaders());
+        return new Request(context.url, initParams);
+      },
+    });
+
+    // manifest 解析完成 → 渲染画质按钮
+    hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+      log(`HLS manifest 解析完成，共 ${data.levels.length} 个码率`, 'playerStatus');
+      renderQualityBar(data.levels);
+      video.play().catch(err => log(`play() 被浏览器拦截: ${err.message}`, 'playerStatus'));
+    });
+
+    // 实际播放 level 发生变化时更新右侧信息
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+      updateQualityInfo(data.level);
+      // 自动模式下同步高亮当前实际 level
+      if (hls.autoLevelEnabled) {
+        updateQualityActive(-1); // 按钮保持"自动"高亮，右侧信息显示实际 level
+      }
+    });
+
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      log(`HLS error: ${data.type} ${data.details} fatal=${data.fatal}`, 'playerStatus');
+      if (data.fatal) stopPreview(false);
+    });
+
+    hls.loadSource(finalUrl);
+    hls.attachMedia(video);
+
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari 原生 HLS，不支持自定义 header，fallback query token
+    video.src = urlWithQueryToken(finalUrl);
+    video.play().catch(err => log(`play() 被浏览器拦截: ${err.message}`, 'playerStatus'));
+    log('使用浏览器原生 HLS，已 fallback 到 query token（Safari 不支持画质切换）', 'playerStatus');
+    $('qualityBar').style.display = 'none';
+  } else {
+    alert('当前浏览器不支持 HLS；请使用 Chrome/Edge + hls.js 或 Safari。');
+  }
+}
+
+function stopPreview(clear = true) {
+  const video = $('player');
+  if (hls) { hls.destroy(); hls = null; }
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  $('qualityBar').style.display = 'none';
+  $('qualityInfo').textContent = '—';
+  if (clear) log('已停止预览', 'playerStatus');
+}
+
+function seekForward(sec) {
+  const video = $('player');
+  video.currentTime = Math.max(0, video.currentTime + sec);
+}
+
+// ── QPS 测试 ──────────────────────────────────────────────────
+
+async function startQps() {
+  if (qpsRunning) return;
+  const target = $('qpsUrl').value.trim() || $('hlsUrl').value.trim();
+  if (!target) return alert('QPS URL 不能为空');
+  const url = absUrl(target);
+  const concurrency = Math.max(1, Number($('qpsConcurrency').value || 1));
+  const durationMs = Math.max(1, Number($('qpsDuration').value || 10)) * 1000;
+  const endAt = performance.now() + durationMs;
+  qpsStop = false;
+  qpsRunning = true;
+  const stats = { total:0, ok:0, fail:0, bytes:0, latencies:[] };
+  const started = performance.now();
+  setStatus('qpsStatus', 'running...');
+  log(`QPS 开始: url=${url}, concurrency=${concurrency}`);
+
+  async function worker() {
+    while (!qpsStop && performance.now() < endAt) {
+      const t0 = performance.now();
+      try {
+        const res = await fetch(url, { method:'GET', headers: playHeaders(), cache:'no-store' });
+        const buf = await res.arrayBuffer();
+        stats.total++;
+        stats.bytes += buf.byteLength;
+        stats.latencies.push(performance.now() - t0);
+        if (res.ok) stats.ok++; else stats.fail++;
+      } catch (_) {
+        stats.total++;
+        stats.fail++;
+        stats.latencies.push(performance.now() - t0);
+      }
+      if (stats.total % Math.max(1, concurrency * 4) === 0) renderQps(stats, started, false);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  qpsRunning = false;
+  renderQps(stats, started, true);
+  log('QPS 结束');
+}
+function renderQps(stats, started, done) {
+  const elapsed = Math.max(0.001, (performance.now() - started) / 1000);
+  const lats = stats.latencies.slice().sort((a,b) => a-b);
+  const avg = lats.length ? lats.reduce((a,b)=>a+b,0) / lats.length : 0;
+  const p95 = lats.length ? lats[Math.floor(lats.length * 0.95)] : 0;
+  const p99 = lats.length ? lats[Math.floor(lats.length * 0.99)] : 0;
+  setStatus('qpsStatus', {
+    done,
+    elapsed_seconds: Number(elapsed.toFixed(2)),
+    total: stats.total, ok: stats.ok, fail: stats.fail,
+    qps: Number((stats.total / elapsed).toFixed(2)),
+    success_qps: Number((stats.ok / elapsed).toFixed(2)),
+    bytes: stats.bytes,
+    avg_latency_ms: Number(avg.toFixed(2)),
+    p95_latency_ms: Number(p95.toFixed(2)),
+    p99_latency_ms: Number(p99.toFixed(2)),
+  });
+}
+function stopQps() { qpsStop = true; log('正在停止 QPS...'); }
+
+loadConfig();
+</script>
+</body>
+</html>

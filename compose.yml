@@ -1,0 +1,16 @@
+services:
+  oss:
+    image: oss-local:latest
+    container_name: oss
+    working_dir: /app
+    command: >
+      bash -c "service ssh start && sleep infinity"
+    environment:
+      TZ: Asia/Shanghai
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    ports:
+      - "2222:22"
+    volumes:
+      - "E:/project:/app"
+    gpus: all

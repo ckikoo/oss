@@ -2,6 +2,9 @@ package adaptor
 
 import (
 	"database/sql"
+	"log"
+	"os"
+	"time"
 
 	"oss/adaptor/storage"
 	"oss/adaptor/storage/local"
@@ -13,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type IAdaptor interface {
@@ -39,20 +43,21 @@ type Adaptor struct {
 	logger    *zap.Logger
 }
 
-func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, logger *zap.Logger) *Adaptor {
-	// gormLogger := gormlogger.New(
-	// 	log.New(os.Stdout, "", log.LstdFlags),
-	// 	gormlogger.Config{
-	// 		SlowThreshold:             time.Second,
-	// 		LogLevel:                  gormlogger.Info,
-	// 		IgnoreRecordNotFoundError: true,
-	// 		Colorful:                  true,
-	// 	},
-	// )
+func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, log1 *zap.Logger) *Adaptor {
+	gormLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             500 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+			ParameterizedQueries:      true,
+			Colorful:                  false,
+		},
+	)
 
-	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: db}), &gorm.Config{})
+	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: db}), &gorm.Config{Logger: gormLogger})
 	if err != nil {
-		logger.Error("failed to connect to database with gorm", zap.Error(err))
+		log1.Error("failed to connect to database with gorm", zap.Error(err))
 		return nil
 	}
 
@@ -63,8 +68,8 @@ func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, logger *za
 		storage:   local.New(conf.Server.SaveDir),
 		gormDB:    gormDB,
 		txManager: tx.NewGormTxManager(gormDB),
-		cm:        cache.NewManager(redis, logger),
-		logger:    logger,
+		cm:        cache.NewManager(redis, log1),
+		logger:    log1,
 	}
 }
 
