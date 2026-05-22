@@ -37,7 +37,7 @@ type CleanupService struct {
 
 func NewCleanupService(adaptor adaptor.IAdaptor) *CleanupService {
 	return &CleanupService{
-		videoRepo: gormVideo.NewVideoRepo(adaptor.GetGORM()),
+		videoRepo: gormVideo.NewVideoRepo(adaptor),
 		playToken: redis.NewPlayToken(adaptor),
 		storage:   adaptor.GetStorage(),
 		logger:    logger.GetLogger().With(zap.String("module", "video_cleanup")),

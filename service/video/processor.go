@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"oss/adaptor"
@@ -47,6 +48,8 @@ const (
 	hlsPlaylistName = "index.m3u8"
 	hlsSegmentGlob  = "seg_%06d.ts"
 	maxFFmpegOutput = 4 * 1024
+
+	cpuH264Encoder = "libx264"
 )
 
 type Processor struct {
@@ -62,6 +65,9 @@ type Processor struct {
 	segmentDurationSeconds int
 	transcodeLimiter       *semaphore.Weighted
 	ffmpegRunner           ffmpegRunner
+	h264EncoderOnce        sync.Once
+	h264EncoderMu          sync.Mutex
+	h264Encoder            string
 	logger                 *zap.Logger
 }
 
@@ -93,6 +99,15 @@ type ffmpegRunner interface {
 
 type commandFFmpegRunner struct{}
 
+var hardwareH264EncoderPreference = []string{
+	"h264_nvenc",
+	"h264_qsv",
+	"h264_amf",
+	"h264_videotoolbox",
+	"h264_v4l2m2m",
+	"h264_vaapi",
+}
+
 func NewProcessor(adaptor adaptor.IAdaptor) *Processor {
 	cfg := adaptor.GetConfig()
 	videoCfg := config.Video{}
@@ -104,7 +119,7 @@ func NewProcessor(adaptor adaptor.IAdaptor) *Processor {
 
 	return &Processor{
 		txManager:              adaptor.GetTxManager(),
-		videoRepo:              gormVideo.NewVideoRepo(adaptor.GetGORM()),
+		videoRepo:              gormVideo.NewVideoRepo(adaptor),
 		objectRepo:             gormObject.NewObjectRepo(adaptor),
 		multipartRepo:          gormMultipart.NewObjectRepo(adaptor.GetGORM()),
 		userRepo:               gormAdmin.NewUserRepo(adaptor),
@@ -434,22 +449,269 @@ func (p *Processor) decryptProfileKey(key *do.VideoEncryptKeyDo) (*profileKey, e
 }
 
 func (p *Processor) runFFmpeg(ctx context.Context, inputPath string, outputDir string, keyInfoPath string, profile *do.VideoProfileDo) error {
-	args := make([]string, 0)
 	switch profile.Profile {
 	case consts.VideoProfileOriginal:
-		args = BuildOriginalArgs(inputPath, outputDir, keyInfoPath)
-	default:
-		gopSize := strconv.Itoa(consts.HLSSegmentDurationSeconds * int(profile.Fps))
-		args = buildFFmpegArgs(inputPath, outputDir, keyInfoPath, profile, gopSize)
+		output, err := p.ffmpegRunner.Run(ctx, BuildOriginalArgs(inputPath, outputDir, keyInfoPath))
+		return formatFFmpegRunError(err, output)
 	}
+
+	fps := profile.Fps
+	if fps <= 0 {
+		fps = 30
+	}
+	gopSize := strconv.Itoa(consts.HLSSegmentDurationSeconds * int(fps))
+	encoder := p.selectH264Encoder(ctx)
+	args := buildFFmpegArgsForEncoder(inputPath, outputDir, keyInfoPath, profile, gopSize, encoder)
 	output, err := p.ffmpegRunner.Run(ctx, args)
-	if err != nil {
-		if output == "" {
-			return fmt.Errorf("ffmpeg failed: %w", err)
-		}
-		return fmt.Errorf("ffmpeg failed: %w: %s", err, output)
+	if err == nil {
+		return nil
+	}
+	runErr := formatFFmpegRunError(err, output)
+	if ctx.Err() != nil {
+		return runErr
+	}
+	if encoder == cpuH264Encoder {
+		return runErr
+	}
+
+	if p.logger != nil {
+		p.logger.Warn("gpu ffmpeg transcode failed, falling back to cpu",
+			zap.String("encoder", encoder),
+			zap.String("ffmpeg_stderr", truncateString(output, maxFFmpegOutput)),
+			zap.Error(err))
+	}
+	p.disableH264HardwareEncoder(encoder)
+	if cleanErr := clearDir(outputDir); cleanErr != nil {
+		return fmt.Errorf("cleanup failed before cpu fallback after gpu encoder %s failed: %w", encoder, cleanErr)
+	}
+
+	cpuArgs := buildFFmpegArgsForEncoder(inputPath, outputDir, keyInfoPath, profile, gopSize, cpuH264Encoder)
+	cpuOutput, cpuErr := p.ffmpegRunner.Run(ctx, cpuArgs)
+	if cpuErr != nil {
+		return fmt.Errorf("ffmpeg cpu fallback failed after gpu encoder %s failed (%v): %w", encoder, runErr, formatFFmpegRunError(cpuErr, cpuOutput))
 	}
 	return nil
+}
+
+func (p *Processor) selectH264Encoder(ctx context.Context) string {
+	p.h264EncoderOnce.Do(func() {
+		p.h264Encoder = p.detectH264Encoder(ctx)
+	})
+
+	p.h264EncoderMu.Lock()
+	defer p.h264EncoderMu.Unlock()
+	if p.h264Encoder == "" {
+		return cpuH264Encoder
+	}
+	return p.h264Encoder
+}
+func appendFFmpegArgs(base []string, extra ...string) []string {
+	args := make([]string, 0, len(base)+len(extra))
+	args = append(args, base...)
+	args = append(args, extra...)
+	return args
+}
+func findVAAPIDevice() string {
+	preferred := []string{
+		"/dev/dri/renderD128",
+		"/dev/dri/renderD129",
+		"/dev/dri/card0",
+	}
+
+	for _, path := range preferred {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	entries, err := os.ReadDir("/dev/dri")
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, "renderD") {
+			return "/dev/dri/" + name
+		}
+	}
+
+	return ""
+}
+func buildH264EncoderProbeArgs(encoder string) [][]string {
+	baseInput := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-f", "lavfi",
+		"-i", "testsrc2=s=256x256:r=1:d=1",
+		"-frames:v", "1",
+		"-an",
+	}
+
+	switch encoder {
+	case "h264_nvenc":
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=yuv420p",
+				"-c:v", "h264_nvenc",
+				"-preset", "p4",
+				"-f", "null", "-",
+			),
+		}
+
+	case "h264_qsv":
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=nv12",
+				"-c:v", "h264_qsv",
+				"-preset", "fast",
+				"-f", "null", "-",
+			),
+			appendFFmpegArgs(baseInput,
+				"-c:v", "h264_qsv",
+				"-preset", "fast",
+				"-f", "null", "-",
+			),
+		}
+
+	case "h264_amf":
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=nv12",
+				"-c:v", "h264_amf",
+				"-f", "null", "-",
+			),
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=yuv420p",
+				"-c:v", "h264_amf",
+				"-f", "null", "-",
+			),
+		}
+
+	case "h264_videotoolbox":
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=yuv420p",
+				"-c:v", "h264_videotoolbox",
+				"-f", "null", "-",
+			),
+		}
+
+	case "h264_v4l2m2m":
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=nv12",
+				"-c:v", "h264_v4l2m2m",
+				"-f", "null", "-",
+			),
+			appendFFmpegArgs(baseInput,
+				"-vf", "format=yuv420p",
+				"-c:v", "h264_v4l2m2m",
+				"-f", "null", "-",
+			),
+		}
+
+	case "h264_vaapi":
+		vaapiDevice := findVAAPIDevice()
+		if vaapiDevice == "" {
+			return nil
+		}
+
+		return [][]string{
+			{
+				"-hide_banner",
+				"-loglevel", "error",
+				"-vaapi_device", vaapiDevice,
+				"-f", "lavfi",
+				"-i", "testsrc2=s=256x256:r=1:d=1",
+				"-frames:v", "1",
+				"-an",
+				"-vf", "format=nv12,hwupload,scale_vaapi=w=256:h=256",
+				"-c:v", "h264_vaapi",
+				"-f", "null", "-",
+			},
+		}
+
+	default:
+		return [][]string{
+			appendFFmpegArgs(baseInput,
+				"-c:v", encoder,
+				"-f", "null", "-",
+			),
+		}
+	}
+}
+func (p *Processor) detectH264Encoder(ctx context.Context) string {
+	for _, encoder := range hardwareH264EncoderPreference {
+		probeArgsList := buildH264EncoderProbeArgs(encoder)
+
+		for _, args := range probeArgsList {
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			output, err := p.ffmpegRunner.Run(probeCtx, args)
+			cancel()
+
+			if err == nil {
+				if p.logger != nil {
+					p.logger.Info("selected h264 encoder",
+						zap.String("encoder", encoder))
+				}
+				return encoder
+			}
+
+			if p.logger != nil {
+				p.logger.Warn("h264 encoder probe failed",
+					zap.String("encoder", encoder),
+					zap.Strings("args", args),
+					zap.String("output", truncateString(output, maxFFmpegOutput)),
+					zap.Error(err))
+			}
+		}
+	}
+
+	if p.logger != nil {
+		p.logger.Info("fallback to cpu h264 encoder",
+			zap.String("encoder", cpuH264Encoder))
+	}
+
+	return cpuH264Encoder
+}
+
+func (p *Processor) disableH264HardwareEncoder(encoder string) {
+	if encoder == "" || encoder == cpuH264Encoder {
+		return
+	}
+	p.h264EncoderMu.Lock()
+	defer p.h264EncoderMu.Unlock()
+	if p.h264Encoder == encoder {
+		p.h264Encoder = cpuH264Encoder
+	}
+}
+
+func chooseH264Encoder(ffmpegEncodersOutput string) string {
+	encoders := map[string]struct{}{}
+	for _, line := range strings.Split(ffmpegEncodersOutput, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			encoders[fields[1]] = struct{}{}
+		}
+	}
+
+	for _, encoder := range hardwareH264EncoderPreference {
+		if _, ok := encoders[encoder]; ok {
+			return encoder
+		}
+	}
+	return cpuH264Encoder
+}
+
+func formatFFmpegRunError(err error, output string) error {
+	if err == nil {
+		return nil
+	}
+	if output == "" {
+		return fmt.Errorf("ffmpeg failed: %w", err)
+	}
+	return fmt.Errorf("ffmpeg failed: %w: %s", err, output)
 }
 
 func (commandFFmpegRunner) Run(ctx context.Context, args []string) (string, error) {
@@ -474,7 +736,8 @@ func BuildOriginalArgs(inputPath, outputDir, keyInfoPath string) []string {
 	}
 }
 
-func buildFFmpegArgs(inputPath, outputDir, keyInfoPath string, profile *do.VideoProfileDo, gopSize string) []string {
+func buildFFmpegArgsForEncoder(inputPath, outputDir, keyInfoPath string, profile *do.VideoProfileDo, gopSize string, encoder string) []string {
+	width := profile.Width
 	height := profile.Height
 	if height <= 0 {
 		height = 720
@@ -487,25 +750,79 @@ func buildFFmpegArgs(inputPath, outputDir, keyInfoPath string, profile *do.Video
 	if audioBitrate == "" {
 		audioBitrate = "128k"
 	}
-	return []string{
+	if encoder == "" {
+		encoder = cpuH264Encoder
+	}
+
+	args := []string{
 		"-y",
+	}
+	if encoder == "h264_vaapi" {
+		args = append(args, "-vaapi_device", "/dev/dri/renderD128")
+	}
+	args = append(args,
 		"-i", inputPath,
-		"-c:v", "libx264",
+	)
+	args = append(args, h264EncoderArgs(encoder)...)
+	args = append(args,
 		"-c:a", "aac",
-		"-preset", "fast",
 		"-g", gopSize,
 		"-keyint_min", gopSize,
 		"-sc_threshold", "0",
-		"-vf", fmt.Sprintf("scale=-2:%d", height),
+		"-vf", h264ScaleFilter(encoder, width, height),
 		"-b:v", videoBitrate,
 		"-b:a", audioBitrate,
-		"-threads", "0",
+	)
+	if encoder == cpuH264Encoder {
+		args = append(args, "-threads", "0")
+	}
+	args = append(args,
 		"-hls_key_info_file", keyInfoPath,
 		"-hls_time", strconv.Itoa(consts.HLSSegmentDurationSeconds),
 		"-hls_playlist_type", "vod",
 		"-hls_segment_filename", filepath.Join(outputDir, hlsSegmentGlob),
 		filepath.Join(outputDir, hlsPlaylistName),
+	)
+	return args
+}
+
+func h264EncoderArgs(encoder string) []string {
+	args := []string{"-c:v", encoder}
+	switch encoder {
+	case cpuH264Encoder:
+		args = append(args, "-preset", "fast")
+	case "h264_nvenc":
+		args = append(args, "-preset", "fast", "-rc", "vbr")
+	case "h264_qsv":
+		args = append(args, "-preset", "veryfast")
+	case "h264_amf":
+		args = append(args, "-quality", "speed")
 	}
+	return args
+}
+
+func h264ScaleFilter(encoder string, width int32, height int32) string {
+	widthExpr := "-2"
+	if width > 0 {
+		widthExpr = strconv.FormatInt(int64(width), 10)
+	}
+	if encoder == "h264_vaapi" {
+		return fmt.Sprintf("format=nv12,hwupload,scale_vaapi=w=%s:h=%d", widthExpr, height)
+	}
+	return fmt.Sprintf("scale=%s:%d", widthExpr, height)
+}
+
+func clearDir(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(path, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *Processor) uploadOutputAssets(ctx context.Context, bucketName string, outputDir string, stagingPrefix string) (*uploadStats, error) {
@@ -755,7 +1072,7 @@ func truncateString(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
 		return value
 	}
-	return value[:limit]
+	return "...(truncated)\n" + value[len(value)-limit:]
 }
 
 type tailBuffer struct {

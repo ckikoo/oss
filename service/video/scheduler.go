@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os/exec"
@@ -50,10 +51,16 @@ type transcodeTaskRef struct {
 	transcodeID int64
 }
 
+type videoMeta struct {
+	width  int
+	height int
+	fps    int
+}
+
 func NewScheduler(adaptor adaptor.IAdaptor) *Scheduler {
 	return &Scheduler{
 		txManager:  adaptor.GetTxManager(),
-		videoRepo:  gormVideo.NewVideoRepo(adaptor.GetGORM()),
+		videoRepo:  gormVideo.NewVideoRepo(adaptor),
 		asyncRepo:  gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
 		asyncRedis: redis.NewTask(adaptor),
 		logger:     logger.GetLogger().With(zap.String("module", "video_scheduler")),
@@ -72,12 +79,12 @@ func (s *Scheduler) ScheduleTranscode(ctx context.Context, source *TranscodeSour
 		return err
 	}
 
-	height, fps, err := getVideoMeta(source.SourcePath)
+	meta, err := getVideoMeta(source.SourcePath)
 	if err != nil {
 		return fmt.Errorf("schedule Transcode error: %v", err)
 	}
 
-	defaultProfiles := AvailableProfiles(height)
+	defaultProfiles := AvailableProfiles(meta.height)
 
 	taskRefs := make([]transcodeTaskRef, 0, len(defaultProfiles))
 	err = s.txManager.RunInTx(ctx, func(ctx context.Context, tx tx.Tx) error {
@@ -101,7 +108,7 @@ func (s *Scheduler) ScheduleTranscode(ctx context.Context, source *TranscodeSour
 			return fmt.Errorf("create video transcode: %w", err)
 		}
 
-		profiles, err := videoRepo.CreateProfiles(ctx, transcode.ID, buildDefaultProfileCreates(defaultProfiles, fps))
+		profiles, err := videoRepo.CreateProfiles(ctx, transcode.ID, buildDefaultProfileCreates(defaultProfiles, meta))
 		if err != nil {
 			return fmt.Errorf("create video profiles: %w", err)
 		}
@@ -200,53 +207,98 @@ func AvailableProfiles(srcHeight int) []consts.VideoTranscodeProfile {
 	return profiles
 }
 
-// GetVideoHeight 通过 ffprobe 获取视频高度，本地文件 100~500ms
-func getVideoMeta(inputPath string) (height, fps int, err error) {
+// getVideoMeta 通过 ffprobe 获取源视频宽高和帧率，本地文件通常 100~500ms。
+func getVideoMeta(inputPath string) (*videoMeta, error) {
 	out, err := exec.Command("ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=height,r_frame_rate",
-		"-of", "csv=p=0",
+		"-show_entries", "stream=width,height,r_frame_rate",
+		"-of", "json",
 		inputPath,
 	).Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("ffprobe failed: %w", err)
+		return nil, fmt.Errorf("ffprobe failed: %w", err)
 	}
-	// 输出格式: "1080,30000/1001"
-	parts := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("unexpected output: %s", out)
+	return parseVideoMeta(out)
+}
+
+func parseVideoMeta(out []byte) (*videoMeta, error) {
+	var parsed struct {
+		Streams []struct {
+			Width      int    `json:"width"`
+			Height     int    `json:"height"`
+			RFrameRate string `json:"r_frame_rate"`
+		} `json:"streams"`
 	}
-	height, err = strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, err
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, fmt.Errorf("parse ffprobe output: %w", err)
 	}
-	fpsParts := strings.Split(parts[1], "/")
+	if len(parsed.Streams) == 0 {
+		return nil, fmt.Errorf("ffprobe output has no video stream")
+	}
+	stream := parsed.Streams[0]
+	if stream.Width <= 0 || stream.Height <= 0 {
+		return nil, fmt.Errorf("invalid video dimensions: width=%d height=%d", stream.Width, stream.Height)
+	}
+	fps := parseFrameRate(stream.RFrameRate)
+	if fps <= 0 {
+		fps = 30
+	}
+	return &videoMeta{width: stream.Width, height: stream.Height, fps: fps}, nil
+}
+
+func parseFrameRate(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	fpsParts := strings.Split(raw, "/")
 	if len(fpsParts) == 2 {
 		num, _ := strconv.Atoi(fpsParts[0])
 		den, _ := strconv.Atoi(fpsParts[1])
 		if den > 0 {
-			fps = int(math.Round(float64(num) / float64(den)))
+			return int(math.Round(float64(num) / float64(den)))
 		}
 	}
-	if fps <= 0 {
-		fps = 30
-	}
-	return
+	fps, _ := strconv.Atoi(raw)
+	return fps
 }
-func buildDefaultProfileCreates(defaultProfiles []consts.VideoTranscodeProfile, fps int) []*do.CreateVideoProfile {
+
+func buildDefaultProfileCreates(defaultProfiles []consts.VideoTranscodeProfile, meta *videoMeta) []*do.CreateVideoProfile {
+	if meta == nil {
+		meta = &videoMeta{fps: 30}
+	}
 	profiles := make([]*do.CreateVideoProfile, 0, len(defaultProfiles))
 	for _, profile := range defaultProfiles {
+		width, height := targetProfileDimensions(meta.width, meta.height, int(profile.Height))
 		profiles = append(profiles, &do.CreateVideoProfile{
-			Fps:          int32(fps),
+			Fps:          int32(meta.fps),
 			Profile:      profile.Profile,
 			Status:       consts.TranscodeStatusPending,
 			VideoBitrate: profile.VideoBitrate,
 			AudioBitrate: profile.AudioBitrate,
-			Height:       profile.Height,
+			Width:        width,
+			Height:       height,
 		})
 	}
 	return profiles
+}
+
+func targetProfileDimensions(srcWidth int, srcHeight int, targetHeight int) (int32, int32) {
+	if targetHeight <= 0 {
+		return int32(srcWidth), int32(srcHeight)
+	}
+	if srcWidth <= 0 || srcHeight <= 0 {
+		return 0, int32(targetHeight)
+	}
+	if targetHeight > srcHeight {
+		targetHeight = srcHeight
+	}
+	width := int(math.Round(float64(srcWidth) * float64(targetHeight) / float64(srcHeight)))
+	if width%2 != 0 {
+		width++
+	}
+	return int32(width), int32(targetHeight)
 }
 
 func (s *Scheduler) enqueueAsyncTask(ctx context.Context, taskID int64) error {

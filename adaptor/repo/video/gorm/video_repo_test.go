@@ -14,6 +14,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"oss/adaptor/repo/model"
+	"oss/adaptor/repo/query"
 	"oss/adaptor/repo/repoerr"
 	"oss/consts"
 	"oss/service/do"
@@ -234,11 +235,9 @@ func TestUpdateProfileNoRowsReturnsNotFound(t *testing.T) {
 	repo, mock := newMockVideoRepo(t)
 	status := consts.TranscodeStatusDone
 
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE `video_transcode_profiles`")).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT count(*) FROM `video_transcode_profiles` WHERE id = ?")).
+	mock.ExpectQuery("SELECT \\* FROM `video_transcode_profiles` WHERE .*id.*\\?.*LIMIT 1").
 		WithArgs(int64(77)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		WillReturnRows(videoProfileRows())
 
 	err := repo.UpdateProfile(context.Background(), 77, &do.UpdateVideoProfile{Status: &status})
 	if !errors.Is(err, repoerr.ErrNotFound) {
@@ -307,7 +306,7 @@ func newMockVideoRepo(t *testing.T) (*VideoRepo, sqlmock.Sqlmock) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	return &VideoRepo{db: db}, mock
+	return &VideoRepo{db: db, q: query.Use(db), cacheEnabled: false}, mock
 }
 
 func assertSqlExpectations(t *testing.T, mock sqlmock.Sqlmock) {
@@ -351,6 +350,30 @@ func videoEncryptKeyRows() *sqlmock.Rows {
 		"algorithm",
 		"key_version",
 		"kms_key_id",
+		"created_at",
+		"updated_at",
+	})
+}
+
+func videoProfileRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{
+		"id",
+		"transcode_id",
+		"profile",
+		"status",
+		"video_bitrate",
+		"audio_bitrate",
+		"width",
+		"fps",
+		"height",
+		"asset_prefix",
+		"playlist_key",
+		"size",
+		"segment_count",
+		"duration_ms",
+		"last_error",
+		"started_at",
+		"finished_at",
 		"created_at",
 		"updated_at",
 	})

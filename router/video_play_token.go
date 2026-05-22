@@ -21,6 +21,8 @@ func NewVideoPlayTokenMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
+		setVideoPlaybackFallbackCORSHeaders(c, adaptor.GetConfig().CORS)
+
 		handler.Handle(ctx, c, func() {
 			c.Next(ctx)
 		})

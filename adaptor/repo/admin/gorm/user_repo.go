@@ -3,7 +3,6 @@ package gorm
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -16,6 +15,7 @@ import (
 	"oss/adaptor/repo/admin"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repocache"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -30,6 +30,7 @@ type User struct {
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
+	cacheEnabled bool
 }
 
 var _ admin.IUser = (*User)(nil)
@@ -41,6 +42,7 @@ func NewUserRepo(a adaptor.IAdaptor) *User {
 		rds:          a.GetRedis(),
 		g:            &singleflight.Group{},
 		cacheManager: a.GetCache(),
+		cacheEnabled: true,
 	}
 }
 
@@ -52,6 +54,7 @@ func (u *User) WithTx(tx tx.Tx) admin.IUser {
 		rds:          u.rds,
 		cacheManager: u.cacheManager,
 		g:            u.g,
+		cacheEnabled: false,
 	}
 }
 
@@ -104,7 +107,6 @@ func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) e
 	qs := u.q.User
 	_, err := qs.WithContext(ctx).Where(qs.ID.Eq(id)).UpdateColumnSimple(qs.StorageUsed.Add(storage))
 	if err != nil {
-		fmt.Printf("gorm update error: %v\n", err)
 		return repoerr.Wrap(err)
 	}
 
@@ -114,6 +116,9 @@ func (u *User) UpdateStorageUsed(ctx context.Context, id int64, storage int64) e
 }
 
 func (u *User) getCachedRedis(ctx context.Context, key string) *do.UserDo {
+	if u.rds == nil {
+		return nil
+	}
 	val, err := u.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -137,6 +142,9 @@ func (u *User) setCachedRedis(ctx context.Context, key string, user *do.UserDo) 
 }
 
 func (u *User) setAllCaches(ctx context.Context, keys []string, user *do.UserDo) {
+	if u.cacheManager == nil {
+		return
+	}
 	for _, key := range keys {
 		u.cacheManager.Set(key, user, 0)
 
@@ -153,15 +161,12 @@ func (u *User) setAllCaches(ctx context.Context, keys []string, user *do.UserDo)
 func (u *User) invalidateUserCache(ctx context.Context, id int64) {
 	cacheKey := consts.UserCacheKeyByID(id)
 
-	u.rds.Del(ctx, cacheKey)
-	u.cacheManager.Remove(cacheKey)
-
-	if err := u.cacheManager.Publish(ctx, cacheKey); err != nil {
-		logger.Warn("failed to publish user cache invalidation",
-			zap.Error(err),
-			zap.String("key", cacheKey),
-		)
-	}
+	repocache.Invalidator{
+		RDS:          u.rds,
+		Local:        u.cacheManager,
+		DoubleDelete: true,
+		LogName:      "user",
+	}.AfterCommit(ctx, cacheKey)
 }
 
 func (u *User) getByKey(
@@ -169,34 +174,14 @@ func (u *User) getByKey(
 	cacheKey string,
 	queryFn func() (*do.UserDo, error),
 ) (*do.UserDo, error) {
-	if entry, ok := u.cacheManager.Get(cacheKey); ok {
-		return entry.Data.(*do.UserDo), nil
-	}
-
-	if cached := u.getCachedRedis(ctx, cacheKey); cached != nil {
-		u.cacheManager.Set(cacheKey, cached, 0)
-		return cached, nil
-	}
-
-	result, err, _ := u.g.Do(cacheKey, func() (interface{}, error) {
-		if cached := u.getCachedRedis(ctx, cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		user, err := queryFn()
-		if err != nil {
-			return nil, err
-		}
-
-		u.setAllCaches(ctx, []string{cacheKey}, user)
-		return user, nil
+	return repocache.Accessor[*do.UserDo]{
+		RDS:     u.rds,
+		Local:   u.cacheManager,
+		Group:   u.g,
+		TTL:     time.Duration(consts.CacheTTLUser) * time.Second,
+		Enabled: u.cacheEnabled,
+		LogName: "user",
+	}.Get(ctx, cacheKey, func(context.Context) (*do.UserDo, error) {
+		return queryFn()
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	user := result.(*do.UserDo)
-	u.cacheManager.Set(cacheKey, user, 0)
-
-	return user, nil
 }

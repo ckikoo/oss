@@ -29,7 +29,7 @@ type Service struct {
 
 func NewService(adaptor adaptor.IAdaptor) *Service {
 	return &Service{
-		eventRuleRepo:     gorm.NewEventRuleRepo(adaptor.GetGORM()),
+		eventRuleRepo:     gorm.NewEventRuleRepo(adaptor),
 		eventDeliveryRepo: gorm.NewEventDeliveryRepo(adaptor.GetGORM()),
 		eventQueue:        redis.NewEventQueue(adaptor),
 		bucketRepo:        gormBucket.NewBucketRepo(adaptor),

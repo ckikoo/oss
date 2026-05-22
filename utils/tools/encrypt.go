@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -123,7 +122,6 @@ func HmacSHA256Verify(stringToSign, secretKey, signature string) bool {
 
 	expectedBytes, err := hex.DecodeString(expected)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
 		return false
 	}
 

@@ -82,7 +82,7 @@ func NewPlaybackService(adaptor adaptor.IAdaptor) *PlaybackService {
 	}
 
 	return &PlaybackService{
-		videoRepo:    gormVideo.NewVideoRepo(adaptor.GetGORM()),
+		videoRepo:    gormVideo.NewVideoRepo(adaptor),
 		objectRepo:   gormObject.NewObjectRepo(adaptor),
 		bucketRepo:   gormBucket.NewBucketRepo(adaptor),
 		meteringRepo: gormMetering.NewMeteringRepo(adaptor.GetGORM()),

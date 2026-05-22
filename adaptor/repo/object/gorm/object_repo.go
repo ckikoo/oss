@@ -11,6 +11,7 @@ import (
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/object"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repocache"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -30,6 +31,7 @@ type objectRepo struct {
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
+	cacheEnabled bool
 }
 
 var _ object.IObjectRepo = (*objectRepo)(nil)
@@ -41,16 +43,19 @@ func NewObjectRepo(a adaptor.IAdaptor) object.IObjectRepo {
 		rds:          a.GetRedis(),
 		cacheManager: a.GetCache(),
 		g:            &singleflight.Group{},
+		cacheEnabled: true,
 	}
 }
 
 func (r *objectRepo) WithTx(tx tx.Tx) object.IObjectRepo {
+	db := tx.(*gorm.DB)
 	return &objectRepo{
-		q:            query.Use(tx.(*gorm.DB)),
-		db:           tx.(*gorm.DB),
+		q:            query.Use(db),
+		db:           db,
 		rds:          r.rds,
 		cacheManager: r.cacheManager,
 		g:            r.g,
+		cacheEnabled: false,
 	}
 }
 func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
@@ -83,6 +88,9 @@ func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 
 // getCachedRedis retrieves object from Redis cache, returns nil if not found
 func (r *objectRepo) getCachedRedis(ctx context.Context, key string) *do.ObjectDo {
+	if r.rds == nil {
+		return nil
+	}
 	val, err := r.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -106,6 +114,9 @@ func (r *objectRepo) setCachedRedis(ctx context.Context, key string, object *do.
 
 // setAllCaches 本地 + Redis 同时写入
 func (r *objectRepo) setAllCaches(ctx context.Context, keys []string, obj *do.ObjectDo) {
+	if r.cacheManager == nil {
+		return
+	}
 	for _, key := range keys {
 		r.cacheManager.Set(key, obj, 0) // TTL=0 使用 manager 默认值
 
@@ -120,9 +131,15 @@ func (r *objectRepo) setAllCaches(ctx context.Context, keys []string, obj *do.Ob
 }
 
 func (r *objectRepo) getLatestVersion(ctx context.Context, bucketName, objectKey string) (string, error) {
+	if r.rds == nil {
+		return "", redis.Nil
+	}
 	return r.rds.Get(ctx, consts.ObjectLatestVersionCacheKey(bucketName, objectKey)).Result()
 }
 func (r *objectRepo) setLatestVersion(ctx context.Context, bucketName, objectKey string, version string) error {
+	if r.rds == nil {
+		return nil
+	}
 	return r.rds.Set(ctx, consts.ObjectLatestVersionCacheKey(bucketName, objectKey), version, time.Duration(consts.CacheTTLObject)*time.Second).Err()
 }
 
@@ -139,19 +156,12 @@ func (r *objectRepo) invalidateObjectCache(ctx context.Context, bucketName, obje
 	for key := range keySet {
 		keys = append(keys, key)
 	}
-	// 删 Redis
-	r.rds.Del(ctx, keys...)
-
-	// 删本地
-	r.cacheManager.Remove(keys...)
-
-	// 广播其他实例删本地
-	if err := r.cacheManager.Publish(ctx, keys...); err != nil {
-		logger.Warn("failed to publish object cache invalidation",
-			zap.Error(err),
-			zap.Strings("keys", keys),
-		)
-	}
+	repocache.Invalidator{
+		RDS:          r.rds,
+		Local:        r.cacheManager,
+		DoubleDelete: true,
+		LogName:      "object",
+	}.AfterCommit(ctx, keys...)
 }
 
 // ─── 三层查询核心 ────────────────────────────────────────────────────────────
@@ -162,45 +172,16 @@ func (r *objectRepo) getByKey(
 	cacheKey string,
 	queryFn func() (*do.ObjectDo, error),
 ) (*do.ObjectDo, error) {
-
-	// ① 本地缓存
-	if entry, ok := r.cacheManager.Get(cacheKey); ok {
-		return entry.Data.(*do.ObjectDo), nil
-	}
-
-	// ② Redis 缓存
-	if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-		r.cacheManager.Set(cacheKey, cached, 0) // 回填本地
-		return cached, nil
-	}
-
-	// ③ singleflight → DB（同实例并发合并，防击穿）
-	result, err, _ := r.g.Do(cacheKey, func() (interface{}, error) {
-		// double-check Redis（可能其他实例刚写入）
-		if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		obj, err := queryFn()
-		if err != nil {
-			return nil, err
-		}
-
-		// 回填 Redis + 本地
-		r.setAllCaches(ctx, []string{cacheKey}, obj)
-		return obj, nil
+	return repocache.Accessor[*do.ObjectDo]{
+		RDS:     r.rds,
+		Local:   r.cacheManager,
+		Group:   r.g,
+		TTL:     time.Duration(consts.CacheTTLObject) * time.Second,
+		Enabled: r.cacheEnabled,
+		LogName: "object",
+	}.Get(ctx, cacheKey, func(context.Context) (*do.ObjectDo, error) {
+		return queryFn()
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	obj := result.(*do.ObjectDo)
-
-	// singleflight 共享结果时也要回填本地（其他等待的 goroutine 没有走 setAllCaches）
-	r.cacheManager.Set(cacheKey, obj, 0)
-
-	return obj, nil
 }
 
 // repoerr.Wrap maps GORM errors to repoerr sentinels
@@ -375,10 +356,6 @@ func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 		return nil, repoerr.ErrInvalidData
 	}
 
-	// Invalidate cache before update
-
-	r.invalidateObjectCache(ctx, bucketName, objectKey, versionID)
-
 	q := query.Use(r.db).Object
 
 	updates := map[string]interface{}{}
@@ -434,16 +411,16 @@ func (r *objectRepo) UpdateObject(ctx context.Context, bucketName, objectKey, ve
 }
 
 func (r *objectRepo) UpdateObjectStorageClass(ctx context.Context, bucketName, objectKey, storageClass string) error {
-	// Invalidate cache for all versions
-	r.invalidateObjectCache(ctx, bucketName, objectKey, "") // For empty versionID
-	// Note: In a real implementation, you might need to invalidate all versions
-
 	q := query.Use(r.db).Object
 	_, err := q.WithContext(ctx).Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).Updates(map[string]interface{}{
 		q.StorageClass.ColumnName().String(): storageClass,
 		q.UpdatedAt.ColumnName().String():    time.Now(),
 	})
-	return repoerr.Wrap(err)
+	if err != nil {
+		return repoerr.Wrap(err)
+	}
+	r.invalidateObjectCache(ctx, bucketName, objectKey, "")
+	return nil
 }
 
 func (r *objectRepo) DeleteObject(ctx context.Context, bucketName, objectKey string, versionID ...string) error {
@@ -583,6 +560,9 @@ func (r *objectRepo) UpdateObjectNotLatest(ctx context.Context, bucketName, obje
 // GetLastVersion 获取对象最新的 VersionID
 func (r *objectRepo) GetLastVersion(ctx context.Context, bucketName, objectKey string) (string, error) {
 	cacheKey := consts.ObjectLatestVersionCacheKey(bucketName, objectKey)
+	if !r.cacheEnabled || r.rds == nil || r.cacheManager == nil || r.g == nil {
+		return r.getLastVersionDB(ctx, bucketName, objectKey)
+	}
 
 	// ① 本地缓存
 	if entry, ok := r.cacheManager.Get(cacheKey); ok {
@@ -601,23 +581,9 @@ func (r *objectRepo) GetLastVersion(ctx context.Context, bucketName, objectKey s
 			return version, nil
 		}
 
-		// ②.2 查询数据库
-		q := query.Use(r.db).Object
-		var versionID string
-
-		err := q.WithContext(ctx).
-			Select(q.VersionID).
-			Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).
-			Where(q.Status.Neq(consts.ObjectStatusDeleted)).
-			Where(q.IsLatest.Eq(1)).
-			Scan(&versionID)
-
+		versionID, err := r.getLastVersionDB(ctx, bucketName, objectKey)
 		if err != nil {
 			return "", err
-		}
-
-		if versionID == "" {
-			return "", repoerr.ErrNotFound
 		}
 
 		r.cacheManager.Set(cacheKey, versionID, consts.CacheTTLObject)
@@ -630,4 +596,23 @@ func (r *objectRepo) GetLastVersion(ctx context.Context, bucketName, objectKey s
 	}
 
 	return result.(string), nil
+}
+
+func (r *objectRepo) getLastVersionDB(ctx context.Context, bucketName, objectKey string) (string, error) {
+	q := query.Use(r.db).Object
+	var versionID string
+
+	err := q.WithContext(ctx).
+		Select(q.VersionID).
+		Where(q.BucketName.Eq(bucketName), q.ObjectKey.Eq(objectKey)).
+		Where(q.Status.Neq(consts.ObjectStatusDeleted)).
+		Where(q.IsLatest.Eq(1)).
+		Scan(&versionID)
+	if err != nil {
+		return "", err
+	}
+	if versionID == "" {
+		return "", repoerr.ErrNotFound
+	}
+	return versionID, nil
 }

@@ -13,6 +13,7 @@ import (
 	corsrepo "oss/adaptor/repo/cors"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repocache"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -31,6 +32,7 @@ type BucketCorsRepo struct {
 	rds          *redis.Client
 	cacheManager cache.IManager
 	g            *singleflight.Group
+	cacheEnabled bool
 }
 
 var _ corsrepo.IBucketCorsRepo = (*BucketCorsRepo)(nil)
@@ -42,16 +44,19 @@ func NewBucketCorsRepo(adaptor adaptor.IAdaptor) *BucketCorsRepo {
 		rds:          adaptor.GetRedis(),
 		cacheManager: adaptor.GetCache(),
 		g:            &singleflight.Group{},
+		cacheEnabled: true,
 	}
 }
 
 func (r *BucketCorsRepo) WithTx(tx tx.Tx) corsrepo.IBucketCorsRepo {
+	db := tx.(*gorm.DB)
 	return &BucketCorsRepo{
-		q:            query.Use(tx.(*gorm.DB)),
-		db:           tx.(*gorm.DB),
+		q:            query.Use(db),
+		db:           db,
 		rds:          r.rds,
 		cacheManager: r.cacheManager,
 		g:            r.g,
+		cacheEnabled: false,
 	}
 }
 
@@ -296,6 +301,9 @@ func (r *BucketCorsRepo) Delete(ctx context.Context, userID int64, bucketName st
 }
 
 func (r *BucketCorsRepo) getCachedRedis(ctx context.Context, key string) *do.BucketCorsRuleDo {
+	if r.rds == nil {
+		return nil
+	}
 	val, err := r.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -317,6 +325,9 @@ func (r *BucketCorsRepo) setCachedRedis(ctx context.Context, key string, rule *d
 }
 
 func (r *BucketCorsRepo) setAllCaches(ctx context.Context, key string, rule *do.BucketCorsRuleDo) {
+	if r.cacheManager == nil {
+		return
+	}
 	r.cacheManager.Set(key, rule, 0)
 	if err := r.setCachedRedis(ctx, key, rule); err != nil {
 		logger.Warn("failed to set bucket cors redis cache",
@@ -339,18 +350,25 @@ func (r *BucketCorsRepo) invalidateBucketCorsCache(ctx context.Context, userID i
 		return
 	}
 
-	r.rds.Del(ctx, keys...)
-	r.cacheManager.Remove(keys...)
-
-	if err := r.cacheManager.Publish(ctx, keys...); err != nil {
-		logger.Warn("failed to publish bucket cors cache invalidation",
-			zap.Error(err),
-			zap.Strings("keys", keys),
-		)
-	}
+	repocache.Invalidator{
+		RDS:     r.rds,
+		Local:   r.cacheManager,
+		LogName: "cors",
+	}.AfterCommit(ctx, keys...)
 }
 
 func (r *BucketCorsRepo) getRuleByKey(ctx context.Context, cacheKey string, queryFn func() (*do.BucketCorsRuleDo, error)) (*do.BucketCorsRuleDo, error) {
+	return repocache.Accessor[*do.BucketCorsRuleDo]{
+		RDS:     r.rds,
+		Local:   r.cacheManager,
+		Group:   r.g,
+		TTL:     time.Duration(consts.CacheTTLBucketCors) * time.Second,
+		Enabled: r.cacheEnabled,
+		LogName: "cors",
+	}.Get(ctx, cacheKey, func(context.Context) (*do.BucketCorsRuleDo, error) {
+		return queryFn()
+	})
+
 	if entry, ok := r.cacheManager.Get(cacheKey); ok {
 		if rule, ok := entry.Data.(*do.BucketCorsRuleDo); ok {
 			return rule, nil

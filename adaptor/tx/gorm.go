@@ -17,7 +17,16 @@ func NewGormTxManager(db *gorm.DB) ITxManager {
 }
 
 func (t *GormTxManager) RunInTx(ctx context.Context, fn func(context.Context, Tx) error) error {
-	return t.db.WithContext(ctx).Transaction(func(gormTx *gorm.DB) error {
-		return fn(ctx, gormTx)
+	state := &afterCommitState{}
+	txCtx := context.WithValue(ctx, afterCommitKey{}, state)
+
+	err := t.db.WithContext(txCtx).Transaction(func(gormTx *gorm.DB) error {
+		return fn(txCtx, gormTx)
 	})
+	if err != nil {
+		return err
+	}
+
+	state.run(context.WithoutCancel(txCtx))
+	return nil
 }

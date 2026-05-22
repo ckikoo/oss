@@ -11,6 +11,7 @@ import (
 	"oss/adaptor/repo/bucket"
 	"oss/adaptor/repo/model"
 	"oss/adaptor/repo/query"
+	"oss/adaptor/repo/repocache"
 	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
@@ -30,6 +31,7 @@ type BucketRepo struct {
 	rds          *redis.Client
 	cacheManager cache.IManager // 只是持有
 	g            *singleflight.Group
+	cacheEnabled bool
 }
 
 var _ bucket.IBucketRepo = (*BucketRepo)(nil)
@@ -41,16 +43,19 @@ func NewBucketRepo(a adaptor.IAdaptor) *BucketRepo {
 		rds:          a.GetRedis(),
 		g:            &singleflight.Group{},
 		cacheManager: a.GetCache(),
+		cacheEnabled: true,
 	}
 }
 
 func (r *BucketRepo) WithTx(tx tx.Tx) bucket.IBucketRepo {
+	db := tx.(*gorm.DB)
 	return &BucketRepo{
-		q:            query.Use(tx.(*gorm.DB)),
-		db:           tx.(*gorm.DB),
+		q:            query.Use(db),
+		db:           db,
 		rds:          r.rds,
 		g:            r.g,
 		cacheManager: r.cacheManager,
+		cacheEnabled: false,
 	}
 }
 
@@ -74,6 +79,9 @@ func (r *BucketRepo) toBucketDo(modelBucket *model.Bucket) *do.BucketDo {
 // ─── Cache Helpers ────────────────────────────────────────────────────
 // getCachedRedis retrieves bucket from Redis cache, returns nil if not found
 func (r *BucketRepo) getCachedRedis(ctx context.Context, key string) *do.BucketDo {
+	if r.rds == nil {
+		return nil
+	}
 	val, err := r.rds.Get(ctx, key).Result()
 	if err != nil {
 		return nil
@@ -97,6 +105,9 @@ func (r *BucketRepo) setCachedRedis(ctx context.Context, key string, bucket *do.
 
 // setAllCaches 本地 + Redis 同时写入
 func (r *BucketRepo) setAllCaches(ctx context.Context, keys []string, b *do.BucketDo) {
+	if r.cacheManager == nil {
+		return
+	}
 	for _, key := range keys {
 		r.cacheManager.Set(key, b, 0) // TTL=0 使用 manager 默认值
 
@@ -116,19 +127,12 @@ func (r *BucketRepo) invalidateBucketCache(ctx context.Context, userID, bucketID
 		consts.BucketCacheKeyByName(userID, bucketName),
 		consts.BucketCacheKeyByID(bucketID),
 	}
-	// 删 Redis
-	r.rds.Del(ctx, keys...)
-
-	// 删本地
-	r.cacheManager.Remove(keys...)
-
-	// 广播其他实例删本地
-	if err := r.cacheManager.Publish(ctx, keys...); err != nil {
-		logger.Warn("failed to publish bucket cache invalidation",
-			zap.Error(err),
-			zap.Strings("keys", keys),
-		)
-	}
+	repocache.Invalidator{
+		RDS:          r.rds,
+		Local:        r.cacheManager,
+		DoubleDelete: true,
+		LogName:      "bucket",
+	}.AfterCommit(ctx, keys...)
 }
 
 // ─── 三层查询核心 ────────────────────────────────────────────────────────────
@@ -139,45 +143,16 @@ func (r *BucketRepo) getByKey(
 	cacheKey string,
 	queryFn func() (*do.BucketDo, error),
 ) (*do.BucketDo, error) {
-
-	// ① 本地缓存
-	if entry, ok := r.cacheManager.Get(cacheKey); ok {
-		return entry.Data.(*do.BucketDo), nil
-	}
-
-	// ② Redis 缓存
-	if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-		r.cacheManager.Set(cacheKey, cached, 0) // 回填本地
-		return cached, nil
-	}
-
-	// ③ singleflight → DB（同实例并发合并，防击穿）
-	result, err, _ := r.g.Do(cacheKey, func() (interface{}, error) {
-		// double-check Redis（可能其他实例刚写入）
-		if cached := r.getCachedRedis(ctx, cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		b, err := queryFn()
-		if err != nil {
-			return nil, err
-		}
-
-		// 回填 Redis + 本地
-		r.setAllCaches(ctx, []string{cacheKey}, b)
-		return b, nil
+	return repocache.Accessor[*do.BucketDo]{
+		RDS:     r.rds,
+		Local:   r.cacheManager,
+		Group:   r.g,
+		TTL:     time.Duration(consts.CacheTTLBucket) * time.Second,
+		Enabled: r.cacheEnabled,
+		LogName: "bucket",
+	}.Get(ctx, cacheKey, func(context.Context) (*do.BucketDo, error) {
+		return queryFn()
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	b := result.(*do.BucketDo)
-
-	// singleflight 共享结果时也要回填本地（其他等待的 goroutine 没有走 setAllCaches）
-	r.cacheManager.Set(cacheKey, b, 0)
-
-	return b, nil
 }
 
 // REPO
@@ -336,12 +311,12 @@ func (r *BucketRepo) UpdateBucketStats(ctx context.Context, userID int64, bucket
 		return nil
 	}
 
-	r.invalidateBucketCache(ctx, userID, bucketInfo.ID, bucketName)
-
 	_, err = q.WithContext(ctx).
 		Where(q.UserID.Eq(userID), q.Name.Eq(bucketName)).
 		Updates(updateMap)
-
+	if err != nil {
+		return repoerr.Wrap(err)
+	}
 	r.invalidateBucketCache(ctx, userID, bucketInfo.ID, bucketName)
-	return repoerr.Wrap(err)
+	return nil
 }

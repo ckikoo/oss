@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,7 +77,7 @@ func (s *LocalStorage) DeletePart(ctx context.Context, bucket, uploadID string, 
 
 // DeleteParts 删除整个分片上传目录（AbortMultipartUpload / CompleteMultipartUpload 后清理）
 func (s *LocalStorage) DeleteParts(ctx context.Context, bucket, uploadID string) error {
-	dirPath := filepath.Join(s.baseDir, bucket, "multipart", uploadID)
+	dirPath := path.Join(s.baseDir, bucket, "multipart", uploadID)
 	err := os.RemoveAll(dirPath)
 	if os.IsNotExist(err) {
 		return nil
@@ -155,8 +156,8 @@ func (s *LocalStorage) MoveAssetPrefix(ctx context.Context, bucket string, srcPr
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dstPath), consts.FilePermDir); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dstPath), err)
+	if err := os.MkdirAll(path.Dir(dstPath), consts.FilePermDir); err != nil {
+		return fmt.Errorf("mkdir %s: %w", path.Dir(dstPath), err)
 	}
 	if pathNested(dstPath, srcPath) {
 		return s.moveNestedAssetPrefix(srcPath, dstPath)
@@ -171,7 +172,7 @@ func (s *LocalStorage) MoveAssetPrefix(ctx context.Context, bucket string, srcPr
 }
 
 func (s *LocalStorage) moveNestedAssetPrefix(srcPath string, dstPath string) error {
-	tempPath, err := os.MkdirTemp(filepath.Dir(dstPath), ".asset-move-*")
+	tempPath, err := os.MkdirTemp(path.Dir(dstPath), ".asset-move-*")
 	if err != nil {
 		return fmt.Errorf("create temporary asset move path: %w", err)
 	}
@@ -221,16 +222,16 @@ func (s *LocalStorage) MergeParts(ctx context.Context, bucket, objectKey string,
 // BuildObjectPath 返回普通对象的完整磁盘路径（供外部记录到 DB）
 func (s *LocalStorage) BuildObjectPath(ctx context.Context, bucket, objectKey string, version string) string {
 	if version == "" {
-		return filepath.Join(s.baseDir, bucket, objectKey)
+		return path.Join(s.baseDir, bucket, objectKey)
 	}
 
-	return filepath.Join(s.baseDir, bucket, objectKey+"_"+version)
+	return path.Join(s.baseDir, bucket, objectKey+"_"+version)
 }
 
 // ---- 内部辅助 ----
 
 func (s *LocalStorage) buildPartPath(bucket, uploadID string, partNumber int32) string {
-	return filepath.Join(s.baseDir, bucket, "multipart", uploadID, fmt.Sprintf("part_%d", partNumber))
+	return path.Join(s.baseDir, bucket, "multipart", uploadID, fmt.Sprintf("part_%d", partNumber))
 }
 
 func (s *LocalStorage) buildAssetPath(bucket string, assetKey string) (string, error) {
@@ -243,14 +244,14 @@ func (s *LocalStorage) buildAssetPath(bucket string, assetKey string) (string, e
 		return "", err
 	}
 
-	return filepath.Join(s.baseDir, bucket, cleanKey), nil
+	return path.Join(s.baseDir, bucket, cleanKey), nil
 }
 
 func validateAssetBucket(bucket string) error {
 	if bucket == "" {
 		return fmt.Errorf("bucket is required")
 	}
-	if bucket == "." || bucket == ".." || filepath.IsAbs(bucket) || strings.ContainsAny(bucket, `/\`) {
+	if bucket == "." || bucket == ".." || path.IsAbs(bucket) || strings.ContainsAny(bucket, `/\`) {
 		return fmt.Errorf("invalid bucket: %s", bucket)
 	}
 	return nil
@@ -260,7 +261,7 @@ func cleanAssetKey(assetKey string) (string, error) {
 	if assetKey == "" {
 		return "", fmt.Errorf("asset key is required")
 	}
-	if strings.HasPrefix(assetKey, "/") || strings.HasPrefix(assetKey, `\`) || filepath.IsAbs(assetKey) {
+	if strings.HasPrefix(assetKey, "/") || strings.HasPrefix(assetKey, `\`) || path.IsAbs(assetKey) {
 		return "", fmt.Errorf("invalid asset key: %s", assetKey)
 	}
 
@@ -272,7 +273,7 @@ func cleanAssetKey(assetKey string) (string, error) {
 		}
 	}
 
-	cleanKey := filepath.Clean(filepath.FromSlash(normalized))
+	cleanKey := path.Clean(filepath.FromSlash(normalized))
 	if cleanKey == "." || strings.HasPrefix(cleanKey, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid asset key: %s", assetKey)
 	}
@@ -296,8 +297,8 @@ var copyBufPool = sync.Pool{
 
 // saveAndHash 创建目录、写文件，同时流式计算 MD5 和 SHA256，避免大文件 OOM
 func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
-	if err := os.MkdirAll(filepath.Dir(destPath), consts.FilePermDir); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(destPath), err)
+	if err := os.MkdirAll(path.Dir(destPath), consts.FilePermDir); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", path.Dir(destPath), err)
 	}
 
 	dst, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, consts.FilePermFile)

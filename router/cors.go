@@ -14,6 +14,7 @@ import (
 )
 
 const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token, X-Play-Token"
+const defaultCORSMEthods = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
 
 func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	corsService := corssvc.NewService(adaptor)
@@ -114,6 +115,7 @@ func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			origin,
 			corsRequestMethod(c),
 		)
+
 		if errno.NotOk() {
 			allowedOrigin, ok := matchGlobalOrigin(corsConf, origin)
 			if !ok {
@@ -236,6 +238,26 @@ func setDefaultPreflightCORSHeaders(c *app.RequestContext, conf config.CORS) {
 		headers = strings.Join(globalAllowedHeaders(conf), ", ")
 	}
 	setCORSHeaders(c, "*", globalAllowedMethods(conf), headers, globalMaxAge(conf))
+}
+
+func setVideoPlaybackFallbackCORSHeaders(c *app.RequestContext, conf config.CORS) {
+	origin := strings.TrimSpace(string(c.GetHeader("Origin")))
+	if origin == "" {
+		return
+	}
+
+	allowedOrigin, ok := matchGlobalOrigin(conf, origin)
+	if !ok {
+		allowedOrigin = "*"
+	}
+
+	headers := corsRequestHeaders(c)
+	if headers == "" {
+		headers = defaultCORSHeaders
+	}
+
+	setCORSHeaders(c, allowedOrigin, []string{"GET", "HEAD", "OPTIONS"}, headers, globalMaxAge(conf))
+	c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
 }
 
 func setCORSHeaders(c *app.RequestContext, origin string, methods []string, headers string, maxAge int32) {
