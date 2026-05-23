@@ -4,6 +4,7 @@ import (
 	"context"
 	"oss/adaptor"
 	"oss/api/auth"
+	"oss/api/health"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -25,6 +26,7 @@ type RouterDeps struct {
 	TokenHandler     auth.ITokenHandler
 	EventHandler     auth.IEventHandler
 	VideoHandler     auth.IVideoHandler
+	HealthHandler    health.IHealthHandler
 }
 
 func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
@@ -41,6 +43,7 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 		TokenHandler:     auth.NewTokenCtrl(adaptor),
 		EventHandler:     auth.NewEventCtrl(adaptor),
 		VideoHandler:     auth.NewVideoCtrl(adaptor),
+		HealthHandler:    health.NewHealthCtrl(adaptor),
 	}
 }
 
@@ -93,6 +96,10 @@ func registerVideoPlaybackRoutes(playGroup *route.RouterGroup, deps RouterDeps) 
 }
 
 func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
+	// 健康检查路由（不需要认证）
+	h.GET("/healthz", deps.HealthHandler.Healthz)
+	h.GET("/readyz", deps.HealthHandler.Readyz)
+
 	h.POST("/api/v1/access-keys", deps.AccessKeyHandler.CreateAccessKey)
 	h.GET("/api/v1/access-keys", deps.AccessKeyHandler.ListAccessKeys)
 	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)

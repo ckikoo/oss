@@ -12,6 +12,7 @@ import (
 	"oss/api"
 	ossAuth "oss/api/auth"
 	"oss/common"
+	"oss/config"
 	"oss/consts"
 	"oss/service/do"
 	"oss/utils/tools"
@@ -119,7 +120,12 @@ func lookupAndDecryptSK(
 		return nil, "", err
 	}
 
-	sk, err := tools.AESDecrypt(info.SecretKey, []byte(aesKey))
+	key, err := config.Security{AESKey: aesKey}.AESKeyBytes()
+	if err != nil {
+		return nil, "", err
+	}
+
+	sk, err := tools.AESDecrypt(info.SecretKey, key)
 	if err != nil {
 		return nil, "", err
 	}

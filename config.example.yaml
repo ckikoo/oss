@@ -1,0 +1,52 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+  enable_prof: false
+  log_level: "info"
+  save_dir: "./data"
+  env: "dev"
+
+mysql:
+  user: "oss_user"
+  password: "CHANGE_ME_MYSQL_PASSWORD"
+  host: "127.0.0.1"
+  port: 3306
+  db_name: "oss_db"
+  charset: "utf8mb4"
+  show_sql: false
+  max_open: 100
+  max_idle: 50
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: "CHANGE_ME_REDIS_PASSWORD"
+  db: 0
+  max_idle: 100
+  max_open: 50
+
+security:
+  # Generate your own value, for example:
+  # openssl rand -base64 32
+  aes_key: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+cors:
+  allowed_origins:
+    - "*"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowed_headers:
+    - "Content-Type"
+    - "Authorization"
+    - "X-Requested-With"
+  max_age_seconds: 3600
+
+video:
+  transcode_max_concurrency: 4
+  segment_duration_seconds: 10
+  play_token_ttl_seconds: 3600
+
+app_conf: {}

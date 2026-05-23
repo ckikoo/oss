@@ -48,7 +48,12 @@ func (srv *Service) CreateAccessKey(ctx context.Context, req *dto.CreateAccessKe
 		return nil, common.ServerErr.WithErr(err)
 	}
 
-	encryptedSecretKey, err := tools.AESEncrypt(secretKey, []byte(srv.config.Security.AESKey))
+	aesKey, err := srv.config.Security.AESKeyBytes()
+	if err != nil {
+		return nil, common.ServerErr.WithErr(err)
+	}
+
+	encryptedSecretKey, err := tools.AESEncrypt(secretKey, aesKey)
 	if err != nil {
 		return nil, common.ServerErr.WithErr(err)
 	}

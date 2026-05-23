@@ -1,10 +1,12 @@
 package config
 
 import (
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
 	"oss/consts"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -39,7 +41,23 @@ type Server struct {
 }
 
 type Security struct {
-	AESKey string `yaml:"aes_key"` // 32 字节 base64 编码的 AES-256 密钥
+	AESKey string `yaml:"aes_key"` // base64 encoded AES key. Decoded length must be 16, 24, or 32 bytes.
+}
+
+func (s Security) AESKeyBytes() ([]byte, error) {
+	raw := strings.TrimSpace(s.AESKey)
+	if raw == "" {
+		return nil, fmt.Errorf("security.aes_key is required")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("security.aes_key must be valid base64: %w", err)
+	}
+	if !isAESKeyLength(len(decoded)) {
+		return nil, fmt.Errorf("security.aes_key decoded length must be 16, 24, or 32 bytes, got %d", len(decoded))
+	}
+	return decoded, nil
 }
 
 type CORS struct {
@@ -105,6 +123,37 @@ type Redis struct {
 type AppConf struct {
 }
 
+var envKeys = []string{
+	"server.host",
+	"server.port",
+	"server.enable_prof",
+	"server.log_level",
+	"server.save_dir",
+	"server.env",
+	"mysql.user",
+	"mysql.password",
+	"mysql.host",
+	"mysql.port",
+	"mysql.db_name",
+	"mysql.charset",
+	"mysql.show_sql",
+	"mysql.max_open",
+	"mysql.max_idle",
+	"redis.addr",
+	"redis.password",
+	"redis.db",
+	"redis.max_idle",
+	"redis.max_open",
+	"security.aes_key",
+	"cors.allowed_origins",
+	"cors.allowed_methods",
+	"cors.allowed_headers",
+	"cors.max_age_seconds",
+	"video.transcode_max_concurrency",
+	"video.segment_duration_seconds",
+	"video.play_token_ttl_seconds",
+}
+
 func init() {
 	flag.StringVar(&localConfigPath, "c", "./config.yaml", "config file path")
 	flag.StringVar(&EtcdAddr, "e", os.Getenv("ETCD_ADDR"), "etcd address")
@@ -113,14 +162,14 @@ func init() {
 func InitConfig() *Config {
 	var (
 		err     error
-		tempCfg *Config = &Config{}
-		vipConf         = viper.New()
+		tempCfg *Config
+		vipConf = viper.New()
 	)
 
 	vipConf.SetConfigType("yaml")
-	err = vipConf.Unmarshal(&tempCfg, func(config *mapstructure.DecoderConfig) {
-		config.TagName = "yaml"
-	})
+	if err = configureEnv(vipConf); err != nil {
+		panic(err)
+	}
 
 	flag.Parse()
 
@@ -145,18 +194,103 @@ func InitConfig() *Config {
 	return tempCfg
 }
 
-func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
-	tempConf := &Config{}
+func configureEnv(viper *viper.Viper) error {
+	viper.SetEnvPrefix("OSS")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 
+	for _, key := range envKeys {
+		if err := viper.BindEnv(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func unmarshalAndValidate(viper *viper.Viper) (*Config, error) {
+	tempConf := &Config{}
+	if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
+		config.TagName = "yaml"
+	}); err != nil {
+		return nil, err
+	}
+	if err := ValidateConfig(tempConf); err != nil {
+		return nil, err
+	}
+	return tempConf, nil
+}
+
+func ValidateConfig(conf *Config) error {
+	if conf == nil {
+		return fmt.Errorf("config is nil")
+	}
+	aesKey, err := conf.Security.AESKeyBytes()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(conf.Mysql.Host) == "" {
+		return fmt.Errorf("mysql.host is required")
+	}
+	if strings.TrimSpace(conf.Redis.Addr) == "" {
+		return fmt.Errorf("redis.addr is required")
+	}
+
+	if strings.EqualFold(strings.TrimSpace(conf.Server.Env), "prod") {
+		if isWeakSecret(conf.Mysql.Password) {
+			return fmt.Errorf("mysql.password uses a weak default value in prod")
+		}
+		if isWeakSecret(conf.Redis.Password) {
+			return fmt.Errorf("redis.password uses a weak default value in prod")
+		}
+		if isWeakAESKey(aesKey) {
+			return fmt.Errorf("security.aes_key uses an example value in prod")
+		}
+		if hasWildcard(conf.CORS.AllowedOrigins) {
+			return fmt.Errorf("cors.allowed_origins cannot contain * in prod")
+		}
+	}
+
+	return nil
+}
+
+func isAESKeyLength(length int) bool {
+	return length == 16 || length == 24 || length == 32
+}
+
+func isWeakSecret(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return true
+	}
+	return normalized == "password" ||
+		normalized == "changeme" ||
+		normalized == "change_me" ||
+		strings.Contains(normalized, "change_me") ||
+		strings.Contains(normalized, "example")
+}
+
+func isWeakAESKey(key []byte) bool {
+	return string(key) == "0123456789abcdef" || string(key) == "0123456789abcdef0123456789abcdef"
+}
+
+func hasWildcard(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
 	if err := viper.AddRemoteProvider("etcd", EtcdAddr, EtcdKey); err != nil {
 		return nil, err
 	}
 	if err := viper.ReadRemoteConfig(); err != nil {
 		return nil, err
 	}
-	if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
-		config.TagName = "yaml"
-	}); err != nil {
+	tempConf, err := unmarshalAndValidate(viper)
+	if err != nil {
 		return nil, err
 	}
 
@@ -164,9 +298,12 @@ func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
 		for {
 			time.Sleep(time.Second * 30)
 			if err := viper.WatchRemoteConfig(); err == nil {
-				viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
-					config.TagName = "yaml"
-				})
+				updated, err := unmarshalAndValidate(viper)
+				if err != nil {
+					fmt.Printf("failed to reload remote config: %v\n", err)
+					continue
+				}
+				*tempConf = *updated
 			}
 		}
 
@@ -176,26 +313,24 @@ func loadConfigFromEtcd(viper *viper.Viper) (*Config, error) {
 
 // Dev 开发
 func loadConfigFromFile(viper *viper.Viper) (*Config, error) {
-	tempConf := &Config{}
-
 	viper.SetConfigFile(localConfigPath)
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}
 
-	if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
-		config.TagName = "yaml"
-	}); err != nil {
+	tempConf, err := unmarshalAndValidate(viper)
+	if err != nil {
 		return nil, err
 	}
 
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
-		if err := viper.Unmarshal(tempConf, func(config *mapstructure.DecoderConfig) {
-			config.TagName = "yaml"
-		}); err != nil {
+		updated, err := unmarshalAndValidate(viper)
+		if err != nil {
 			fmt.Printf("failed to reload config: %v\n", err)
+			return
 		}
+		*tempConf = *updated
 	})
 
 	return tempConf, nil
