@@ -51,10 +51,7 @@ func (ctrl *EventCtrl) ListEventRules(ctx context.Context, c *app.RequestContext
 		return
 	}
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
+
 	resp, errno := ctrl.event.ListEventRules(ctx1, bucketName)
 
 	api.WriteResp(c, resp, errno)
@@ -69,10 +66,6 @@ func (ctrl *EventCtrl) UpdateEventRule(ctx context.Context, c *app.RequestContex
 		return
 	}
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	var req dto.UpdateEventRuleReq
 	if err := c.BindAndValidate(&req); err != nil {
@@ -99,10 +92,6 @@ func (ctrl *EventCtrl) DeleteEventRule(ctx context.Context, c *app.RequestContex
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {

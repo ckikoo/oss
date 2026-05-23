@@ -31,10 +31,6 @@ func (ctrl *LifecycleCtrl) CreateLifecycleRule(ctx context.Context, c *app.Reque
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	req := &dto.CreateLifecycleRuleReq{}
 	if err := c.BindAndValidate(req); err != nil {
@@ -54,10 +50,6 @@ func (ctrl *LifecycleCtrl) ListLifecycleRules(ctx context.Context, c *app.Reques
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	resp, errno := ctrl.lifecycle.ListLifecycleRules(ctx1, bucketName)
 	api.WriteResp(c, resp, errno)
@@ -71,10 +63,6 @@ func (ctrl *LifecycleCtrl) GetLifecycleRule(ctx context.Context, c *app.RequestC
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	ruleID, err := strconv.ParseInt(c.Param("rule_id"), 10, 64)
 	if err != nil || ruleID <= 0 {
@@ -94,10 +82,6 @@ func (ctrl *LifecycleCtrl) UpdateLifecycleRule(ctx context.Context, c *app.Reque
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	ruleID, err := strconv.ParseInt(c.Param("rule_id"), 10, 64)
 	if err != nil || ruleID <= 0 {
@@ -123,10 +107,6 @@ func (ctrl *LifecycleCtrl) DeleteLifecycleRule(ctx context.Context, c *app.Reque
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	ruleID, err := strconv.ParseInt(c.Param("rule_id"), 10, 64)
 	if err != nil || ruleID <= 0 {

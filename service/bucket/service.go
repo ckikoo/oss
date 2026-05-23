@@ -240,13 +240,13 @@ func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, bucketID int64, buckNa
 	}
 
 	if err = srv.txManager.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
-		for _, rule := range list {
-			if err = srv.lifecycleRepo.DeleteLifecycleRule(ctx1, bucketID, rule.ID); err != nil {
+		if len(list) > 0 {
+			if err = srv.lifecycleRepo.WithTx(tx).DeleteLifecycleRule(ctx1, bucketID, lifecycleRuleIDs(list)...); err != nil {
 				return err
 			}
 		}
 
-		if err := srv.repo.DeleteBucket(ctx1, ctx.UserID, bucketID, buckName); err != nil {
+		if err := srv.repo.WithTx(tx).DeleteBucket(ctx1, ctx.UserID, bucketID, buckName); err != nil {
 			return err
 		}
 
@@ -257,10 +257,27 @@ func (srv *Service) DeleteBucket(ctx *common.UserInfoCtx, bucketID int64, buckNa
 
 	for _, rule := range list {
 		// redis 相关的 lifecycle 数据也删除掉
-		if err = srv.lifeRedis.ClearRuleEvents(ctx, bucketID, rule.ID, *rule.Prefix); err != nil {
+		if err = srv.lifeRedis.ClearRuleEvents(ctx, bucketID, rule.ID, lifecycleRulePrefix(rule)); err != nil {
 			srv.logger.Warn("failed to delete lifecycle rules from redis", zap.Int64("bucket_id", bucketID), zap.Error(err))
 		}
 	}
 
 	return common.OK
+}
+
+func lifecycleRuleIDs(rules []*do.LifecycleRuleDo) []int64 {
+	ids := make([]int64, 0, len(rules))
+	for _, rule := range rules {
+		if rule != nil && rule.ID > 0 {
+			ids = append(ids, rule.ID)
+		}
+	}
+	return ids
+}
+
+func lifecycleRulePrefix(rule *do.LifecycleRuleDo) string {
+	if rule == nil || rule.Prefix == nil {
+		return ""
+	}
+	return *rule.Prefix
 }

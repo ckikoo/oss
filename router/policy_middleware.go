@@ -22,20 +22,25 @@ func NewPolicyMiddleware(adp adaptor.IAdaptor) app.HandlerFunc {
 
 	return func(ctx context.Context, c *app.RequestContext) {
 		// token 授权的请求直接跳过
-		if granted, ok := c.Get(consts.TokenGranted); ok && granted.(bool) {
+		if tokenGranted(c) {
 			c.Next(ctx)
 			return
 		}
 
-		userID := c.GetInt64(consts.UserKeyContext)
+		userID := authenticatedUserID(c)
 		bucketName := c.Param("bucket_name")
 		if bucketName == "" {
 			c.Next(ctx)
 			return
 		}
 
-		bucket, err := bRepo.GetByName(ctx, userID, bucketName)
+		bucket, err := loadRouteBucket(ctx, c, bRepo, userID, bucketName)
 		if err != nil {
+			api.WriteResp(c, nil, common.BucketNotFoundErr)
+			c.Abort()
+			return
+		}
+		if bucket == nil {
 			api.WriteResp(c, nil, common.BucketNotFoundErr)
 			c.Abort()
 			return
@@ -47,7 +52,7 @@ func NewPolicyMiddleware(adp adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		ak, _ := c.Get(consts.AccessKeyContext)
+		ak := c.GetString(consts.AccessKeyContext)
 		action := resolvePolicyAction(c)
 		resource := fmt.Sprintf("arn:oss:::%s/%s",
 			bucketName,

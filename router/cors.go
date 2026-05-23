@@ -14,7 +14,6 @@ import (
 )
 
 const defaultCORSHeaders = "Authorization, Content-Type, X-OSS-Token, X-Oss-Token, X-Play-Token"
-const defaultCORSMEthods = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
 
 func newAuthenticatedCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	corsService := corssvc.NewService(adaptor)
@@ -92,7 +91,7 @@ func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			setCORSHeaders(
 				c,
 				"*",
-				[]string{"GET", "HEAD", "OPTIONS"},
+				adaptor.GetConfig().CORS.AllowedMethods,
 				headers,
 				globalMaxAge(corsConf),
 			)
@@ -126,7 +125,7 @@ func newVideoPlaybackCORSMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			setCORSHeaders(
 				c,
 				allowedOrigin,
-				[]string{"GET", "HEAD", "OPTIONS"},
+				adaptor.GetConfig().CORS.AllowedMethods,
 				defaultCORSHeaders,
 				globalMaxAge(corsConf),
 			)
@@ -237,6 +236,7 @@ func setDefaultPreflightCORSHeaders(c *app.RequestContext, conf config.CORS) {
 	if headers == "" {
 		headers = strings.Join(globalAllowedHeaders(conf), ", ")
 	}
+
 	setCORSHeaders(c, "*", globalAllowedMethods(conf), headers, globalMaxAge(conf))
 }
 

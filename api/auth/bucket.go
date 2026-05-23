@@ -7,6 +7,7 @@ import (
 	"oss/common"
 	"oss/consts"
 	"oss/service/bucket"
+	"oss/service/do"
 	"oss/service/dto"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -61,10 +62,6 @@ func (ctrl *BucketCtrl) ListBuckets(ctx context.Context, c *app.RequestContext) 
 
 func (ctrl *BucketCtrl) GetBucket(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
@@ -77,10 +74,6 @@ func (ctrl *BucketCtrl) GetBucket(ctx context.Context, c *app.RequestContext) {
 
 func (ctrl *BucketCtrl) UpdateBucket(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	req := &dto.UpdateBucketReq{}
 	if err := c.BindAndValidate(req); err != nil {
@@ -100,11 +93,6 @@ func (ctrl *BucketCtrl) UpdateBucket(ctx context.Context, c *app.RequestContext)
 
 func (ctrl *BucketCtrl) DeleteBucket(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
-
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
@@ -117,13 +105,23 @@ func (ctrl *BucketCtrl) DeleteBucket(ctx context.Context, c *app.RequestContext)
 		return
 	}
 
-	bucketDo, ok := bucket.(*dto.BucketItem)
-	if !ok {
+	var bucketID int64
+	switch bucketDo := bucket.(type) {
+	case *do.BucketDo:
+		if bucketDo != nil {
+			bucketID = bucketDo.ID
+		}
+	case *dto.BucketItem:
+		if bucketDo != nil {
+			bucketID = bucketDo.ID
+		}
+	}
+	if bucketID == 0 {
 		api.WriteResp(c, nil, common.ParamErr.WithMsg("invalid bucket info"))
 		return
 	}
 
-	errno := ctrl.bucket.DeleteBucket(ctx1, bucketDo.ID, bucketName)
+	errno := ctrl.bucket.DeleteBucket(ctx1, bucketID, bucketName)
 	api.WriteResp(c, nil, errno)
 
 }

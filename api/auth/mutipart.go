@@ -32,10 +32,6 @@ func (ctrl *multipartCtrl) CreateMultipartUpload(ctx context.Context, c *app.Req
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	req := &dto.CreateMultipartUploadReq{}
 	if err := c.BindAndValidate(req); err != nil {
