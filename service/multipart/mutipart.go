@@ -94,8 +94,8 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 	if req.ObjectKey == "" {
 		return nil, common.ParamErr.WithMsg("object_key is required")
 	}
-	if req.TotalChunk <= 0 {
-		return nil, common.ParamErr.WithMsg("total_chunk must greate zero")
+	if req.TotalChunk < 0 {
+		return nil, common.ParamErr.WithMsg("total_chunk must not be negative")
 	}
 
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
@@ -276,7 +276,7 @@ func (srv *Service) UploadMultipartPart(
 		return nil, common.FileUploadIdStatusNotOnUpload
 	}
 
-	if partNumber <= 0 || partNumber > upload.TotalChunk {
+	if partNumber <= 0 || (upload.TotalChunk > 0 && partNumber > upload.TotalChunk) {
 		return nil, common.ParamErr.WithMsg("part_number exceeds total_chunk")
 	}
 
@@ -421,7 +421,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 	if upload.Status != consts.MultipartUploadStatusUploading {
 		return nil, common.FileUploadIdStatusNotOnUpload
 	}
-	if int32(len(req.Parts)) != upload.TotalChunk {
+	if upload.TotalChunk > 0 && int32(len(req.Parts)) != upload.TotalChunk {
 		return nil, common.ParamErr.WithMsg("parts count not match total_chunk")
 	}
 	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, bucketName)
@@ -515,10 +515,8 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		Status:       &statusMerged,
 		LastActiveAt: &lastActive,
 	}
-	if upload.TotalChunk > 0 {
-		totalChunk := upload.TotalChunk
-		update.TotalChunk = &totalChunk
-	}
+	totalChunk := completeMultipartTotalChunk(upload.TotalChunk, len(sortedParts))
+	update.TotalChunk = &totalChunk
 
 	createObj := &do.CreateObject{
 		BucketID:      upload.BucketID,
@@ -568,6 +566,9 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 				return err
 			}
 			if oldObjectToCleanup.IsMultipart == consts.ObjectIsMultipartMerged && oldObjectToCleanup.UploadID != nil {
+				if _, err := srv.asyncRepo.WithTx(tx).FailAsyncTasksByBiz(ctx1, ctx.UserID, consts.TaskTypePhysicalMerge, consts.TaskBizTypeUpload, []string{*oldObjectToCleanup.UploadID}, "object already deleted"); err != nil {
+					return err
+				}
 				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
 					return err
 				}
@@ -685,6 +686,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		ObjectID:  objectID,
 		ObjectKey: upload.ObjectKey,
 		VersionID: upload.VersionID,
+		Etag:      resultEtag,
 		Status:    statusMerged,
 	}, common.OK
 }
@@ -750,6 +752,13 @@ func (srv *Service) enqueueAsyncTask(ctx context.Context, taskID int64) error {
 	}
 
 	return srv.asyncRedis.EnqueueTask(ctx, taskID)
+}
+
+func completeMultipartTotalChunk(existing int32, partsCount int) int32 {
+	if existing > 0 {
+		return existing
+	}
+	return int32(partsCount)
 }
 
 func (srv *Service) AbortMultipartUpload(ctx *common.UserInfoCtx, uploadID string) common.Errno {

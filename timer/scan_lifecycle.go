@@ -84,12 +84,12 @@ func handlerScanTableLifecycleEvents(ctx context.Context, a adaptor.IAdaptor) {
 					}
 				}
 
-				objcurrsor = list[len(list)-1].ID
-				time.Sleep(50 * time.Millisecond)
-
 				if len(list) < batchSize {
 					break
 				}
+
+				objcurrsor = list[len(list)-1].ID
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 

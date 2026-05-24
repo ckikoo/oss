@@ -159,9 +159,10 @@ const (
 )
 
 const (
-	EventDeliveryStatusPending = 0
-	EventDeliveryStatusSuccess = 1
-	EventDeliveryStatusFailed  = 2
+	EventDeliveryStatusPending    = 0
+	EventDeliveryStatusSuccess    = 1
+	EventDeliveryStatusFailed     = 2
+	EventDeliveryStatusProcessing = 3
 )
 
 const (

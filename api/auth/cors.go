@@ -25,11 +25,6 @@ func NewCorsCtrl(adaptor adaptor.IAdaptor) ICorsHandler {
 
 func (ctrl *CorsCtrl) CreateBucketCorsRule(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
-
 	req := &dto.CreateBucketCorsRuleReq{}
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
@@ -48,11 +43,6 @@ func (ctrl *CorsCtrl) CreateBucketCorsRule(ctx context.Context, c *app.RequestCo
 
 func (ctrl *CorsCtrl) ListBucketCorsRules(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
-
 	userCtx, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
@@ -65,11 +55,6 @@ func (ctrl *CorsCtrl) ListBucketCorsRules(ctx context.Context, c *app.RequestCon
 
 func (ctrl *CorsCtrl) UpdateBucketCorsRule(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
-
 	ruleID, errno := parseRuleID(c.Param("rule_id"))
 	if errno.NotOk() {
 		api.WriteResp(c, nil, errno)
@@ -94,11 +79,6 @@ func (ctrl *CorsCtrl) UpdateBucketCorsRule(ctx context.Context, c *app.RequestCo
 
 func (ctrl *CorsCtrl) DeleteBucketCorsRule(ctx context.Context, c *app.RequestContext) {
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
-
 	ruleID, errno := parseRuleID(c.Param("rule_id"))
 	if errno.NotOk() {
 		api.WriteResp(c, nil, errno)

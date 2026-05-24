@@ -8,440 +8,506 @@
 CREATE DATABASE IF NOT EXISTS oss_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE oss_db;
 
--- ============================================================
--- 1. 用户库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  users (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '用户ID',
-    email           VARCHAR(128)    NOT NULL                COMMENT '邮箱',
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=正常 2=禁用 3=注销',
-    storage_quota   BIGINT          NOT NULL DEFAULT 107374182400 COMMENT '存储配额(字节) 默认100GB',
-    storage_used    BIGINT          NOT NULL DEFAULT 0      COMMENT '已用存储(字节)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_email (email)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表（仅账号信息，AK/SK 认证在 access_keys 表）';
-
+-- 关闭外键检查，确保 DROP / CREATE 顺序不受约束限制
+SET FOREIGN_KEY_CHECKS = 0;
 
 -- ============================================================
--- 2. 密钥库
+--  DROP TABLE（逆依赖顺序：子表先删）
 -- ============================================================
-CREATE TABLE  IF NOT EXISTS   access_keys (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    user_id         BIGINT          NOT NULL                COMMENT '所属用户ID',
-    access_key      VARCHAR(32)     NOT NULL                COMMENT 'AK 公开标识',
-    secret_key      VARCHAR(256)    NOT NULL                COMMENT 'SK 加密存储(AES)',
-    alias           VARCHAR(64)                             COMMENT '别名/备注',
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=启用 0=禁用',
-    -- 权限范围: {"buckets":["b1","b2"], "actions":["GetObject","PutObject"]}
-    permission      JSON                                    COMMENT '细粒度权限(NULL=全部)',
-    last_used_at    DATETIME                                COMMENT '最后使用时间',
-    expires_at      DATETIME                                COMMENT '过期时间(NULL=永不过期)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_access_key (access_key),
-    INDEX      idx_user_id  (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AccessKey 密钥表';
-
-
--- ============================================================
--- 3. Bucket 库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  buckets (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    user_id         BIGINT          NOT NULL                COMMENT '所属用户ID',
-    name            VARCHAR(64)     NOT NULL                COMMENT 'Bucket名(全局唯一)',
-    region          VARCHAR(32)     NOT NULL DEFAULT 'cn-hz' COMMENT '所在区域',
-    acl             TINYINT         NOT NULL DEFAULT 0      COMMENT '0=私有 1=公共读 2=公共读写',
-    versioning      TINYINT         NOT NULL DEFAULT 0      COMMENT '0=关闭 1=开启版本控制',
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=正常 2=锁定 3=删除',
-    storage_class   VARCHAR(16)     NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD/IA/ARCHIVE',
-    object_count    BIGINT          NOT NULL DEFAULT 0      COMMENT '对象总数',
-    storage_size    BIGINT          NOT NULL DEFAULT 0      COMMENT '存储总量(字节)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_user_name (user_id, name),
-    INDEX      idx_user_id (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bucket 表';
-
+DROP TABLE IF EXISTS `video_encrypt_keys`;
+DROP TABLE IF EXISTS `video_transcode_profiles`;
+DROP TABLE IF EXISTS `video_transcodes`;
+DROP TABLE IF EXISTS `operation_logs`;
+DROP TABLE IF EXISTS `metering_daily`;
+DROP TABLE IF EXISTS `async_tasks`;
+DROP TABLE IF EXISTS `objects`;
+DROP TABLE IF EXISTS `multipart_parts`;
+DROP TABLE IF EXISTS `multipart_uploads`;
+DROP TABLE IF EXISTS `event_deliveries`;
+DROP TABLE IF EXISTS `event_rules`;
+DROP TABLE IF EXISTS `lifecycle_rules`;
+DROP TABLE IF EXISTS `policy_resources`;
+DROP TABLE IF EXISTS `policy_principals`;
+DROP TABLE IF EXISTS `policy_conditions`;
+DROP TABLE IF EXISTS `policy_actions`;
+DROP TABLE IF EXISTS `bucket_policies`;
+DROP TABLE IF EXISTS `bucket_cors_rules`;
+DROP TABLE IF EXISTS `buckets`;
+DROP TABLE IF EXISTS `access_keys`;
+DROP TABLE IF EXISTS `users`;
 
 -- ============================================================
--- 4. Object 库
+--  CREATE TABLE（正依赖顺序：父表先建）
 -- ============================================================
-CREATE TABLE  IF NOT EXISTS  objects (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    bucket_id       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    bucket_name     VARCHAR(64)     NOT NULL                COMMENT 'Bucket名(冗余)',
-    object_key      VARCHAR(1024)   NOT NULL                COMMENT '对象路径 e.g. dir/video.mp4',
-    -- ✅ 解决索引超长：存 object_key 的 MD5，用于唯一约束
-    -- 应用层写入前计算: md5(object_key) 即可
-    object_key_hash CHAR(32)        NOT NULL                COMMENT 'MD5(object_key) 用于唯一索引',
-    version_id      VARCHAR(32)     NOT NULL DEFAULT ''     COMMENT '版本ID(未开启版本控制时为空字符串)',
-    -- 存储信息
-    size            BIGINT          NOT NULL DEFAULT 0      COMMENT '文件大小(字节)',
-    etag            VARCHAR(64)     NOT NULL                COMMENT 'MD5 或分片合并ETag',
-    content_type    VARCHAR(128)                            COMMENT 'MIME类型',
-    storage_class   VARCHAR(16)     NOT NULL DEFAULT 'STANDARD',
-    -- 虚拟合并关键字段
-    is_multipart    TINYINT         NOT NULL DEFAULT 0      COMMENT '0=普通上传 1=分片虚拟合并',
-    upload_id       VARCHAR(64)                             COMMENT '分片上传ID(is_multipart=1时)',
-    storage_path    VARCHAR(512)                            COMMENT '物理路径(普通文件或物理合并后)',
-    -- 访问控制
-    acl             TINYINT         NOT NULL DEFAULT 0      COMMENT '0=继承Bucket 1=私有 2=公共读',
-    -- 元数据
-    metadata        JSON                                    COMMENT '用户自定义元数据',
-    -- 状态
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=正常 2=删除标记(版本控制) 3=物理删除',
-    access_count    BIGINT          NOT NULL DEFAULT 0      COMMENT '访问次数(懒合并触发依据)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at      DATETIME                                COMMENT '软删除时间',
 
-    PRIMARY KEY (id),
-    -- ✅ bucket_id(8) + object_key_hash CHAR(32)×4=128 + version_id VARCHAR(32)×4=128 = 264 bytes ✅
-    UNIQUE KEY uk_bucket_key_ver (bucket_id, object_key_hash, version_id),
-    INDEX      idx_bucket_id     (bucket_id),
-    INDEX      idx_upload_id     (upload_id),
-    INDEX      idx_etag          (etag)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Object 对象表';
+-- ----------------------------
+-- 1. users（无依赖，最顶层）
+-- ----------------------------
+CREATE TABLE `users`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '用户ID',
+  `email` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '邮箱',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=正常 2=禁用 3=注销',
+  `storage_quota` bigint NOT NULL DEFAULT 107374182400 COMMENT '存储配额(字节) 默认100GB',
+  `storage_used` bigint NOT NULL DEFAULT 0 COMMENT '已用存储(字节)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_email`(`email` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '用户表（仅账号信息，AK/SK 认证在 access_keys 表）' ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- 2. access_keys（→ users）
+-- ----------------------------
+CREATE TABLE `access_keys`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id` bigint NOT NULL COMMENT '所属用户ID',
+  `access_key` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'AK 公开标识',
+  `secret_key` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'SK 加密存储(AES)',
+  `alias` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '别名/备注',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=启用 0=禁用',
+  `permission` json NULL COMMENT '细粒度权限(NULL=全部)',
+  `last_used_at` datetime NULL DEFAULT NULL COMMENT '最后使用时间',
+  `expires_at` datetime NULL DEFAULT NULL COMMENT '过期时间(NULL=永不过期)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_access_key`(`access_key` ASC) USING BTREE,
+  INDEX `idx_user_id`(`user_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 20 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'AccessKey 密钥表' ROW_FORMAT = Dynamic;
 
--- ============================================================
--- 5. 分片上传会话库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  multipart_uploads (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    upload_id       VARCHAR(64)     NOT NULL                COMMENT '上传会话ID(对外暴露)',
-    bucket_id       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    bucket_name     VARCHAR(64)     NOT NULL                COMMENT 'Bucket名(冗余)',
-    object_key      VARCHAR(1024)   NOT NULL                COMMENT '目标对象路径',
-    object_key_hash CHAR(32)        NOT NULL                COMMENT 'MD5(object_key) 用于索引',
-    user_id         BIGINT          NOT NULL                COMMENT '发起用户ID',
-    total_chunk     INT             NOT NULL                COMMENT '总分片数',
-    uploaded_chunk  INT             NOT NULL DEFAULT 0      COMMENT '已上传分片数',
-    status          TINYINT         NOT NULL DEFAULT 0      COMMENT '0=上传中 1=合并完成(虚拟) 2=物理合并完成 3=失败 4=已取消',
-    storage_class   VARCHAR(16)                             COMMENT '存储类型',
-    content_type    VARCHAR(128)                            COMMENT 'MIME类型',
-    metadata        JSON                                    COMMENT '用户自定义元数据',
-    expires_at      DATETIME        NOT NULL                COMMENT '会话过期时间(默认24h)',
-    last_active_at  DATETIME        NOT NULL                COMMENT '最后活跃时间(用于ZSET score)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+-- ----------------------------
+-- 3. buckets（→ users）
+-- ----------------------------
+CREATE TABLE `buckets`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id` bigint NOT NULL COMMENT '所属用户ID',
+  `name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Bucket名(全局唯一)',
+  `region` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'cn-hz' COMMENT '所在区域',
+  `acl` tinyint NOT NULL DEFAULT 0 COMMENT '1=私有 2=公共读 3=公共读写',
+  `versioning` tinyint NOT NULL DEFAULT 0 COMMENT '1=关闭 2=开启版本控制',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=正常 2=锁定 3=删除',
+  `storage_class` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD/IA/ARCHIVE',
+  `object_count` bigint NOT NULL DEFAULT 0 COMMENT '对象总数',
+  `storage_size` bigint NOT NULL DEFAULT 0 COMMENT '存储总量(字节)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_name`(`name` ASC) USING BTREE,
+  INDEX `idx_user_id`(`user_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 9 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'Bucket 表' ROW_FORMAT = Dynamic;
 
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_upload_id      (upload_id),
-    -- ✅ bucket_id(8) + CHAR(32)×4=128 = 136 bytes，远低于 3072 上限
-    INDEX      idx_bucket_key    (bucket_id, object_key_hash),
-    INDEX      idx_user_id       (user_id),
-    INDEX      idx_expires_at    (expires_at),      -- 定时清理扫描用
-    INDEX      idx_last_active   (last_active_at)   -- ZSET 辅助
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分片上传会话表';
+-- ----------------------------
+-- 4. bucket_cors_rules（→ buckets）
+-- ----------------------------
+CREATE TABLE `bucket_cors_rules`  (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL,
+  `bucket_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `allowed_origin` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `allowed_methods` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `max_age_seconds` int NOT NULL DEFAULT 600,
+  `enabled` tinyint NOT NULL DEFAULT 1,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_bucket_origin`(`user_id` ASC, `bucket_name` ASC, `allowed_origin` ASC) USING BTREE,
+  INDEX `idx_bucket_cors_user_bucket`(`user_id` ASC, `bucket_name` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_bin ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- 5. bucket_policies（→ buckets）
+-- ----------------------------
+CREATE TABLE `bucket_policies`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '策略ID',
+  `bucket_id` bigint NOT NULL COMMENT '所属BucketID',
+  `effect` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Allow / Deny',
+  `name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '策略名称',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=启用 0=禁用',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_bucket_id`(`bucket_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'Bucket 权限策略头表' ROW_FORMAT = Dynamic;
 
--- ============================================================
--- 6. 分片明细库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  multipart_parts (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    upload_id       VARCHAR(64)     NOT NULL                COMMENT '所属上传会话ID',
-    part_number     INT             NOT NULL                COMMENT '分片序号 1~10000',
-    size            BIGINT          NOT NULL                COMMENT '分片大小(字节)',
-    etag            VARCHAR(64)     NOT NULL                COMMENT '分片MD5',
-    storage_path    VARCHAR(512)    NOT NULL                COMMENT '分片物理存储路径',
-    -- 虚拟合并后分片不删除，状态流转
-    status          TINYINT         NOT NULL DEFAULT 0      COMMENT '0=上传中 1=已确认(虚拟合并) 2=物理合并完可删',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+-- ----------------------------
+-- 6. policy_actions（→ bucket_policies）
+-- ----------------------------
+CREATE TABLE `policy_actions`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `policy_id` bigint NOT NULL COMMENT '策略ID',
+  `action` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '操作名(如 GetObject)',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_policy_action`(`policy_id` ASC, `action` ASC) USING BTREE,
+  INDEX `idx_policy_id`(`policy_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '策略操作表' ROW_FORMAT = Dynamic;
 
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_upload_part (upload_id, part_number),
-    INDEX      idx_upload_id  (upload_id),
-    INDEX      idx_status     (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分片明细表';
+-- ----------------------------
+-- 7. policy_conditions（→ bucket_policies）
+-- ----------------------------
+CREATE TABLE `policy_conditions`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `policy_id` bigint NOT NULL COMMENT '策略ID',
+  `type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '条件类型(ip/time/etc)',
+  `cond_key` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '条件键(start/end/...)',
+  `value` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '条件值',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_policy_id`(`policy_id` ASC) USING BTREE,
+  INDEX `idx_type`(`type` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '策略条件表' ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- 8. policy_principals（→ bucket_policies）
+-- ----------------------------
+CREATE TABLE `policy_principals`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `policy_id` bigint NOT NULL COMMENT '策略ID',
+  `type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '主体类型(user/ak/role)',
+  `value` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '主体值(如 user_id 或 ak)',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_policy_id`(`policy_id` ASC) USING BTREE,
+  INDEX `idx_type_value`(`type` ASC, `value` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '策略授权主体表' ROW_FORMAT = Dynamic;
 
--- ============================================================
--- 7. 异步任务库
--- ============================================================
-CREATE TABLE async_tasks (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '任务ID，Redis LIST item 使用该值',
+-- ----------------------------
+-- 9. policy_resources（→ bucket_policies）
+-- ----------------------------
+CREATE TABLE `policy_resources`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `policy_id` bigint NOT NULL COMMENT '策略ID',
+  `resource` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '资源路径(如 bucketName/*)',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_policy_id`(`policy_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '策略资源表' ROW_FORMAT = Dynamic;
 
-    user_id BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID',
-    task_type VARCHAR(64) NOT NULL COMMENT '任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART',
+-- ----------------------------
+-- 10. lifecycle_rules（→ buckets）
+-- ----------------------------
+CREATE TABLE `lifecycle_rules`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `bucket_id` bigint NOT NULL COMMENT '所属BucketID',
+  `rule_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '规则名',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=启用 0=禁用',
+  `prefix` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '匹配对象前缀(NULL=全部)',
+  `transition_days` int NULL DEFAULT NULL COMMENT 'N天后转换存储类型',
+  `transition_storage_class` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '目标存储类型 IA/ARCHIVE',
+  `expiration_days` int NULL DEFAULT NULL COMMENT 'N天后删除对象',
+  `noncurrent_version_expiration_days` int NULL DEFAULT NULL COMMENT '非当前版本N天后删除',
+  `abort_incomplete_multipart_days` int NOT NULL DEFAULT 7 COMMENT '未完成分片上传N天后清理',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_bucket_id`(`bucket_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 46 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '生命周期规则表' ROW_FORMAT = Dynamic;
 
-    biz_type VARCHAR(32) NOT NULL DEFAULT '' COMMENT '业务对象类型，如 upload/object/event',
-    biz_id VARCHAR(128) NOT NULL COMMENT '业务幂等ID，如 upload_id/object_version_id/delivery_id',
+-- ----------------------------
+-- 11. event_rules（→ buckets）
+-- ----------------------------
+CREATE TABLE `event_rules`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `bucket_id` bigint NOT NULL COMMENT '所属BucketID',
+  `rule_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '规则名',
+  `events` json NOT NULL COMMENT '监听的事件类型',
+  `prefix` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '对象前缀过滤',
+  `suffix` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '对象后缀过滤',
+  `target_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'WEBHOOK/MQ/FUNC',
+  `target_url` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '回调地址(Webhook)',
+  `secret` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'Webhook签名密钥',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=启用 0=禁用',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_bucket_id`(`bucket_id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '事件通知规则表' ROW_FORMAT = Dynamic;
 
-    status TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending 1=queued 2=running 3=completed 4=failed',
-    progress TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '进度 0~100',
+-- ----------------------------
+-- 12. event_deliveries（→ event_rules）
+-- ----------------------------
+CREATE TABLE `event_deliveries`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `rule_id` bigint NOT NULL COMMENT '关联规则ID',
+  `event_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '事件类型',
+  `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '触发事件的对象',
+  `payload` json NOT NULL COMMENT '投递内容',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=待投递 1=成功 2=失败 3=投递中',
+  `retry_count` int NOT NULL DEFAULT 0 COMMENT '已重试次数',
+  `response_code` int NULL DEFAULT NULL COMMENT 'Webhook响应码',
+  `response_body` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL COMMENT 'Webhook响应体',
+  `next_retry_at` datetime NULL DEFAULT NULL COMMENT '下次重试时间',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_rule_id`(`rule_id` ASC) USING BTREE,
+  INDEX `idx_status`(`status` ASC) USING BTREE,
+  INDEX `idx_next_retry`(`next_retry_at` ASC) USING BTREE,
+  INDEX `idx_event_deliveries_status_retry`(`status` ASC, `next_retry_at` ASC, `id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '事件投递记录表' ROW_FORMAT = Dynamic;
 
-    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
-    max_retry INT NOT NULL DEFAULT 3 COMMENT '最大重试次数',
+-- ----------------------------
+-- 13. multipart_uploads（→ users, buckets）
+-- ----------------------------
+CREATE TABLE `multipart_uploads`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `upload_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '上传会话ID(对外暴露)',
+  `bucket_id` bigint NOT NULL COMMENT '所属BucketID',
+  `bucket_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Bucket名(冗余)',
+  `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '目标对象路径',
+  `object_key_hash` char(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'MD5(object_key) 用于索引',
+  `user_id` bigint NOT NULL COMMENT '发起用户ID',
+  `total_chunk` int NOT NULL COMMENT '总分片数',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=上传中 1=合并完成(虚拟) 2=物理合并完成 3=失败 4=已取消',
+  `storage_class` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '存储类型',
+  `content_type` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'MIME类型',
+  `metadata` json NULL COMMENT '用户自定义元数据',
+  `expires_at` datetime NOT NULL COMMENT '会话过期时间(默认24h)',
+  `last_active_at` datetime NOT NULL COMMENT '最后活跃时间(用于ZSET score)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `version_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_upload_id`(`upload_id` ASC) USING BTREE,
+  INDEX `idx_bucket_key`(`bucket_id` ASC, `object_key_hash` ASC) USING BTREE,
+  INDEX `idx_user_id`(`user_id` ASC) USING BTREE,
+  INDEX `idx_expires_at`(`expires_at` ASC) USING BTREE,
+  INDEX `idx_last_active`(`last_active_at` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 124 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '分片上传会话表' ROW_FORMAT = Dynamic;
 
-    result JSON DEFAULT NULL COMMENT '执行结果',
-    last_error TEXT DEFAULT NULL COMMENT '最近一次失败原因',
+-- ----------------------------
+-- 14. multipart_parts（→ multipart_uploads）
+-- ----------------------------
+CREATE TABLE `multipart_parts`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `upload_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '所属上传会话ID',
+  `part_number` int NOT NULL COMMENT '分片序号 1~10000',
+  `size` bigint NOT NULL COMMENT '分片大小(字节)',
+  `etag` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '分片MD5',
+  `storage_path` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '分片物理存储路径',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=上传中 1=已确认(虚拟合并) 2=物理合并完可删',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_upload_part`(`upload_id` ASC, `part_number` ASC) USING BTREE,
+  INDEX `idx_upload_id`(`upload_id` ASC) USING BTREE,
+  INDEX `idx_status`(`status` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1283 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '分片明细表' ROW_FORMAT = Dynamic;
 
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+-- ----------------------------
+-- 15. objects（→ buckets, multipart_uploads）
+-- ----------------------------
+CREATE TABLE `objects`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `bucket_id` bigint NOT NULL COMMENT '所属 Bucket ID',
+  `bucket_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Bucket 名冗余',
+  `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '对象路径',
+  `object_key_hash` char(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'MD5(object_key)，用于索引和唯一约束',
+  `version_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '版本 ID，建议每次写入都生成',
+  `size` bigint NOT NULL DEFAULT 0 COMMENT '对象大小，delete marker 为 0',
+  `etag` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT 'ETag',
+  `content_type` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'MIME 类型',
+  `storage_class` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD/IA/ARCHIVE',
+  `is_multipart` tinyint NOT NULL DEFAULT 0 COMMENT '0=普通对象 1=分片虚拟合并对象',
+  `upload_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '分片上传 ID',
+  `storage_path` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '物理存储路径，delete marker 为空',
+  `acl` tinyint NOT NULL DEFAULT 0 COMMENT '0=继承Bucket 1=私有 2=公共读',
+  `metadata` json NULL COMMENT '用户自定义元数据',
+  `is_latest` tinyint NOT NULL DEFAULT 0 COMMENT '0=历史版本 1=当前最新版本',
+  `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=正常 2=删除标记 3=永久删除',
+  `access_count` bigint NOT NULL DEFAULT 0 COMMENT '访问次数',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime NULL DEFAULT NULL COMMENT '永久删除时间',
+  `latest_guard` char(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci GENERATED ALWAYS AS ((case when ((`is_latest` = 1) and (`status` <> 3)) then `object_key_hash` else NULL end)) STORED COMMENT '保证同一对象只有一个 latest' NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_bucket_key_ver`(`bucket_id` ASC, `object_key_hash` ASC, `version_id` ASC) USING BTREE,
+  UNIQUE INDEX `uk_object_latest`(`bucket_id` ASC, `latest_guard` ASC) USING BTREE,
+  INDEX `idx_bucket_id`(`bucket_id` ASC) USING BTREE,
+  INDEX `idx_upload_id`(`upload_id` ASC) USING BTREE,
+  INDEX `idx_etag`(`etag` ASC) USING BTREE,
+  INDEX `idx_bucket_key_id`(`bucket_id` ASC, `object_key_hash` ASC, `id` ASC) USING BTREE,
+  INDEX `idx_bucket_key_latest`(`bucket_id` ASC, `object_key_hash` ASC, `is_latest` ASC) USING BTREE,
+  INDEX `idx_bucket_name_key_prefix`(`bucket_name` ASC, `object_key`(255) ASC, `is_latest` ASC, `status` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'Object 对象版本表' ROW_FORMAT = Dynamic;
 
-    PRIMARY KEY (id),
+-- ----------------------------
+-- 16. async_tasks（→ multipart_uploads, objects）
+-- ----------------------------
+CREATE TABLE `async_tasks`  (
+  `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '任务ID，Redis LIST item 使用该值',
+  `user_id` bigint NOT NULL DEFAULT 0 COMMENT '用户ID',
+  `task_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART',
+  `biz_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '业务对象类型，如 upload/object/event',
+  `biz_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务幂等ID，如 upload_id/object_version_id/delivery_id',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=pending 1=queued 2=running 3=completed 4=failed',
+  `progress` tinyint UNSIGNED NOT NULL DEFAULT 0 COMMENT '进度 0~100',
+  `retry_count` int NOT NULL DEFAULT 0 COMMENT '已重试次数',
+  `max_retry` int NOT NULL DEFAULT 3 COMMENT '最大重试次数',
+  `result` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '执行结果',
+  `last_error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '最近一次失败原因',
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_async_tasks_biz`(`task_type` ASC, `biz_id` ASC) USING BTREE,
+  INDEX `idx_async_tasks_status_id`(`status` ASC, `id` ASC) USING BTREE,
+  INDEX `idx_async_tasks_user_status`(`user_id` ASC, `status` ASC) USING BTREE,
+  INDEX `idx_async_tasks_status_updated_at`(`status` ASC, `updated_at` ASC) USING BTREE,
+  INDEX `idx_status_id`(`status` ASC, `id` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 4 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '异步任务表' ROW_FORMAT = Dynamic;
 
-    UNIQUE KEY uk_async_tasks_biz (task_type, biz_id),
+-- ----------------------------
+-- 17. metering_daily（→ users, buckets）
+-- ----------------------------
+CREATE TABLE `metering_daily`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `bucket_id` bigint NULL DEFAULT NULL COMMENT 'BucketID(NULL=用户总计)',
+  `stat_date` date NOT NULL COMMENT '统计日期',
+  `storage_size` bigint NOT NULL DEFAULT 0 COMMENT '存储量(字节)',
+  `object_count` bigint NOT NULL DEFAULT 0 COMMENT '对象数量',
+  `upload_flow` bigint NOT NULL DEFAULT 0 COMMENT '上行流量(字节)',
+  `download_flow` bigint NOT NULL DEFAULT 0 COMMENT '下行流量(字节)',
+  `get_request_count` bigint NOT NULL DEFAULT 0 COMMENT 'GET请求次数',
+  `put_request_count` bigint NOT NULL DEFAULT 0 COMMENT 'PUT请求次数',
+  `del_request_count` bigint NOT NULL DEFAULT 0 COMMENT 'DELETE请求次数',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_user_bucket_date`(`user_id` ASC, `bucket_id` ASC, `stat_date` ASC) USING BTREE,
+  INDEX `idx_stat_date`(`stat_date` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 97 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '流量计量日统计表' ROW_FORMAT = Dynamic;
 
-    KEY idx_async_tasks_status_id (status, id),
-    KEY idx_async_tasks_user_status (user_id, status),
-    KEY idx_async_tasks_status_updated_at (status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异步任务表';
+-- ----------------------------
+-- 18. operation_logs（→ users, buckets）
+-- ----------------------------
+CREATE TABLE `operation_logs`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '请求唯一ID',
+  `user_id` bigint NULL DEFAULT NULL COMMENT '操作用户ID',
+  `access_key` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '使用的AK',
+  `bucket_id` bigint NULL DEFAULT NULL COMMENT '操作的BucketID',
+  `bucket_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'Bucket名(冗余)',
+  `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '操作的对象路径',
+  `action` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'PutObject/GetObject/DeleteObject/...',
+  `result` tinyint NOT NULL DEFAULT 1 COMMENT '0=失败 1=成功',
+  `status_code` int NOT NULL COMMENT 'HTTP状态码',
+  `error_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '错误码',
+  `client_ip` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '客户端IP',
+  `user_agent` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'User-Agent',
+  `request_size` bigint NOT NULL DEFAULT 0 COMMENT '请求体大小(字节)',
+  `response_size` bigint NOT NULL DEFAULT 0 COMMENT '响应体大小(字节)',
+  `duration_ms` int NOT NULL DEFAULT 0 COMMENT '耗时(毫秒)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_user_date`(`user_id` ASC, `created_at` ASC) USING BTREE,
+  INDEX `idx_bucket_date`(`bucket_id` ASC, `created_at` ASC) USING BTREE,
+  INDEX `idx_action`(`action` ASC) USING BTREE,
+  INDEX `idx_request_id`(`request_id` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '操作审计日志表' ROW_FORMAT = Dynamic;
 
--- ============================================================
--- 8. 策略头表
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  bucket_policies (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '策略ID',
-    bucket_id       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    effect          VARCHAR(8)      NOT NULL                COMMENT 'Allow / Deny',
-    name            VARCHAR(64)                             COMMENT '策略名称',
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=启用 0=禁用',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+-- ----------------------------
+-- 19. video_transcodes（→ users, buckets, objects）
+-- ----------------------------
+CREATE TABLE `video_transcodes`  (
+  `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL,
+  `bucket_id` bigint NOT NULL,
+  `bucket_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `object_id` bigint UNSIGNED NOT NULL,
+  `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `object_key_hash` char(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `version_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `source_etag` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `source_size` bigint NOT NULL DEFAULT 0,
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=pending 1=processing 2=done 3=failed 4=deleted',
+  `duration_ms` bigint NOT NULL DEFAULT 0,
+  `derived_size` bigint NOT NULL DEFAULT 0,
+  `profile_count` int NOT NULL DEFAULT 0,
+  `done_profile_count` int NOT NULL DEFAULT 0,
+  `last_error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `finished_at` datetime(3) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_video_transcodes_object_version`(`object_id` ASC, `version_id` ASC) USING BTREE,
+  INDEX `idx_video_transcodes_user_status`(`user_id` ASC, `status` ASC) USING BTREE,
+  INDEX `idx_video_transcodes_bucket_object`(`bucket_id` ASC, `object_key_hash` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_bin ROW_FORMAT = Dynamic;
 
-    PRIMARY KEY (id),
-    INDEX idx_bucket_id (bucket_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bucket 权限策略头表';
+-- ----------------------------
+-- 20. video_transcode_profiles（→ video_transcodes）
+-- ----------------------------
+CREATE TABLE `video_transcode_profiles`  (
+  `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT,
+  `transcode_id` bigint UNSIGNED NOT NULL,
+  `profile` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '1080p/720p/480p/360p/origin',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=pending 1=processing 2=done 3=failed 4=deleted',
+  `video_bitrate` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `audio_bitrate` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `width` int NOT NULL DEFAULT 0,
+  `fps` int NOT NULL DEFAULT 0,
+  `height` int(10) UNSIGNED ZEROFILL NOT NULL DEFAULT 0000000000,
+  `asset_prefix` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+  `playlist_key` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+  `size` bigint NOT NULL DEFAULT 0,
+  `segment_count` int NOT NULL DEFAULT 0,
+  `duration_ms` bigint NOT NULL DEFAULT 0,
+  `last_error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  `started_at` datetime(3) NULL DEFAULT NULL,
+  `finished_at` datetime(3) NULL DEFAULT NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_video_profiles_transcode_profile`(`transcode_id` ASC, `profile` ASC) USING BTREE,
+  INDEX `idx_video_profiles_status_updated`(`status` ASC, `updated_at` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_bin ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- 21. video_encrypt_keys（→ video_transcodes, video_transcode_profiles）
+-- ----------------------------
+CREATE TABLE `video_encrypt_keys`  (
+  `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT,
+  `transcode_id` bigint UNSIGNED NOT NULL,
+  `profile_id` bigint UNSIGNED NOT NULL,
+  `key_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `encrypted_key` varbinary(512) NOT NULL,
+  `algorithm` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT 'HLS-AES-128',
+  `key_version` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+  `kms_key_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_video_encrypt_keys_key_id`(`key_id` ASC) USING BTREE,
+  UNIQUE INDEX `uk_video_encrypt_keys_profile`(`profile_id` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_bin ROW_FORMAT = Dynamic;
 
--- ============================================================
--- 9. 策略授权主体表
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  policy_principals (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    policy_id       BIGINT          NOT NULL                COMMENT '策略ID',
-    type            VARCHAR(16)     NOT NULL                COMMENT '主体类型(user/ak/role)',
-    value           VARCHAR(128)    NOT NULL                COMMENT '主体值(如 user_id 或 ak)',
+-- 恢复外键检查
+SET FOREIGN_KEY_CHECKS = 1;
 
-    PRIMARY KEY (id),
-    INDEX idx_policy_id (policy_id),
-    INDEX idx_type_value (type, value)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略授权主体表';
-
-
--- ============================================================
--- 10. 策略操作表
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  policy_actions (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    policy_id       BIGINT          NOT NULL                COMMENT '策略ID',
-    action          VARCHAR(32)     NOT NULL                COMMENT '操作名(如 GetObject)',
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_policy_action (policy_id, action),
-    INDEX      idx_policy_id (policy_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略操作表';
-
-
--- ============================================================
--- 11. 策略资源表
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  policy_resources (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    policy_id       BIGINT          NOT NULL                COMMENT '策略ID',
-    resource        VARCHAR(1024)   NOT NULL                COMMENT '资源路径(如 bucketName/*)',
-
-    PRIMARY KEY (id),
-    INDEX idx_policy_id (policy_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略资源表';
-
-
--- ============================================================
--- 12. 策略条件表
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  policy_conditions (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    policy_id       BIGINT          NOT NULL                COMMENT '策略ID',
-    type            VARCHAR(16)     NOT NULL                COMMENT '条件类型(ip/time/etc)',
-    cond_key        VARCHAR(32)                             COMMENT '条件键(start/end/...)',
-    value           VARCHAR(256)    NOT NULL                COMMENT '条件值',
-
-    PRIMARY KEY (id),
-    INDEX idx_policy_id (policy_id),
-    INDEX idx_type (type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略条件表';
-
-
-
--- ============================================================
--- 14. 生命周期规则库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  lifecycle_rules (
-    id                              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    bucket_id                       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    rule_name                       VARCHAR(64)     NOT NULL                COMMENT '规则名',
-    status                          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=启用 0=禁用',
-    prefix                          VARCHAR(512)                            COMMENT '匹配对象前缀(NULL=全部)',
-    -- 存储转换
-    transition_days                 INT                                     COMMENT 'N天后转换存储类型',
-    transition_storage_class        VARCHAR(16)                             COMMENT '目标存储类型 IA/ARCHIVE',
-    -- 过期删除
-    expiration_days                 INT                                     COMMENT 'N天后删除对象',
-    -- 历史版本
-    noncurrent_version_expiration_days INT                                  COMMENT '非当前版本N天后删除',
-    -- 未完成分片清理
-    abort_incomplete_multipart_days INT             NOT NULL DEFAULT 7      COMMENT '未完成分片上传N天后清理',
-    created_at                      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    INDEX idx_bucket_id (bucket_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='生命周期规则表';
-
-
--- ============================================================
--- 15. 流量计量库（计费依据）
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  metering_daily (
-    id                  BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    user_id             BIGINT          NOT NULL                COMMENT '用户ID',
-    bucket_id           BIGINT                                  COMMENT 'BucketID(NULL=用户总计)',
-    stat_date           DATE            NOT NULL                COMMENT '统计日期',
-    -- 存储
-    storage_size        BIGINT          NOT NULL DEFAULT 0      COMMENT '存储量(字节)',
-    object_count        BIGINT          NOT NULL DEFAULT 0      COMMENT '对象数量',
-    -- 流量
-    upload_flow         BIGINT          NOT NULL DEFAULT 0      COMMENT '上行流量(字节)',
-    download_flow       BIGINT          NOT NULL DEFAULT 0      COMMENT '下行流量(字节)',
-    -- 请求次数
-    get_request_count   BIGINT          NOT NULL DEFAULT 0      COMMENT 'GET请求次数',
-    put_request_count   BIGINT          NOT NULL DEFAULT 0      COMMENT 'PUT请求次数',
-    del_request_count   BIGINT          NOT NULL DEFAULT 0      COMMENT 'DELETE请求次数',
-
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_user_bucket_date (user_id, bucket_id, stat_date),
-    INDEX      idx_stat_date       (stat_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='流量计量日统计表';
-
-
--- ============================================================
--- 16. 操作日志库（审计）
---     ⚠️ 建议大流量时按月分表或迁移至 ClickHouse/Elasticsearch
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  operation_logs (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    request_id      VARCHAR(64)     NOT NULL                COMMENT '请求唯一ID',
-    user_id         BIGINT                                  COMMENT '操作用户ID',
-    access_key      VARCHAR(32)                             COMMENT '使用的AK',
-    bucket_id       BIGINT                                  COMMENT '操作的BucketID',
-    bucket_name     VARCHAR(64)                             COMMENT 'Bucket名(冗余)',
-    object_key      VARCHAR(1024)                           COMMENT '操作的对象路径',
-    action          VARCHAR(32)     NOT NULL                COMMENT 'PutObject/GetObject/DeleteObject/...',
-    result          TINYINT         NOT NULL DEFAULT 1      COMMENT '0=失败 1=成功',
-    status_code     INT             NOT NULL                COMMENT 'HTTP状态码',
-    error_code      VARCHAR(64)                             COMMENT '错误码',
-    client_ip       VARCHAR(64)                             COMMENT '客户端IP',
-    user_agent      VARCHAR(256)                            COMMENT 'User-Agent',
-    request_size    BIGINT          NOT NULL DEFAULT 0      COMMENT '请求体大小(字节)',
-    response_size   BIGINT          NOT NULL DEFAULT 0      COMMENT '响应体大小(字节)',
-    duration_ms     INT             NOT NULL DEFAULT 0      COMMENT '耗时(毫秒)',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    INDEX idx_user_date    (user_id, created_at),
-    INDEX idx_bucket_date  (bucket_id, created_at),
-    INDEX idx_action       (action),
-    INDEX idx_request_id   (request_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作审计日志表';
-
-
--- ============================================================
--- 17. 事件通知规则库（Webhook / 回调）
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  event_rules (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    bucket_id       BIGINT          NOT NULL                COMMENT '所属BucketID',
-    rule_name       VARCHAR(64)     NOT NULL                COMMENT '规则名',
-    -- ["s3:ObjectCreated:*","s3:ObjectRemoved:Delete","s3:ObjectRestore:*"]
-    events          JSON            NOT NULL                COMMENT '监听的事件类型',
-    prefix          VARCHAR(512)                            COMMENT '对象前缀过滤',
-    suffix          VARCHAR(128)                            COMMENT '对象后缀过滤',
-    target_type     VARCHAR(16)     NOT NULL                COMMENT 'WEBHOOK/MQ/FUNC',
-    target_url      VARCHAR(512)                            COMMENT '回调地址(Webhook)',
-    secret          VARCHAR(128)                            COMMENT 'Webhook签名密钥',
-    status          TINYINT         NOT NULL DEFAULT 1      COMMENT '1=启用 0=禁用',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    INDEX idx_bucket_id (bucket_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='事件通知规则表';
-
-
--- ============================================================
--- 18. 事件投递记录库
--- ============================================================
-CREATE TABLE  IF NOT EXISTS  event_deliveries (
-    id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '主键',
-    rule_id         BIGINT          NOT NULL                COMMENT '关联规则ID',
-    event_type      VARCHAR(64)     NOT NULL                COMMENT '事件类型',
-    object_key      VARCHAR(1024)                           COMMENT '触发事件的对象',
-    payload         JSON            NOT NULL                COMMENT '投递内容',
-    status          TINYINT         NOT NULL DEFAULT 0      COMMENT '0=待投递 1=成功 2=失败',
-    retry_count     INT             NOT NULL DEFAULT 0      COMMENT '已重试次数',
-    response_code   INT                                     COMMENT 'Webhook响应码',
-    response_body   TEXT                                    COMMENT 'Webhook响应体',
-    next_retry_at   DATETIME                                COMMENT '下次重试时间',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (id),
-    INDEX idx_rule_id      (rule_id),
-    INDEX idx_status       (status),
-    INDEX idx_next_retry   (next_retry_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='事件投递记录表';
-
--- CORS bucket 级别，一行代表一个 bucket 下允许的 origin
-CREATE TABLE IF NOT EXISTS bucket_cors_rules (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-
-    user_id BIGINT NOT NULL,
-    bucket_name VARCHAR(128) NOT NULL,
-
-    allowed_origin VARCHAR(255) NOT NULL,
-    allowed_methods VARCHAR(128) NOT NULL,
-
-    max_age_seconds INT NOT NULL DEFAULT 600,
-    enabled TINYINT NOT NULL DEFAULT 1,
-
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-
-    UNIQUE KEY uk_bucket_origin (user_id, bucket_name, allowed_origin),
-    INDEX idx_bucket_cors_user_bucket (user_id, bucket_name)
-);
 -- ============================================================
 -- 外键关系备注（MVP 阶段不强制外键，业务层保证）
 -- ============================================================
--- access_keys.user_id       → users.id
--- buckets.user_id           → users.id
--- objects.bucket_id         → buckets.id
--- objects.upload_id         → multipart_uploads.upload_id
--- multipart_uploads.user_id → users.id
--- multipart_uploads.bucket_id → buckets.id
--- multipart_parts.upload_id → multipart_uploads.upload_id
--- async_tasks.upload_id     → multipart_uploads.upload_id
--- async_tasks.object_id     → objects.id
--- bucket_policies.bucket_id → buckets.id
--- policy_principals.policy_id → bucket_policies.id
+-- access_keys.user_id         → users.id
+-- buckets.user_id             → users.id
+-- bucket_cors_rules.bucket_name → buckets.name
+-- bucket_policies.bucket_id   → buckets.id
 -- policy_actions.policy_id    → bucket_policies.id
--- policy_resources.policy_id  → bucket_policies.id
 -- policy_conditions.policy_id → bucket_policies.id
--- lifecycle_rules.bucket_id → buckets.id
--- event_rules.bucket_id     → buckets.id
--- event_deliveries.rule_id  → event_rules.id
-
+-- policy_principals.policy_id → bucket_policies.id
+-- policy_resources.policy_id  → bucket_policies.id
+-- lifecycle_rules.bucket_id   → buckets.id
+-- event_rules.bucket_id       → buckets.id
+-- event_deliveries.rule_id    → event_rules.id
+-- multipart_uploads.user_id   → users.id
+-- multipart_uploads.bucket_id → buckets.id
+-- multipart_parts.upload_id   → multipart_uploads.upload_id
+-- objects.bucket_id           → buckets.id
+-- objects.upload_id           → multipart_uploads.upload_id
+-- async_tasks.biz_id          → multipart_uploads.upload_id / objects.id
+-- metering_daily.user_id      → users.id
+-- metering_daily.bucket_id    → buckets.id
+-- operation_logs.user_id      → users.id
+-- operation_logs.bucket_id    → buckets.id
+-- video_transcodes.user_id    → users.id
+-- video_transcodes.bucket_id  → buckets.id
+-- video_transcodes.object_id  → objects.id
+-- video_transcode_profiles.transcode_id → video_transcodes.id
+-- video_encrypt_keys.transcode_id       → video_transcodes.id
+-- video_encrypt_keys.profile_id         → video_transcode_profiles.id
 
 -- ============================================================
 -- Redis 设计备注（配合 MySQL 使用）

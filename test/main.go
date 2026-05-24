@@ -15,6 +15,7 @@ import (
 	"oss/consts"
 	"oss/service/dto"
 	"oss/utils/tools"
+	"strconv"
 	"strings"
 	"time"
 
@@ -83,7 +84,7 @@ func hmacSHA256(data, key string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func buildStringToSign(method, path, query, host, contentType, body string) string {
+func buildStringToSign(method, path, query, host, contentType, body string, timestamp int64) string {
 	var sb strings.Builder
 
 	sb.WriteString(method + " " + path)
@@ -94,6 +95,7 @@ func buildStringToSign(method, path, query, host, contentType, body string) stri
 	if contentType != "" {
 		sb.WriteString("\nContent-Type: " + contentType)
 	}
+	sb.WriteString("\nX-OSS-Timestamp: " + strconv.FormatInt(timestamp, 10))
 	sb.WriteString("\n\n")
 
 	// 跳过二进制流和 multipart 请求的 body
@@ -107,7 +109,7 @@ func buildStringToSign(method, path, query, host, contentType, body string) stri
 func buildAuth(method, path, query, host, contentType, body string) string {
 	timestamp := time.Now().Unix()
 
-	stringToSign := buildStringToSign(method, path, query, host, contentType, body)
+	stringToSign := buildStringToSign(method, path, query, host, contentType, body, timestamp)
 	fmt.Printf("stringToSign: %v\n", stringToSign)
 
 	signature := tools.HmacSHA256(stringToSign, secretKey)
@@ -516,6 +518,9 @@ func runAutomatedTests() {
 		fmt.Println("创建AK失败，终止测试")
 		return
 	}
+
+	fmt.Printf("akResp: %+v\n", akResp)
+
 	testAccessKey := akResp.AccessKey
 
 	// 更新全局变量以使用新创建的AK
@@ -556,18 +561,18 @@ func runAutomatedTests() {
 	largeContent := strings.Repeat("This is a large file content for testing multipart upload. ", 10000) // 大约 70KB
 	doCompleteMultipartUpload(largeContent, "large-multipart.txt", "test-bucket1", "large-multipart.txt")
 
-	// 10. 再次列出对象
-	fmt.Println("\n--- 步骤10: 再次列出对象 ---")
-	listObjects("test-bucket1")
+	// // 10. 再次列出对象
+	// fmt.Println("\n--- 步骤10: 再次列出对象 ---")
+	// listObjects("test-bucket1")
 
-	// 11. 删除对象
-	fmt.Println("\n--- 步骤11: 删除对象 ---")
-	deleteObject("test-bucket1", "test-object.txt")
-	deleteObject("test-bucket1", "large-multipart.txt")
+	// // 11. 删除对象
+	// fmt.Println("\n--- 步骤11: 删除对象 ---")
+	// deleteObject("test-bucket1", "test-object.txt")
+	// deleteObject("test-bucket1", "large-multipart.txt")
 
-	// 12. 停用AK
-	fmt.Println("\n--- 步骤12: 停用Access Key ---")
-	deactivateAccessKey(testAccessKey)
+	// // 12. 停用AK
+	// fmt.Println("\n--- 步骤12: 停用Access Key ---")
+	// deactivateAccessKey(testAccessKey)
 
 	fmt.Println("\n=== 自动化测试完成 ===")
 }

@@ -23,6 +23,7 @@ type IEventDeliveryRepo interface {
 	WithTx(tx tx.Tx) IEventDeliveryRepo
 	CreateEventDelivery(ctx context.Context, delivery *do.EventDeliveryDo) (int64, error)
 	GetPendingDeliveries(ctx context.Context, limit int) ([]*do.EventDeliveryDo, error)
+	ClaimEventDelivery(ctx context.Context, deliveryID int64) (bool, *do.EventDeliveryDo, error)
 	GetEventDeliveryByID(ctx context.Context, deliveryID int64) (*do.EventDeliveryDo, error)
 	UpdateEventDelivery(ctx context.Context, deliveryID int64, update *do.UpdateEventDelivery) error
 	DeleteEventDelivery(ctx context.Context, deliveryID int64) error

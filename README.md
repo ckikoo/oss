@@ -161,16 +161,29 @@ go mod tidy
 
 ### 3. 配置
 
-当前项目默认读取 `config/config.go` 中的 `config.yaml`：
+复制示例配置后再填写本地连接信息和密钥：
 
 ```bash
-# 编辑 config.yaml，设置 MySQL 和 Redis 连接信息
+cp config.example.yaml config.yaml
+# 编辑 config.yaml，设置 MySQL、Redis 和 security.aes_key
+```
+
+配置加载优先级：
+
+1. 启动参数 `-e` 指定 etcd 地址时，优先从 etcd 的配置键加载。
+2. 未启用 etcd 时，读取 `-c` 指定的本地配置文件，默认是 `./config.yaml`。
+3. 环境变量覆盖文件或 etcd 中的同名配置，变量名使用 `OSS_` 前缀，例如 `OSS_SERVER_PORT`、`OSS_MYSQL_HOST`、`OSS_REDIS_ADDR`、`OSS_SECURITY_AES_KEY`。
+
+`security.aes_key` 必须是 base64 编码的 AES key，解码后长度必须为 16、24 或 32 字节。可用下面的命令生成：
+
+```bash
+openssl rand -base64 32
 ```
 
 如果需要使用自定义配置文件路径，可在启动时传入 `-c` 参数：
 
 ```bash
-go run ./main.go -c /path/to/config.yaml
+go run ./cmd/server/main.go -c /path/to/config.yaml
 ```
 
 ### 4. 初始化数据库

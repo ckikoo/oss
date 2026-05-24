@@ -15,14 +15,7 @@ import (
 func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
-		userID := c.GetInt64(consts.UserKeyContext)
-		if userID == 0 {
-			if info, ok := c.Get(consts.UserInfoContext); ok {
-				if userInfo, ok := info.(*common.UserInfoCtx); ok {
-					userID = userInfo.UserID
-				}
-			}
-		}
+		userID := authenticatedUserID(c)
 		if userID == 0 {
 			c.JSON(401, common.AuthErr.WithMsg("user not authenticated"))
 			c.Abort()
@@ -35,8 +28,7 @@ func NewBucketACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		// Get bucket info
-		bucketDo, err := bucketRepo.GetByUserAndName(ctx, userID, bucketName)
+		bucketDo, err := loadRouteBucket(ctx, c, bucketRepo, userID, bucketName)
 		if err != nil {
 			c.JSON(404, common.ParamErr.WithMsg("bucket not found"))
 			c.Abort()
@@ -61,14 +53,7 @@ func NewObjectACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
 	objectRepo := gormObject.NewObjectRepo(adaptor)
 	return func(ctx context.Context, c *app.RequestContext) {
-		userID := c.GetInt64(consts.UserKeyContext)
-		if userID == 0 {
-			if info, ok := c.Get(consts.UserInfoContext); ok {
-				if userInfo, ok := info.(*common.UserInfoCtx); ok {
-					userID = userInfo.UserID
-				}
-			}
-		}
+		userID := authenticatedUserID(c)
 		if userID == 0 {
 			c.JSON(401, common.AuthErr.WithMsg("user not authenticated"))
 			c.Abort()
@@ -81,8 +66,7 @@ func NewObjectACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 			return
 		}
 
-		// Get bucket info
-		bucketDo, err := bucketRepo.GetByUserAndName(ctx, userID, bucketName)
+		bucketDo, err := loadRouteBucket(ctx, c, bucketRepo, userID, bucketName)
 		if err != nil {
 			c.JSON(404, common.ParamErr.WithMsg("bucket not found"))
 			c.Abort()
@@ -98,9 +82,8 @@ func NewObjectACLMiddleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 
 		objectKey := c.Param("object_key")
 		if objectKey != "" {
-			// Try to get object ACL
-			objectDo, err := objectRepo.GetByKey(ctx, bucketDo.Name, objectKey, "")
-			if err == nil { // Object exists
+			objectDo, err := loadRouteObject(ctx, c, objectRepo, bucketDo.Name, objectKey, "")
+			if err == nil && objectDo != nil { // Object exists
 				if objectDo.Acl != consts.ObjectAclInheritBucket {
 					effectiveAcl = objectDo.Acl
 					isFromObject = true

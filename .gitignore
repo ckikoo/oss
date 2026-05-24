@@ -1,14 +1,23 @@
 * text=auto eol=lf
-
+.github
+.angents
+main
 adaptor/repo/gen.yaml
 config.yaml
 storage/*
 tmp
 *.exe
+/main
 
 test/*
+!test/s3/
+!test/s3/*.sh
+!test/s3/*.go
+test/s3/run.sh
 .agents/*
 .third_part/
 */*.gz
 web/video-test-client/index.html.hertz.gz
 compose.yml
+config.local.yaml
+config.*.local.yaml

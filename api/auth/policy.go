@@ -30,10 +30,6 @@ func (ctrl *PolicyCtrl) CreateBucketPolicy(ctx context.Context, c *app.RequestCo
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	req := &dto.CreateBucketPolicyReq{}
 	if err := c.BindAndValidate(req); err != nil {
@@ -54,10 +50,6 @@ func (ctrl *PolicyCtrl) ListBucketPolicies(ctx context.Context, c *app.RequestCo
 	}
 
 	bucketName := c.Param("bucket_name")
-	if bucketName == "" {
-		api.WriteResp(c, nil, common.ParamErr.WithMsg("bucket_name is required"))
-		return
-	}
 
 	resp, errno := ctrl.policy.ListBucketPolicies(ctx1, bucketName)
 	api.WriteResp(c, resp, errno)

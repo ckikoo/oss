@@ -2,6 +2,7 @@ package timer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"oss/adaptor"
 	"oss/adaptor/redis"
@@ -10,6 +11,7 @@ import (
 	gormBucket "oss/adaptor/repo/bucket/gorm"
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	gormObject "oss/adaptor/repo/object/gorm"
+	"oss/adaptor/repo/repoerr"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
@@ -103,6 +105,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 			if !claimed || task == nil {
 				return
 			}
+
 			uploadID := task.BizID
 
 			switch task.TaskType {
@@ -145,9 +148,16 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				if obj, err := fileRepo.GetByKey(taskCtx, info.BucketName, info.ObjectKey, info.VersionID); err == nil &&
-					obj.IsMultipart == consts.ObjectIsMultipartNormal &&
-					obj.StoragePath != nil {
+				obj, err := fileRepo.GetByKey(taskCtx, info.BucketName, info.ObjectKey, info.VersionID)
+				if err != nil {
+					if errors.Is(err, repoerr.ErrNotFound) {
+						_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "object already deleted")
+						return
+					}
+					log.Error("timer.handlerTask fail to get object for physical merge", zap.Error(err), zap.Int64("taskID", taskID))
+					return
+				}
+				if obj.IsMultipart == consts.ObjectIsMultipartNormal && obj.StoragePath != nil {
 					physicalStatus := int32(consts.MultipartUploadStatusMergedPhysical)
 					if _, err := multipart.UpdateMultipartUpload(taskCtx, info.UserID, info.UploadID, &do.UpdateMultipartUpload{Status: &physicalStatus}); err != nil {
 						log.Error("timer.handlerTask fail to update already merged upload status",
@@ -159,6 +169,10 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusCompleted, "")
 					return
 				}
+				if obj.IsMultipart != consts.ObjectIsMultipartMerged || obj.UploadID == nil || *obj.UploadID != uploadID {
+					_ = updateTaskStatus(taskCtx, taskRepo, task.ID, consts.TaskStatusFailed, "object already deleted")
+					return
+				}
 
 				parts, err := multipart.ListMultipartParts(taskCtx, task.UserId, uploadID)
 				if err != nil {
@@ -166,7 +180,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				if int32(len(parts)) != info.TotalChunk {
+				if multipartPartsCountMismatch(len(parts), info.TotalChunk) {
 					err := fmt.Errorf("parts count not match total_chunk: got=%d want=%d", len(parts), info.TotalChunk)
 					log.Error("timer.handlerTask physical merge parts count mismatch",
 						zap.Error(err),
@@ -251,6 +265,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 							)
 						}
 					}
+
 					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
@@ -432,4 +447,8 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	p.Wait()
+}
+
+func multipartPartsCountMismatch(partsCount int, totalChunk int32) bool {
+	return totalChunk > 0 && int32(partsCount) != totalChunk
 }

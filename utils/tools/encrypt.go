@@ -106,9 +106,13 @@ func PKCS7UnPadding(src []byte) []byte {
 
 // 签名
 func HmacSHA256(stringToSign, secretKey string) string {
-	mac := hmac.New(sha256.New, []byte(secretKey))
+	return hex.EncodeToString(HmacSHA256Bytes([]byte(secretKey), stringToSign))
+}
+
+func HmacSHA256Bytes(secretKey []byte, stringToSign string) []byte {
+	mac := hmac.New(sha256.New, secretKey)
 	mac.Write([]byte(stringToSign))
-	return hex.EncodeToString(mac.Sum(nil))
+	return mac.Sum(nil)
 }
 
 // 验签（用 hmac.Equal 防时序攻击）

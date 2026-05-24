@@ -13,5 +13,5 @@ type ILifecycleRepo interface {
 	ListAllActiveLifecycleRulesByCursor(ctx context.Context, cursor int64, limit int) ([]*do.LifecycleRuleDo, error)
 	GetLifecycleRule(ctx context.Context, bucketID, ruleID int64) (*do.LifecycleRuleDo, error)
 	UpdateLifecycleRule(ctx context.Context, bucketID, ruleID int64, update *do.UpdateLifecycleRule) (*do.LifecycleRuleDo, error)
-	DeleteLifecycleRule(ctx context.Context, bucketID, ruleID int64) error
+	DeleteLifecycleRule(ctx context.Context, bucketID int64, ruleIDs ...int64) error
 }

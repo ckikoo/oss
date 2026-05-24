@@ -12,6 +12,7 @@ import (
 	"oss/adaptor/tx"
 	"oss/service/do"
 
+	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
 
@@ -148,14 +149,15 @@ func (r *LifecycleRepo) UpdateLifecycleRule(ctx context.Context, bucketID, ruleI
 	return r.GetLifecycleRule(ctx, bucketID, ruleID)
 }
 
-func (r *LifecycleRepo) DeleteLifecycleRule(ctx context.Context, bucketID, ruleID int64) error {
-	modelRule, err := r.q.LifecycleRule.WithContext(ctx).Where(r.q.LifecycleRule.BucketID.Eq(bucketID), r.q.LifecycleRule.ID.Eq(ruleID)).First()
-	if err != nil {
-		return repoerr.Wrap(err)
+func (r *LifecycleRepo) DeleteLifecycleRule(ctx context.Context, bucketID int64, ruleIDs ...int64) error {
+	ruleIDs = lo.Union(ruleIDs)
+	if bucketID <= 0 || len(ruleIDs) == 0 {
+		return nil
 	}
-	if modelRule == nil {
-		return repoerr.Wrap(errors.New("lifecycle rule not found"))
-	}
-	_, err = r.q.LifecycleRule.WithContext(ctx).Delete(modelRule)
+
+	q := r.q.LifecycleRule
+	_, err := q.WithContext(ctx).
+		Where(q.BucketID.Eq(bucketID), q.ID.In(ruleIDs...)).
+		Delete()
 	return repoerr.Wrap(err)
 }

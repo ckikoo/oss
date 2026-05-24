@@ -46,6 +46,7 @@ type CompleteMultipartUploadResp struct {
 	ObjectID  int64  `json:"object_id"`
 	ObjectKey string `json:"object_key"`
 	VersionID string `json:"version_id"`
+	Etag      string `json:"etag"`
 	Status    int32  `json:"status"`
 }
 
