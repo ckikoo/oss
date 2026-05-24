@@ -1,5 +1,7 @@
+* text=auto eol=lf
 .github
 .angents
+main
 adaptor/repo/gen.yaml
 config.yaml
 storage/*
