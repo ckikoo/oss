@@ -80,6 +80,30 @@ func (r *eventDeliveryRepo) GetPendingDeliveries(ctx context.Context, limit int)
 	return deliveries, nil
 }
 
+func (r *eventDeliveryRepo) ClaimEventDelivery(ctx context.Context, deliveryID int64) (bool, *do.EventDeliveryDo, error) {
+	now := time.Now()
+	result := r.db.WithContext(ctx).
+		Model(&model.EventDelivery{}).
+		Where("id = ?", deliveryID).
+		Where("status = ? OR (status = ? AND next_retry_at <= ?)", consts.EventDeliveryStatusPending, consts.EventDeliveryStatusFailed, now).
+		Updates(map[string]interface{}{
+			"status":     consts.EventDeliveryStatusProcessing,
+			"updated_at": now,
+		})
+	if result.Error != nil {
+		return false, nil, repoerr.Wrap(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return false, nil, nil
+	}
+
+	delivery, err := r.GetEventDeliveryByID(ctx, deliveryID)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, delivery, nil
+}
+
 func (r *eventDeliveryRepo) GetEventDeliveryByID(ctx context.Context, deliveryID int64) (*do.EventDeliveryDo, error) {
 	var modelData model.EventDelivery
 	err := r.db.WithContext(ctx).First(&modelData, deliveryID).Error

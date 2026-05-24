@@ -1,5 +1,7 @@
 package dto
 
+import "io"
+
 type ObjectItem struct {
 	ObjectKey    string `json:"object_key"`
 	Size         int64  `json:"size"`
@@ -82,4 +84,30 @@ type RestoreObjectVersionResp struct {
 	VersionID       string `json:"version_id"`
 	Etag            string `json:"etag"`
 	Size            int64  `json:"size"`
+}
+
+type PutObjectStreamReq struct {
+	BucketName    string `json:"bucket_name"`
+	ObjectKey     string `json:"object_key"`
+	ContentType   string `json:"content_type,omitempty"`
+	StorageClass  string `json:"storage_class,omitempty"`
+	Acl           int32  `json:"acl,omitempty"`
+	Metadata      string `json:"metadata,omitempty"`
+	UploadID      string `json:"upload_id,omitempty"`
+	Overwrite     bool   `json:"overwrite"`
+	CallbackUrl   string `json:"callback_url"`
+	ContentLength int64  `json:"content_length"`
+}
+
+type ObjectStreamResp struct {
+	ObjectKey     string        `json:"object_key"`
+	Size          int64         `json:"size"`
+	Etag          string        `json:"etag"`
+	ContentType   string        `json:"content_type,omitempty"`
+	StorageClass  string        `json:"storage_class"`
+	VersionID     string        `json:"version_id,omitempty"`
+	LastModified  int64         `json:"last_modified"`
+	Body          io.ReadCloser `json:"-"`
+	IsMultipart   bool          `json:"is_multipart"`
+	ContentLength int64         `json:"content_length"`
 }

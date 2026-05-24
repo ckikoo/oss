@@ -33,10 +33,6 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	if len(deliveryIDs) == 0 {
-		return
-	}
-
-	if len(deliveryIDs) == 0 {
 		deliveries, err := eventDeliveryRepo.GetPendingDeliveries(ctx, 50)
 		if err != nil {
 			log.Error("failed to scan pending event deliveries", zap.Error(err))
@@ -52,18 +48,13 @@ func handlerEventDeliveries(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	for _, deliveryID := range deliveryIDs {
-		delivery, err := eventDeliveryRepo.GetEventDeliveryByID(ctx, deliveryID)
+		claimed, delivery, err := eventDeliveryRepo.ClaimEventDelivery(ctx, deliveryID)
 		if err != nil {
-			log.Error("failed to get event delivery by ID", zap.Int64("deliveryID", deliveryID), zap.Error(err))
+			log.Error("failed to claim event delivery", zap.Int64("deliveryID", deliveryID), zap.Error(err))
 			continue
 		}
-		if delivery == nil {
-			log.Warn("event delivery record not found", zap.Int64("deliveryID", deliveryID))
-			continue
-		}
-
-		if delivery.Status != consts.EventDeliveryStatusPending {
-			log.Warn("skipping non-pending delivery", zap.Int64("deliveryID", delivery.ID), zap.Int32("status", delivery.Status))
+		if !claimed || delivery == nil {
+			log.Warn("skipping unclaimable event delivery", zap.Int64("deliveryID", deliveryID))
 			continue
 		}
 

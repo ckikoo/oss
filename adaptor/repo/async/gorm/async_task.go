@@ -12,6 +12,7 @@ import (
 	"oss/service/do"
 	"time"
 
+	"github.com/samber/lo"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -190,19 +191,52 @@ func (r *AsyncTaskRepo) MarkAsyncTaskQueued(ctx context.Context, taskID int64) (
 }
 
 func (r *AsyncTaskRepo) ClaimAsyncTask(ctx context.Context, taskID int64) (bool, *do.AsyncTaskDo, error) {
-	ok, err := r.updateStatus(ctx, taskID, consts.TaskStatusQueued, map[string]interface{}{
-		"status":     consts.TaskStatusRunning,
-		"updated_at": time.Now(),
-	})
-	if err != nil || !ok {
-		return ok, nil, err
-	}
+	var modelTask *model.AsyncTask
+	now := time.Now()
+	claimed := false
 
-	task, err := r.GetAsyncTaskByID(ctx, taskID)
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task model.AsyncTask
+		err := tx.WithContext(ctx).
+			Clauses(skipLockedForUpdate()).
+			Where("id = ?", taskID).
+			Take(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if task.Status != consts.TaskStatusQueued {
+			return nil
+		}
+
+		result := tx.Model(&model.AsyncTask{}).
+			Where("id = ? AND status = ?", taskID, consts.TaskStatusQueued).
+			Updates(map[string]interface{}{
+				"status":     consts.TaskStatusRunning,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		task.Status = consts.TaskStatusRunning
+		task.UpdatedAt = now
+		modelTask = &task
+		claimed = true
+		return nil
+	})
 	if err != nil {
-		return true, nil, err
+		return false, nil, repoerr.Wrap(err)
 	}
-	return true, task, nil
+	if !claimed || modelTask == nil {
+		return false, nil, nil
+	}
+	return true, toAsyncTaskDo(modelTask), nil
 }
 
 func (r *AsyncTaskRepo) ResetAsyncTaskToPending(ctx context.Context, taskID int64, currentStatus int32, errMsg string) (bool, error) {
@@ -298,12 +332,62 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, updat
 	err := r.db.WithContext(ctx).
 		Model(&model.AsyncTask{}).
 		Where("id = ?", taskID).
+		Where("status IN ?", []int32{consts.TaskStatusPending, consts.TaskStatusQueued, consts.TaskStatusRunning}).
 		Updates(updates).Error
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
 
 	return r.GetAsyncTaskByID(ctx, taskID)
+}
+
+func (r *AsyncTaskRepo) FailAsyncTasksByBiz(ctx context.Context, userID int64, taskType string, bizType string, bizIDs []string, errMsg string) (int64, error) {
+	if taskType == "" || bizType == "" {
+		return 0, repoerr.Wrap(gorm.ErrInvalidData)
+	}
+	bizIDs = lo.Compact(bizIDs)
+	if len(bizIDs) == 0 {
+		return 0, nil
+	}
+	if errMsg == "" {
+		errMsg = "async task failed"
+	}
+
+	db := r.db.WithContext(ctx).
+		Model(&model.AsyncTask{}).
+		Where("task_type = ? AND biz_type = ? AND biz_id IN ?", taskType, bizType, bizIDs).
+		Where("status IN ?", []int32{consts.TaskStatusPending, consts.TaskStatusQueued, consts.TaskStatusRunning})
+	if userID > 0 {
+		db = db.Where("user_id = ?", userID)
+	}
+
+	result := db.Updates(map[string]interface{}{
+		"status":     consts.TaskStatusFailed,
+		"last_error": errMsg,
+		"updated_at": time.Now(),
+	})
+	if result.Error != nil {
+		return 0, repoerr.Wrap(result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+func (r *AsyncTaskRepo) DeleteAsyncTasksByBiz(ctx context.Context, userID int64, taskType string, bizType string, bizID string) (int64, error) {
+	if taskType == "" || bizType == "" || bizID == "" {
+		return 0, repoerr.Wrap(gorm.ErrInvalidData)
+	}
+
+	db := r.db.WithContext(ctx).
+		Where("task_type = ? AND biz_type = ? AND biz_id = ?", taskType, bizType, bizID)
+	if userID > 0 {
+		db = db.Where("user_id = ?", userID)
+	}
+
+	result := db.Delete(&model.AsyncTask{})
+	if result.Error != nil {
+		return 0, repoerr.Wrap(result.Error)
+	}
+	return result.RowsAffected, nil
 }
 
 func (r *AsyncTaskRepo) getAsyncTaskByBiz(ctx context.Context, taskType string, bizID string) (*do.AsyncTaskDo, error) {

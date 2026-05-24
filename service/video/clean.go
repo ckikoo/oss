@@ -7,6 +7,8 @@ import (
 
 	"oss/adaptor"
 	"oss/adaptor/redis"
+	"oss/adaptor/repo/async"
+	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/repoerr"
 	videoRepo "oss/adaptor/repo/video"
 	gormVideo "oss/adaptor/repo/video/gorm"
@@ -15,7 +17,9 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/utils/logger"
+	"strconv"
 
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 )
 
@@ -30,6 +34,7 @@ type ObjectVersionCleanup struct {
 
 type CleanupService struct {
 	videoRepo videoRepo.IVideoRepo
+	asyncRepo async.IAsyncTaskRepo
 	playToken redis.IPlayToken
 	storage   storage.IStorage
 	logger    *zap.Logger
@@ -38,6 +43,7 @@ type CleanupService struct {
 func NewCleanupService(adaptor adaptor.IAdaptor) *CleanupService {
 	return &CleanupService{
 		videoRepo: gormVideo.NewVideoRepo(adaptor),
+		asyncRepo: gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
 		playToken: redis.NewPlayToken(adaptor),
 		storage:   adaptor.GetStorage(),
 		logger:    logger.GetLogger().With(zap.String("module", "video_cleanup")),
@@ -73,10 +79,24 @@ func (s *CleanupService) MarkDeletedInTx(ctx context.Context, tx tx.Tx, plan *Ob
 		return nil
 	}
 	repo := s.videoRepo.WithTx(tx)
+	profiles, err := repo.ListProfiles(ctx, plan.TranscodeID)
+	if err != nil {
+		return err
+	}
 	if err := repo.MarkTranscodeDeleted(ctx, plan.TranscodeID); err != nil {
 		return err
 	}
 	if err := repo.MarkProfilesDeleted(ctx, plan.TranscodeID); err != nil {
+		return err
+	}
+
+	bizIDs := lo.FilterMap(profiles, func(profile *do.VideoProfileDo, _ int) (string, bool) {
+		if profile == nil || profile.ID <= 0 {
+			return "", false
+		}
+		return strconv.FormatInt(profile.ID, 10), true
+	})
+	if _, err := s.asyncRepo.WithTx(tx).FailAsyncTasksByBiz(ctx, 0, consts.TaskTypeTranscode, consts.TaskBizTypeVideoProfile, bizIDs, "object already deleted"); err != nil {
 		return err
 	}
 	return repo.DeleteEncryptKeysByTranscodeID(ctx, plan.TranscodeID)

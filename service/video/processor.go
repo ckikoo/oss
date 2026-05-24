@@ -52,6 +52,8 @@ const (
 	cpuH264Encoder = "libx264"
 )
 
+var errObjectAlreadyDeleted = errors.New("object already deleted")
+
 type Processor struct {
 	txManager              tx.ITxManager
 	videoRepo              videoRepo.IVideoRepo
@@ -157,8 +159,10 @@ func (p *Processor) HandleTask(ctx context.Context, task *do.AsyncTaskDo) (strin
 	defer func() {
 		if retErr != nil {
 			p.cleanupStaging(state)
-			p.recordFailure(task, state, retErr)
-			RecordVideoTranscode("failed", state.profileName, 0, 0)
+			if !errors.Is(retErr, errObjectAlreadyDeleted) {
+				p.recordFailure(task, state, retErr)
+				RecordVideoTranscode("failed", state.profileName, 0, 0)
+			}
 			if p.logger != nil {
 				p.logger.Warn("video transcode task failed",
 					zap.Int64("task_id", state.taskID),
@@ -192,15 +196,19 @@ func (p *Processor) HandleTask(ctx context.Context, task *do.AsyncTaskDo) (strin
 	state.finalKey = BuildProfileAssetPrefix(transcode.ID, profile.Profile)
 	state.stagingKey = BuildProfileStagingAssetPrefix(transcode.ID, profile.Profile, task.ID)
 
+	if profile.Status == consts.TranscodeStatusDeleted {
+		retErr = errObjectAlreadyDeleted
+		return "", retErr
+	}
 	if profile.Status == consts.TranscodeStatusDone {
 		return "profile already done", nil
 	}
 	if transcode.Status == consts.TranscodeStatusDeleted {
-		retErr = fmt.Errorf("transcode is deleted")
+		retErr = errObjectAlreadyDeleted
 		return "", retErr
 	}
 	if source.Status != consts.ObjectStatusNormal {
-		retErr = fmt.Errorf("source object is not normal: status=%d", source.Status)
+		retErr = errObjectAlreadyDeleted
 		return "", retErr
 	}
 	if source.Etag != transcode.SourceEtag {

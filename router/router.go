@@ -5,6 +5,7 @@ import (
 	"oss/adaptor"
 	"oss/api/auth"
 	"oss/api/health"
+	"oss/api/s3"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -26,6 +27,7 @@ type RouterDeps struct {
 	TokenHandler     auth.ITokenHandler
 	EventHandler     auth.IEventHandler
 	VideoHandler     auth.IVideoHandler
+	S3Handler        s3.IS3Handler
 	HealthHandler    health.IHealthHandler
 }
 
@@ -43,6 +45,7 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 		TokenHandler:     auth.NewTokenCtrl(adaptor),
 		EventHandler:     auth.NewEventCtrl(adaptor),
 		VideoHandler:     auth.NewVideoCtrl(adaptor),
+		S3Handler:        s3.NewS3Ctrl(adaptor),
 		HealthHandler:    health.NewHealthCtrl(adaptor),
 	}
 }
@@ -85,6 +88,7 @@ func RegisterRoutes(h *server.Hertz, deps RouterDeps, adaptor adaptor.IAdaptor) 
 	registerBucketRoutes(authGroup, deps, adaptor)
 	registerObjectRoutes(authGroup, deps, adaptor)
 	registerAdminRoutes(authGroup, deps)
+	registerS3Routes(h, deps, adaptor)
 }
 
 func registerVideoPlaybackRoutes(playGroup *route.RouterGroup, deps RouterDeps) {
@@ -99,18 +103,17 @@ func registerPublicRoutes(h *server.Hertz, deps RouterDeps) {
 	// 健康检查路由（不需要认证）
 	h.GET("/healthz", deps.HealthHandler.Healthz)
 	h.GET("/readyz", deps.HealthHandler.Readyz)
-
 	h.POST("/api/v1/access-keys", deps.AccessKeyHandler.CreateAccessKey)
-	h.GET("/api/v1/access-keys", deps.AccessKeyHandler.ListAccessKeys)
-	h.GET("/api/v1/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
-	h.PATCH("/api/v1/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
 }
 
 func registerAuthRoutes(authGroup *route.RouterGroup, deps RouterDeps) {
+	authGroup.GET("/access-keys", deps.AccessKeyHandler.ListAccessKeys)
+	authGroup.GET("/access-keys/:access_key", deps.AccessKeyHandler.GetAccessKey)
+	authGroup.PATCH("/access-keys/:access_key/status", deps.AccessKeyHandler.DeactivateAccessKey)
+
 	authGroup.POST("/upload/tokens", deps.TokenHandler.CreateUploadToken)
 	authGroup.POST("/download/tokens", deps.TokenHandler.CreateDownloadToken)
 
-	// Management API: AK/SK + policy/ACL boundary.
 	authGroup.POST("/video/play-tokens", deps.VideoHandler.CreatePlayToken)
 }
 

@@ -39,6 +39,14 @@ func (ctrl *Ctrl) ListAccessKeys(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
+	req.UserID = ctx1.UserID
+
 	resp, errno := ctrl.auth.ListAccessKeys(ctx, req)
 	api.WriteResp(c, resp, errno)
 }

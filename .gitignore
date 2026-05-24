@@ -5,8 +5,13 @@ config.yaml
 storage/*
 tmp
 *.exe
+/main
 
 test/*
+!test/s3/
+!test/s3/*.sh
+!test/s3/*.go
+test/s3/run.sh
 .agents/*
 .third_part/
 */*.gz

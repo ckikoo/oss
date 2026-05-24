@@ -16,7 +16,6 @@ import (
 	"oss/consts"
 	"oss/service/do"
 	"oss/utils/tools"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -61,34 +60,7 @@ func buildStringToSign(method, path, query, host, contentType, body string, time
 }
 
 func canonicalQuery(rawQuery string) string {
-	if rawQuery == "" {
-		return ""
-	}
-
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return rawQuery
-	}
-
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-
-	sort.Strings(keys)
-
-	parts := make([]string, 0)
-
-	for _, key := range keys {
-		vals := values[key]
-		sort.Strings(vals)
-
-		for _, val := range vals {
-			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(val))
-		}
-	}
-
-	return strings.Join(parts, "&")
+	return canonicalQueryWithEscaper(rawQuery, url.QueryEscape)
 }
 
 // ============================================================

@@ -14,6 +14,8 @@ import (
 	"oss/adaptor/redis"
 	"oss/adaptor/repo/admin"
 	gormAdmin "oss/adaptor/repo/admin/gorm"
+	"oss/adaptor/repo/async"
+	gormAsync "oss/adaptor/repo/async/gorm"
 	"oss/adaptor/repo/bucket"
 	gormBucket "oss/adaptor/repo/bucket/gorm"
 	eventI "oss/adaptor/repo/event"
@@ -52,6 +54,7 @@ type Service struct {
 	objRepo        object.IObjectRepo
 	bucketRepo     bucket.IBucketRepo
 	multipartRepo  Imultipart.IMultipartRepo
+	asyncRepo      async.IAsyncTaskRepo
 	meteringRepo   metering.IMeteringRepo
 	storage        storage.IStorage
 	eventService   *event.Service
@@ -73,6 +76,7 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 		objRepo:        gormObject.NewObjectRepo(adaptor),
 		bucketRepo:     gormBucket.NewBucketRepo(adaptor),
 		multipartRepo:  gormMultipart.NewObjectRepo(adaptor.GetGORM()),
+		asyncRepo:      gormAsync.NewAsyncTaskRepo(adaptor.GetGORM()),
 		meteringRepo:   gormMetering.NewMeteringRepo(adaptor.GetGORM()),
 		storage:        adaptor.GetStorage(),
 		eventService:   event.NewService(adaptor),
@@ -313,6 +317,9 @@ func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.PutObjectReq, fi
 				return err
 			}
 			if oldObjectToCleanup.IsMultipart == consts.ObjectIsMultipartMerged && oldObjectToCleanup.UploadID != nil {
+				if _, err := srv.asyncRepo.WithTx(tx).FailAsyncTasksByBiz(ctx1, ctx.UserID, consts.TaskTypePhysicalMerge, consts.TaskBizTypeUpload, []string{*oldObjectToCleanup.UploadID}, "object already deleted"); err != nil {
+					return err
+				}
 				if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *oldObjectToCleanup.UploadID); err != nil {
 					return err
 				}
@@ -848,6 +855,14 @@ func (srv *Service) purgeObjectVersion(ctx *common.UserInfoCtx, bucket *do.Bucke
 		deletedObj, err = objRepo.MarkVersionPurged(ctx1, obj.BucketName, obj.ObjectKey, obj.VersionID)
 		if err != nil {
 			return err
+		}
+		if obj.IsMultipart == consts.ObjectIsMultipartMerged && obj.UploadID != nil {
+			if _, err := srv.asyncRepo.WithTx(tx).FailAsyncTasksByBiz(ctx1, ctx.UserID, consts.TaskTypePhysicalMerge, consts.TaskBizTypeUpload, []string{*obj.UploadID}, "object already deleted"); err != nil {
+				return err
+			}
+			if err := srv.multipartRepo.WithTx(tx).DeleteMultipartParts(ctx1, ctx.UserID, *obj.UploadID); err != nil {
+				return err
+			}
 		}
 		if err := srv.videoCleanup.MarkDeletedInTx(ctx1, tx, videoCleanupPlan); err != nil {
 			return err

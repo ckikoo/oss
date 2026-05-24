@@ -48,7 +48,6 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 			log.Error("failed to list active lifecycle rules", zap.Error(err))
 			return
 		}
-
 		poolSize := getLifecyclePoolSize()
 		pool := pool.NewPoolWithSize(poolSize)
 		for _, rule := range rules {
@@ -83,10 +82,10 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 			}
 		}
 		pool.Wait()
-		currentId = rules[len(rules)-1].ID
 		if len(rules) < batchSize {
 			break // 最后一批
 		}
+		currentId = rules[len(rules)-1].ID
 	}
 
 }
