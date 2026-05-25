@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oss
+  labels:
+    app: oss
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: oss
+  template:
+    metadata:
+      labels:
+        app: oss
+    spec:
+      containers:
+      - name: oss
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        ports:
+        - containerPort: 8080
+        env:
+        - name: CONFIG_PATH
+          value: /etc/oss/config.yaml
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: config
+          mountPath: /etc/oss
+      volumes:
+      - name: config
+        secret:
+          secretName: oss-config

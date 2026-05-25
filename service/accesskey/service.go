@@ -143,7 +143,7 @@ func (srv *Service) GetAccessKey(ctx context.Context, accessKey string) (*dto.Ac
 	}, common.OK
 }
 
-func (srv *Service) UpdateAccessKeyStatus(ctx context.Context, accessKey string, req *dto.UpdateAccessKeyStatusReq) (*dto.UpdateAccessKeyStatusResp, common.Errno) {
+func (srv *Service) UpdateAccessKeyStatus(ctx *common.UserInfoCtx, accessKey string, req *dto.UpdateAccessKeyStatusReq) (*dto.UpdateAccessKeyStatusResp, common.Errno) {
 	if strings.TrimSpace(accessKey) == "" {
 		return nil, common.ParamErr.WithMsg("access_key is required")
 	}
@@ -151,7 +151,7 @@ func (srv *Service) UpdateAccessKeyStatus(ctx context.Context, accessKey string,
 		return nil, common.ParamErr.WithMsg("status must be 0 or 1")
 	}
 
-	ak, err := srv.repo.UpdateStatus(ctx, accessKey, req.Status)
+	ak, err := srv.repo.UpdateStatus(ctx, ctx.UserID, accessKey, req.Status)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}

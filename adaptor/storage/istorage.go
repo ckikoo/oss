@@ -13,6 +13,10 @@ type PutResult struct {
 	Size        int64
 }
 
+type StatResult struct {
+	Exist bool
+}
+
 // IStorage 文件存储抽象接口
 // 目前实现：local（本地磁盘）
 // 未来可扩展：S3、MinIO、OSS 等，service 层无需改动
@@ -24,6 +28,8 @@ type IStorage interface {
 
 	// Get 读取文件，调用方负责关闭返回的 ReadCloser
 	Get(ctx context.Context, storagePath string) (io.ReadCloser, error)
+
+	Stat(ctx context.Context, storagePath string) (*StatResult, error) // 新增
 
 	// Delete 删除单个文件，文件不存在时不报错
 	Delete(ctx context.Context, storagePath string) error
@@ -40,9 +46,6 @@ type IStorage interface {
 
 	// MergeParts 将已保存的分片按顺序合并成一个完整对象文件
 	MergeParts(ctx context.Context, bucket, objectKey string, version string, partPaths []string) (*PutResult, error)
-
-	// BuildObjectPath 给外部（如 CompleteMultipart）查询对象最终路径用
-	BuildObjectPath(ctx context.Context, bucket, objectKey string, version string) string
 }
 
 // IVideoAssetStorage 视频派生资产存储接口。

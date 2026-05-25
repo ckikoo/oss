@@ -72,6 +72,11 @@ const (
 )
 
 const (
+	ObjectIsDirNo  = 0
+	ObjectIsDirYes = 1
+)
+
+const (
 	MultipartUploadStatusUploading      = 0
 	MultipartUploadStatusMergedVirtual  = 1
 	MultipartUploadStatusMergedPhysical = 2
@@ -141,11 +146,22 @@ const (
 	TaskStatusRunning   int32 = 2 // worker 已取走并执行中
 	TaskStatusCompleted int32 = 3 // 完成
 	TaskStatusFailed    int32 = 4 // 重试耗尽后失败
+	TaskStatusCanceled  int32 = 5 // 用户取消
+	TaskStatusDead      int32 = 6 // 死信，需要人工介入
 )
 
 func ValidAsyncTaskType(taskType string) bool {
 	switch taskType {
 	case TaskTypePhysicalMerge, TaskTypeTranscode, TaskTypeImageProcess, TaskTypeAbortMultipart, TaskTypeLifecycleTransition, TaskTypeLifecycleExpiration:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidAsyncTaskStatus(status int32) bool {
+	switch status {
+	case TaskStatusPending, TaskStatusQueued, TaskStatusRunning, TaskStatusCompleted, TaskStatusFailed, TaskStatusCanceled, TaskStatusDead:
 		return true
 	default:
 		return false

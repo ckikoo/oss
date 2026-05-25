@@ -3,6 +3,7 @@ package gorm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -18,11 +19,14 @@ import (
 	"oss/service/do"
 	"oss/utils/cache"
 	"oss/utils/logger"
+	"oss/utils/tools"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/gogf/gf/util/gconv"
 	"go.uber.org/zap"
+	"gorm.io/gen/field"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type objectRepo struct {
@@ -63,6 +67,7 @@ func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 		ID:            modelObject.ID,
 		BucketID:      modelObject.BucketID,
 		BucketName:    modelObject.BucketName,
+		ParentID:      modelObject.ParentID,
 		ObjectKey:     modelObject.ObjectKey,
 		ObjectKeyHash: modelObject.ObjectKeyHash,
 		VersionID:     modelObject.VersionID,
@@ -75,6 +80,7 @@ func (r *objectRepo) toObjectDo(modelObject *model.Object) *do.ObjectDo {
 		StoragePath:   modelObject.StoragePath,
 		Acl:           modelObject.Acl,
 		Metadata:      modelObject.Metadata,
+		IsDir:         modelObject.IsDir,
 		IsLatest:      modelObject.IsLatest,
 		Status:        modelObject.Status,
 		AccessCount:   modelObject.AccessCount,
@@ -193,9 +199,14 @@ func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		err      error
 	)
 	now := time.Now()
+	parentID, err := r.resolveParentID(ctx, object.BucketID, object.BucketName, object.ObjectKey, object.ParentID, now)
+	if err != nil {
+		return 0, err
+	}
 	modelObject := &model.Object{
 		BucketID:      object.BucketID,
 		BucketName:    object.BucketName,
+		ParentID:      parentID,
 		ObjectKey:     object.ObjectKey,
 		ObjectKeyHash: object.ObjectKeyHash,
 		VersionID:     object.VersionID,
@@ -208,6 +219,7 @@ func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 		StoragePath:   object.StoragePath,
 		Acl:           object.Acl,
 		Metadata:      object.Metadata,
+		IsDir:         object.IsDir,
 		Status:        consts.ObjectStatusNormal,
 		IsLatest:      1,
 		AccessCount:   0,
@@ -227,9 +239,14 @@ func (r *objectRepo) CreateObject(ctx context.Context, object *do.CreateObject) 
 
 func (r *objectRepo) CreateDeleteMarker(ctx context.Context, marker *do.CreateDeleteMarker) (int64, error) {
 	now := time.Now()
+	parentID, err := r.resolveParentID(ctx, marker.BucketID, marker.BucketName, marker.ObjectKey, marker.ParentID, now)
+	if err != nil {
+		return 0, err
+	}
 	modelObject := &model.Object{
 		BucketID:      marker.BucketID,
 		BucketName:    marker.BucketName,
+		ParentID:      parentID,
 		ObjectKey:     marker.ObjectKey,
 		ObjectKeyHash: marker.ObjectKeyHash,
 		VersionID:     marker.VersionID,
@@ -242,6 +259,7 @@ func (r *objectRepo) CreateDeleteMarker(ctx context.Context, marker *do.CreateDe
 		StoragePath:   nil,
 		Acl:           marker.Acl,
 		Metadata:      marker.Metadata,
+		IsDir:         consts.ObjectIsDirNo,
 		IsLatest:      1,
 		Status:        consts.ObjectStatusDeleteMark,
 		AccessCount:   0,
@@ -258,6 +276,117 @@ func (r *objectRepo) CreateDeleteMarker(ctx context.Context, marker *do.CreateDe
 	return modelObject.ID, nil
 }
 
+func (r *objectRepo) resolveParentID(ctx context.Context, bucketID int64, bucketName, objectKey string, explicitParentID *int64, now time.Time) (*int64, error) {
+	if explicitParentID != nil {
+		return explicitParentID, nil
+	}
+	return r.ensureDirectoryPath(ctx, bucketID, bucketName, objectKey, now)
+}
+
+func (r *objectRepo) ensureDirectoryPath(ctx context.Context, bucketID int64, bucketName, objectKey string, now time.Time) (*int64, error) {
+	var parentID *int64
+	for _, dirKey := range parentDirectoryKeys(objectKey) {
+		dirID, err := r.ensureDirectory(ctx, bucketID, bucketName, dirKey, parentID, now)
+		if err != nil {
+			return nil, err
+		}
+		parentID = &dirID
+	}
+	return parentID, nil
+}
+
+func (r *objectRepo) ensureDirectory(ctx context.Context, bucketID int64, bucketName, dirKey string, parentID *int64, now time.Time) (int64, error) {
+	objectKeyHash := tools.Md5Hash(dirKey)
+	modelObject := &model.Object{
+		BucketID:      bucketID,
+		BucketName:    bucketName,
+		ParentID:      parentID,
+		ObjectKey:     dirKey,
+		ObjectKeyHash: objectKeyHash,
+		VersionID:     directoryVersionID(objectKeyHash),
+		Size:          0,
+		Etag:          "",
+		ContentType:   nil,
+		StorageClass:  consts.StorageClassStandard,
+		IsMultipart:   consts.ObjectIsMultipartNormal,
+		UploadID:      nil,
+		StoragePath:   nil,
+		Acl:           consts.ObjectAclInheritBucket,
+		Metadata:      nil,
+		IsDir:         consts.ObjectIsDirYes,
+		Status:        consts.ObjectStatusNormal,
+		IsLatest:      1,
+		AccessCount:   0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Omit("latest_guard").
+		Create(modelObject).Error; err != nil {
+		return 0, repoerr.Wrap(err)
+	}
+	if modelObject.ID > 0 {
+		return modelObject.ID, nil
+	}
+	return r.getDirectoryID(ctx, bucketName, dirKey)
+}
+
+func (r *objectRepo) getDirectoryID(ctx context.Context, bucketName, dirKey string) (int64, error) {
+	q := query.Use(r.db).Object
+	var dirID int64
+	err := q.WithContext(ctx).
+		Select(q.ID).
+		Where(
+			q.BucketName.Eq(bucketName),
+			q.ObjectKey.Eq(dirKey),
+			q.IsDir.Eq(consts.ObjectIsDirYes),
+			q.Status.Eq(consts.ObjectStatusNormal),
+			q.IsLatest.Eq(1),
+		).
+		Scan(&dirID)
+	if err != nil {
+		return 0, repoerr.Wrap(err)
+	}
+	if dirID == 0 {
+		return 0, repoerr.ErrNotFound
+	}
+	return dirID, nil
+}
+
+func parentDirectoryKeys(objectKey string) []string {
+	key := strings.TrimLeft(objectKey, "/")
+	key = strings.TrimRight(key, "/")
+	if key == "" {
+		return nil
+	}
+
+	parts := strings.Split(key, "/")
+	if len(parts) <= 1 {
+		return nil
+	}
+
+	dirs := make([]string, 0, len(parts)-1)
+	var b strings.Builder
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "" {
+			continue
+		}
+		b.WriteString(parts[i])
+		b.WriteByte('/')
+		dirs = append(dirs, b.String())
+	}
+	return dirs
+}
+
+func directoryVersionID(objectKeyHash string) string {
+	if len(objectKeyHash) <= 29 {
+		return "dir" + objectKeyHash
+	}
+	return "dir" + objectKeyHash[:29]
+}
+
 // version 为空，默认返回最新的
 func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versionID string) (*do.ObjectDo, error) {
 	cacheKey := consts.ObjectCacheKey(bucketName, objectKey, versionID)
@@ -268,6 +397,7 @@ func (r *objectRepo) GetByKey(ctx context.Context, bucketName, objectKey, versio
 		qs := q.Object.WithContext(ctx).Where(
 			q.Object.BucketName.Eq(bucketName),
 			q.Object.ObjectKey.Eq(objectKey),
+			q.Object.IsDir.Eq(consts.ObjectIsDirNo),
 			q.Object.Status.Neq(consts.ObjectStatusDeleted),
 		)
 		if versionID != "" {
@@ -300,29 +430,76 @@ func (r *objectRepo) GetByIDAndVersion(ctx context.Context, objectID int64, vers
 	return r.toObjectDo(modelObject), nil
 }
 
-func (r *objectRepo) ListByFilter(ctx context.Context, bucketName, prefix, delimiter, marker string, maxKeys int, versionID string) ([]*do.ObjectDo, error) {
+func (r *objectRepo) ListByFilter(ctx context.Context, filter *do.ListObjectsFilter) ([]*do.ObjectDo, error) {
 	q := query.Use(r.db)
-	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(bucketName), q.Object.Status.Eq(consts.ObjectStatusNormal))
+	qs := q.Object.WithContext(ctx).Where(q.Object.BucketName.Eq(filter.BucketName), q.Object.Status.Eq(consts.ObjectStatusNormal))
+	if filter.BucketID != 0 {
+		qs = qs.Where(q.Object.BucketID.Eq(filter.BucketID))
+	}
 
-	if prefix != "" {
-		qs = qs.Where(q.Object.ObjectKey.Like(prefix + "%"))
+	if filter.UseParentID {
+		if filter.Prefix != "" {
+			dirID, err := r.getDirectoryID(ctx, filter.BucketName, filter.Prefix)
+			if err != nil {
+				if err == repoerr.ErrNotFound {
+					return []*do.ObjectDo{}, nil
+				}
+				return nil, err
+			}
+			filter.ParentID = &dirID
+		}
+		if filter.ParentID != nil {
+			qs = qs.Where(q.Object.ParentID.Eq(*filter.ParentID))
+		} else {
+			qs = qs.Where(q.Object.ParentID.IsNull())
+		}
+	} else {
+		qs = qs.Where(q.Object.IsDir.Eq(consts.ObjectIsDirNo))
 	}
-	if marker != "" {
-		qs = qs.Where(q.Object.ObjectKey.Gt(marker))
+
+	if filter.Prefix != "" && !filter.UseParentID {
+		qs = qs.Where(q.Object.ObjectKey.Like(filter.Prefix + "%"))
 	}
-	if versionID != "" {
-		qs = qs.Where(q.Object.VersionID.Eq(versionID))
+	if filter.DirectoryOrder && filter.CursorKey != "" && filter.CursorID > 0 {
+		qs = qs.Where(field.Or(
+			q.Object.IsDir.Lt(filter.CursorIsDir),
+			field.And(q.Object.IsDir.Eq(filter.CursorIsDir), q.Object.ObjectKey.Gt(filter.CursorKey)),
+			field.And(q.Object.IsDir.Eq(filter.CursorIsDir), q.Object.ObjectKey.Eq(filter.CursorKey), q.Object.ID.Gt(filter.CursorID)),
+		))
+	} else if filter.Marker != "" {
+		qs = qs.Where(q.Object.ObjectKey.Gt(filter.Marker))
+	}
+	if filter.VersionID != "" {
+		qs = qs.Where(q.Object.VersionID.Eq(filter.VersionID))
 	} else {
 		qs = qs.Where(q.Object.IsLatest.Eq(1))
 	}
+	if filter.StorageClass != "" {
+		qs = qs.Where(q.Object.StorageClass.Eq(filter.StorageClass))
+	}
+	if filter.ContentType != "" {
+		qs = qs.Where(q.Object.ContentType.Eq(filter.ContentType))
+	}
+	if !filter.CreatedAtStart.IsZero() {
+		qs = qs.Where(q.Object.CreatedAt.Gte(filter.CreatedAtStart))
+	}
+	if !filter.CreatedAtEnd.IsZero() {
+		qs = qs.Where(q.Object.CreatedAt.Lte(filter.CreatedAtEnd))
+	}
 
-	if maxKeys > 0 {
-		qs = qs.Limit(maxKeys)
+	if filter.Limit > 0 {
+		qs = qs.Limit(filter.Limit)
 	} else {
 		qs = qs.Limit(consts.DefaultMaxKeys)
 	}
 
-	modelObjects, err := qs.Order(q.Object.ObjectKey).Find()
+	if filter.DirectoryOrder {
+		qs = qs.Order(q.Object.IsDir.Desc(), q.Object.ObjectKey, q.Object.ID)
+	} else {
+		qs = qs.Order(q.Object.ObjectKey)
+	}
+
+	modelObjects, err := qs.Find()
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -537,7 +714,7 @@ func (r *objectRepo) ListByBucketWithPrefix(ctx context.Context, list *do.ListOb
 
 	qs = qs.Order(q.ID.Asc()).
 		Where(q.ID.Gt(list.Cursor)).
-		Where(q.Status.Eq(consts.ObjectStatusNormal), q.IsLatest.Eq(1)).
+		Where(q.Status.Eq(consts.ObjectStatusNormal), q.IsLatest.Eq(1), q.IsDir.Eq(consts.ObjectIsDirNo)).
 		Limit(list.Limit)
 
 	modelObjects, err := qs.Find()

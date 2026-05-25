@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"oss/adaptor"
@@ -65,9 +66,11 @@ func NewPolicyMiddleware(adp adaptor.IAdaptor) app.HandlerFunc {
 				fmt.Sprintf("user:%d", userID),
 				fmt.Sprintf("ak:%s", ak),
 			},
-			Action:   action,
-			Resource: resource,
-			SourceIP: c.ClientIP(),
+			Action:     action,
+			Resource:   resource,
+			SourceIP:   c.ClientIP(),
+			UserAgent:  string(c.UserAgent()),
+			ObjectTags: parseRequestObjectTags(c),
 		})
 
 		switch effect {
@@ -106,4 +109,30 @@ func resolvePolicyAction(c *app.RequestContext) string {
 	default:
 		return "Unknown"
 	}
+}
+
+func parseRequestObjectTags(c *app.RequestContext) map[string]string {
+	raw := strings.TrimSpace(string(c.GetHeader("X-OSS-Tagging")))
+	if raw == "" {
+		raw = strings.TrimSpace(string(c.GetHeader("x-oss-tagging")))
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(c.Query("tagging"))
+	}
+	if raw == "" {
+		return nil
+	}
+
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil
+	}
+
+	tags := make(map[string]string, len(values))
+	for key, values := range values {
+		if len(values) > 0 {
+			tags[key] = values[0]
+		}
+	}
+	return tags
 }

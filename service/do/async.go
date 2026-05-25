@@ -38,3 +38,13 @@ type UpdateAsyncTask struct {
 	LastError  string
 	RetryCount int32
 }
+
+type ListAsyncTasksFilter struct {
+	UserID   int64
+	TaskType string
+	BizType  string
+	BizID    string
+	Status   *int32
+	MarkerID int64
+	Limit    int
+}

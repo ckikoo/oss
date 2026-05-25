@@ -17,6 +17,7 @@ type Object struct {
 	ID            int64          `gorm:"column:id;primaryKey;autoIncrement:true;comment:主键" json:"id"`                                    // 主键
 	BucketID      int64          `gorm:"column:bucket_id;not null;comment:所属 Bucket ID" json:"bucket_id"`                                 // 所属 Bucket ID
 	BucketName    string         `gorm:"column:bucket_name;not null;comment:Bucket 名冗余" json:"bucket_name"`                               // Bucket 名冗余
+	ParentID      *int64         `gorm:"column:parent_id;comment:父目录对象 ID，根层级为空" json:"parent_id"`                                        // 父目录对象 ID，根层级为空
 	ObjectKey     string         `gorm:"column:object_key;not null;comment:对象路径" json:"object_key"`                                       // 对象路径
 	ObjectKeyHash string         `gorm:"column:object_key_hash;not null;comment:MD5(object_key)，用于索引和唯一约束" json:"object_key_hash"`        // MD5(object_key)，用于索引和唯一约束
 	VersionID     string         `gorm:"column:version_id;not null;comment:版本 ID，建议每次写入都生成" json:"version_id"`                            // 版本 ID，建议每次写入都生成
@@ -29,6 +30,7 @@ type Object struct {
 	StoragePath   *string        `gorm:"column:storage_path;comment:物理存储路径，delete marker 为空" json:"storage_path"`                         // 物理存储路径，delete marker 为空
 	Acl           int32          `gorm:"column:acl;not null;comment:0=继承Bucket 1=私有 2=公共读" json:"acl"`                                    // 0=继承Bucket 1=私有 2=公共读
 	Metadata      *string        `gorm:"column:metadata;comment:用户自定义元数据" json:"metadata"`                                                // 用户自定义元数据
+	IsDir         int32          `gorm:"column:is_dir;not null;comment:0=对象 1=目录" json:"is_dir"`                                          // 0=对象 1=目录
 	IsLatest      int32          `gorm:"column:is_latest;not null;comment:0=历史版本 1=当前最新版本" json:"is_latest"`                              // 0=历史版本 1=当前最新版本
 	Status        int32          `gorm:"column:status;not null;default:1;comment:1=正常 2=删除标记 3=永久删除" json:"status"`                       // 1=正常 2=删除标记 3=永久删除
 	AccessCount   int64          `gorm:"column:access_count;not null;comment:访问次数" json:"access_count"`                                   // 访问次数

@@ -92,30 +92,120 @@ func NewService(adaptor adaptor.IAdaptor) *Service {
 }
 
 func (srv *Service) ListObjects(ctx *common.UserInfoCtx, req *dto.ListObjectsReq) (*dto.ListObjectsResp, common.Errno) {
-	objects, err := srv.objRepo.ListByFilter(ctx, req.BucketName, req.Prefix, req.Delimiter, req.Marker, req.MaxKeys, req.VersionID)
+	bucket, err := srv.bucketRepo.GetByName(ctx, ctx.UserID, req.BucketName)
+	if err != nil {
+		return nil, common.ErrnoFromRepoErrorWithNotFound(err, common.DatabaseErr, common.BucketNotFoundErr)
+	}
+
+	maxKeys := normalizeListObjectsMaxKeys(req.MaxKeys)
+	var cursor dto.ListObjectsCursor
+	if req.DirectoryOrder && req.Cursor != "" {
+		decodedCursor, err := dto.DecodeListObjectsCursor(req.Cursor)
+		if err != nil {
+			return nil, common.ParamErr.WithMsg("invalid cursor")
+		}
+		cursor = decodedCursor
+	}
+
+	filter := &do.ListObjectsFilter{
+		BucketID:       bucket.ID,
+		BucketName:     req.BucketName,
+		Prefix:         req.Prefix,
+		Marker:         req.Marker,
+		CursorKey:      cursor.ObjectKey,
+		CursorID:       cursor.ID,
+		CursorIsDir:    cursor.IsDir,
+		Limit:          maxKeys + 1,
+		Delimiter:      req.Delimiter,
+		DirectoryOrder: req.DirectoryOrder,
+		VersionID:      req.VersionID,
+		StorageClass:   req.StorageClass,
+		ContentType:    req.ContentType,
+		CreatedAtStart: tools.UnixMilliToTime(req.CreatedAtStart),
+		CreatedAtEnd:   tools.UnixMilliToTime(req.CreatedAtEnd),
+	}
+	if req.DirectoryOrder && req.Delimiter != "" && (req.Prefix == "" || strings.HasSuffix(req.Prefix, req.Delimiter)) {
+		filter.UseParentID = true
+	}
+
+	objects, err := srv.objRepo.ListByFilter(ctx, filter)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
+	truncated := len(objects) > maxKeys
+	scanned := objects
+	if truncated {
+		scanned = objects[:maxKeys]
+	}
+
 	items := make([]*dto.ObjectItem, 0, len(objects))
-	for _, obj := range objects {
+	commonPrefixes := make([]string, 0)
+	prefixSeen := map[string]struct{}{}
+	for _, obj := range scanned {
+		if obj.IsDir == consts.ObjectIsDirYes {
+			commonPrefixes = append(commonPrefixes, obj.ObjectKey)
+			continue
+		}
+		if req.Delimiter != "" {
+			rest := strings.TrimPrefix(obj.ObjectKey, req.Prefix)
+			if idx := strings.Index(rest, req.Delimiter); idx >= 0 {
+				prefix := req.Prefix + rest[:idx+len(req.Delimiter)]
+				if _, ok := prefixSeen[prefix]; !ok {
+					prefixSeen[prefix] = struct{}{}
+					commonPrefixes = append(commonPrefixes, prefix)
+				}
+				continue
+			}
+		}
 		contentType := ""
 		if obj.ContentType != nil {
 			contentType = *obj.ContentType
 		}
 		items = append(items, &dto.ObjectItem{
+			ID:           obj.ID,
+			ParentID:     obj.ParentID,
 			ObjectKey:    obj.ObjectKey,
 			Size:         obj.Size,
 			Etag:         obj.Etag,
 			ContentType:  contentType,
 			StorageClass: obj.StorageClass,
+			IsDir:        obj.IsDir,
 			VersionID:    obj.VersionID,
 			LastModified: obj.UpdatedAt.UnixMilli(),
 			Status:       obj.Status,
 		})
 	}
+	sort.Strings(commonPrefixes)
 
-	return &dto.ListObjectsResp{Items: items}, common.OK
+	resp := &dto.ListObjectsResp{
+		Items:          items,
+		CommonPrefixes: commonPrefixes,
+		IsTruncated:    truncated,
+		MaxKeys:        maxKeys,
+	}
+	if truncated && len(scanned) > 0 {
+		last := scanned[len(scanned)-1]
+		resp.NextMarker = last.ObjectKey
+		if req.DirectoryOrder {
+			resp.NextCursor = dto.EncodeListObjectsCursor(dto.ListObjectsCursor{
+				IsDir:     last.IsDir,
+				ObjectKey: last.ObjectKey,
+				ID:        last.ID,
+			})
+		}
+	}
+	return resp, common.OK
+}
+
+func normalizeListObjectsMaxKeys(maxKeys int) int {
+	if maxKeys <= 0 {
+		return consts.DefaultMaxKeys
+	}
+	if maxKeys > consts.DefaultMaxKeys {
+		return consts.DefaultMaxKeys
+	}
+	return maxKeys
 }
 
 func (srv *Service) GetObjectMetadata(ctx *common.UserInfoCtx, bucketName, objectKey, versionID string) (*dto.ObjectMetadata, common.Errno) {

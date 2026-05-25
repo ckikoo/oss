@@ -127,15 +127,12 @@ func (srv *Service) ListObjectsV2(ctx *common.UserInfoCtx, req *dto.S3ListObject
 	}
 
 	items := resp.Items
-	truncated := len(items) > maxKeys
+	truncated := resp.IsTruncated || len(items) > maxKeys
 	if truncated {
-		items = items[:maxKeys]
+		if len(items) > maxKeys {
+			items = items[:maxKeys]
+		}
 	}
-
-	return buildS3ListObjectsV2Resp(req, items, maxKeys, truncated), common.OK
-}
-
-func buildS3ListObjectsV2Resp(req *dto.S3ListObjectsV2Req, items []*dto.ObjectItem, maxKeys int, truncated bool) *dto.S3ListObjectsV2Resp {
 	contents := make([]dto.S3Object, 0, len(items))
 	commonPrefixes := make([]dto.S3CommonPrefix, 0)
 	prefixSeen := map[string]struct{}{}
@@ -176,10 +173,14 @@ func buildS3ListObjectsV2Resp(req *dto.S3ListObjectsV2Req, items []*dto.ObjectIt
 	if req.ContinuationToken != "" {
 		out.ContinuationToken = req.ContinuationToken
 	}
-	if truncated && len(items) > 0 {
+
+	if truncated && resp.NextMarker != "" {
+		out.NextContinuationToken = resp.NextMarker
+	} else if truncated && len(items) > 0 {
 		out.NextContinuationToken = items[len(items)-1].ObjectKey
 	}
-	return out
+
+	return out, common.OK
 }
 
 func (srv *Service) PutObject(ctx *common.UserInfoCtx, req *dto.S3PutObjectReq, body io.Reader) (*dto.S3PutObjectResp, common.Errno) {

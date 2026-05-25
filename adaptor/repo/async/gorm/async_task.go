@@ -95,6 +95,39 @@ func (r *AsyncTaskRepo) GetAsyncTaskByID(ctx context.Context, taskID int64) (*do
 	return toAsyncTaskDo(modelTask), nil
 }
 
+func (r *AsyncTaskRepo) ListAsyncTasks(ctx context.Context, filter *do.ListAsyncTasksFilter) ([]*do.AsyncTaskDo, error) {
+	if filter == nil {
+		filter = &do.ListAsyncTasksFilter{}
+	}
+	limit := normalizeAsyncTaskLimit(filter.Limit)
+	q := r.q.AsyncTask
+	qs := q.WithContext(ctx)
+	if filter.UserID > 0 {
+		qs = qs.Where(q.UserID.Eq(filter.UserID))
+	}
+	if filter.TaskType != "" {
+		qs = qs.Where(q.TaskType.Eq(filter.TaskType))
+	}
+	if filter.BizType != "" {
+		qs = qs.Where(q.BizType.Eq(filter.BizType))
+	}
+	if filter.BizID != "" {
+		qs = qs.Where(q.BizID.Eq(filter.BizID))
+	}
+	if filter.Status != nil {
+		qs = qs.Where(q.Status.Eq(*filter.Status))
+	}
+	if filter.MarkerID > 0 {
+		qs = qs.Where(q.ID.Lt(filter.MarkerID))
+	}
+
+	modelTasks, err := qs.Order(q.ID.Desc()).Limit(limit).Find()
+	if err != nil {
+		return nil, repoerr.Wrap(err)
+	}
+	return toAsyncTaskDos(modelTasks), nil
+}
+
 func (r *AsyncTaskRepo) QueuePendingAsyncTasks(ctx context.Context, limit int) ([]*do.AsyncTaskDo, error) {
 	limit = normalizeAsyncTaskLimit(limit)
 	var modelTasks []*model.AsyncTask
@@ -281,7 +314,7 @@ func (r *AsyncTaskRepo) FailAsyncTask(ctx context.Context, taskID int64, errMsg 
 				"status": gorm.Expr(
 					"CASE WHEN retry_count + 1 < max_retry THEN ? ELSE ? END",
 					consts.TaskStatusPending,
-					consts.TaskStatusFailed,
+					consts.TaskStatusDead,
 				),
 				"last_error": errMsg,
 				"updated_at": now,
@@ -339,6 +372,97 @@ func (r *AsyncTaskRepo) UpdateAsyncTask(ctx context.Context, taskID int64, updat
 	}
 
 	return r.GetAsyncTaskByID(ctx, taskID)
+}
+
+func (r *AsyncTaskRepo) RetryAsyncTask(ctx context.Context, taskID int64, userID int64) (bool, *do.AsyncTaskDo, error) {
+	if taskID <= 0 || userID <= 0 {
+		return false, nil, repoerr.Wrap(gorm.ErrInvalidData)
+	}
+
+	now := time.Now()
+	updated := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task model.AsyncTask
+		err := tx.Clauses(skipLockedForUpdate()).
+			Where("id = ? AND user_id = ?", taskID, userID).
+			Where("status IN ?", []int32{consts.TaskStatusFailed, consts.TaskStatusDead}).
+			Take(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result := tx.Model(&model.AsyncTask{}).
+			Where("id = ? AND user_id = ?", taskID, userID).
+			Updates(map[string]interface{}{
+				"status":     consts.TaskStatusPending,
+				"last_error": nil,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		updated = result.RowsAffected > 0
+		return nil
+	})
+	if err != nil {
+		return false, nil, repoerr.Wrap(err)
+	}
+	if !updated {
+		return false, nil, nil
+	}
+	task, err := r.GetAsyncTaskByID(ctx, taskID)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, task, nil
+}
+
+func (r *AsyncTaskRepo) CancelAsyncTask(ctx context.Context, taskID int64, userID int64) (bool, *do.AsyncTaskDo, error) {
+	if taskID <= 0 || userID <= 0 {
+		return false, nil, repoerr.Wrap(gorm.ErrInvalidData)
+	}
+
+	now := time.Now()
+	cancelMsg := "async task canceled"
+	updated := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task model.AsyncTask
+		err := tx.Clauses(skipLockedForUpdate()).
+			Where("id = ? AND user_id = ?", taskID, userID).
+			Where("status IN ?", []int32{consts.TaskStatusPending, consts.TaskStatusQueued, consts.TaskStatusRunning}).
+			Take(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result := tx.Model(&model.AsyncTask{}).
+			Where("id = ? AND user_id = ?", taskID, userID).
+			Updates(map[string]interface{}{
+				"status":     consts.TaskStatusCanceled,
+				"last_error": cancelMsg,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		updated = result.RowsAffected > 0
+		return nil
+	})
+	if err != nil {
+		return false, nil, repoerr.Wrap(err)
+	}
+	if !updated {
+		return false, nil, nil
+	}
+	task, err := r.GetAsyncTaskByID(ctx, taskID)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, task, nil
 }
 
 func (r *AsyncTaskRepo) FailAsyncTasksByBiz(ctx context.Context, userID int64, taskType string, bizType string, bizIDs []string, errMsg string) (int64, error) {

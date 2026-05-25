@@ -276,10 +276,10 @@ func (r *AccessKeyRepo) ListByFilter(ctx context.Context, userID int64, status i
 	return doAKs, nil
 }
 
-func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, status int32) (*do.AccessKeyDo, error) {
+func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, userID int64, accessKey string, status int32) (*do.AccessKeyDo, error) {
 	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
-	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Update(q.AccessKey.Status, status)
+	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey), q.AccessKey.UserID.Eq(userID)).Update(q.AccessKey.Status, status)
 	if err != nil {
 		return nil, repoerr.Wrap(err)
 	}
@@ -290,10 +290,10 @@ func (r *AccessKeyRepo) UpdateStatus(ctx context.Context, accessKey string, stat
 	return r.GetByAccessKey(ctx, accessKey)
 }
 
-func (r *AccessKeyRepo) DeleteAccessKey(ctx context.Context, accessKey string) error {
+func (r *AccessKeyRepo) DeleteAccessKey(ctx context.Context, userID int64, accessKey string) error {
 	q := r.q
 	qs := q.AccessKey.WithContext(ctx)
-	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey)).Delete()
+	_, err := qs.Where(q.AccessKey.AccessKey.Eq(accessKey), q.AccessKey.UserID.Eq(userID)).Delete()
 	if err != nil {
 		return repoerr.Wrap(err)
 	}

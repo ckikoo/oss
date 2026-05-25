@@ -87,6 +87,10 @@ Policy 管理接口要求 AK/SK 认证。
 - `TimeRange`: 时间范围限制
   - `cond_key: "start"`: 开始时间（HH:MM 格式）
   - `cond_key: "end"`: 结束时间（HH:MM 格式）
+- `UserAgent`: 请求 User-Agent 值匹配，可使用通配符
+- `NotUserAgent`: 请求 User-Agent 值排除匹配
+- `ObjectTag`: 请求对象标签匹配，`cond_key` 为标签名，`value` 为标签值
+- `NotObjectTag`: 请求对象标签排除匹配，`cond_key` 为标签名，`value` 为标签值
 
 ### CreateBucketPolicyResp
 
@@ -190,6 +194,26 @@ Authorization: OSS <access_key>:<timestamp>:<signature>
   "conditions": [
     {"type": "TimeRange", "cond_key": "start", "value": "09:00"},
     {"type": "TimeRange", "cond_key": "end", "value": "18:00"}
+  ]
+}
+```
+
+### 4. 创建 UserAgent 或 ObjectTag 策略
+
+```http
+POST /api/v1/buckets/example-bucket/policies HTTP/1.1
+Content-Type: application/json
+Authorization: OSS <access_key>:<timestamp>:<signature>
+
+{
+  "name": "curl-only-uploads",
+  "effect": "Allow",
+  "principals": [{"type": "User", "value": "*"}],
+  "actions": ["PutObject"],
+  "resources": ["arn:oss:::example-bucket/uploads/*"],
+  "conditions": [
+    {"type": "UserAgent", "value": "curl/*"},
+    {"type": "ObjectTag", "cond_key": "environment", "value": "staging"}
   ]
 }
 ```

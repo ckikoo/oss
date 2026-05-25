@@ -45,7 +45,7 @@ func NewS3SignatureV4Middleware(adaptor adaptor.IAdaptor) app.HandlerFunc {
 		}
 
 		amzDate := strings.TrimSpace(string(c.GetHeader("x-amz-date")))
-		if !validS3RequestTime(amzDate, 15*time.Minute) {
+if !validS3RequestTime(amzDate, adaptor.GetConfig().Security.GetS3ReplayWindow()) {
 			common.WriteS3Error(c, common.AuthErr.WithMsg("request expired"), string(c.Path()))
 			c.Abort()
 			return

@@ -3,27 +3,41 @@ package dto
 import "io"
 
 type ObjectItem struct {
+	ID           int64  `json:"id"`
+	ParentID     *int64 `json:"parent_id,omitempty"`
 	ObjectKey    string `json:"object_key"`
 	Size         int64  `json:"size"`
 	Etag         string `json:"etag"`
 	ContentType  string `json:"content_type,omitempty"`
 	StorageClass string `json:"storage_class"`
+	IsDir        int32  `json:"is_dir"`
 	VersionID    string `json:"version_id,omitempty"`
 	LastModified int64  `json:"last_modified"`
 	Status       int32  `json:"status"`
 }
 
 type ListObjectsReq struct {
-	BucketName string `form:"bucket_name"`
-	Prefix     string `form:"prefix,omitempty"`
-	Delimiter  string `form:"delimiter,omitempty"`
-	MaxKeys    int    `form:"max_keys,omitempty"`
-	Marker     string `form:"marker,omitempty"`
-	VersionID  string `form:"version_id,omitempty"`
+	BucketName     string `form:"bucket_name"`
+	Prefix         string `form:"prefix,omitempty"`
+	Delimiter      string `form:"delimiter,omitempty"`
+	MaxKeys        int    `form:"max_keys,omitempty"`
+	Marker         string `form:"marker,omitempty"`
+	Cursor         string `form:"cursor,omitempty"`
+	VersionID      string `form:"version_id,omitempty"`
+	StorageClass   string `form:"storage_class,omitempty"`
+	ContentType    string `form:"content_type,omitempty"`
+	CreatedAtStart int64  `form:"created_at_start,omitempty"`
+	CreatedAtEnd   int64  `form:"created_at_end,omitempty"`
+	DirectoryOrder bool   `json:"-" form:"-"`
 }
 
 type ListObjectsResp struct {
-	Items []*ObjectItem `json:"items"`
+	Items          []*ObjectItem `json:"items"`
+	CommonPrefixes []string      `json:"common_prefixes,omitempty"`
+	NextMarker     string        `json:"next_marker,omitempty"`
+	NextCursor     string        `json:"next_cursor,omitempty"`
+	IsTruncated    bool          `json:"is_truncated"`
+	MaxKeys        int           `json:"max_keys"`
 }
 
 type ObjectMetadata struct {
