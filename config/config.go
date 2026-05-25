@@ -62,7 +62,9 @@ type Server struct {
 }
 
 type Security struct {
-	AESKey string `yaml:"aes_key"` // base64 encoded AES key. Decoded length must be 16, 24, or 32 bytes.
+	AESKey                string `yaml:"aes_key"` // base64 encoded AES key. Decoded length must be 16, 24, or 32 bytes.
+	ReplayWindowSeconds   int    `yaml:"replay_window_seconds"`
+	S3ReplayWindowSeconds int    `yaml:"s3_replay_window_seconds"`
 }
 
 func (s Security) AESKeyBytes() ([]byte, error) {
@@ -79,6 +81,20 @@ func (s Security) AESKeyBytes() ([]byte, error) {
 		return nil, fmt.Errorf("security.aes_key decoded length must be 16, 24, or 32 bytes, got %d", len(decoded))
 	}
 	return decoded, nil
+}
+
+func (s Security) GetReplayWindow() time.Duration {
+	if s.ReplayWindowSeconds <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(s.ReplayWindowSeconds) * time.Second
+}
+
+func (s Security) GetS3ReplayWindow() time.Duration {
+	if s.S3ReplayWindowSeconds <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(s.S3ReplayWindowSeconds) * time.Second
 }
 
 type CORS struct {
@@ -182,6 +198,8 @@ var envKeys = []string{
 	"storage.s3.bucket",
 	"storage.s3.disable_ssl",
 	"storage.s3.force_path_style",
+	"security.replay_window_seconds",
+	"security.s3_replay_window_seconds",
 }
 
 func init() {
@@ -278,6 +296,12 @@ func ValidateConfig(conf *Config) error {
 		if hasWildcard(conf.CORS.AllowedOrigins) {
 			return fmt.Errorf("cors.allowed_origins cannot contain * in prod")
 		}
+	}
+	if conf.Security.ReplayWindowSeconds < 0 {
+		return fmt.Errorf("security.replay_window_seconds cannot be negative")
+	}
+	if conf.Security.S3ReplayWindowSeconds < 0 {
+		return fmt.Errorf("security.s3_replay_window_seconds cannot be negative")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(conf.Storage.Type)) {
