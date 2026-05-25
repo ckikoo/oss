@@ -30,6 +30,7 @@ func newObject(db *gorm.DB, opts ...gen.DOOption) object {
 	_object.ID = field.NewInt64(tableName, "id")
 	_object.BucketID = field.NewInt64(tableName, "bucket_id")
 	_object.BucketName = field.NewString(tableName, "bucket_name")
+	_object.ParentID = field.NewInt64(tableName, "parent_id")
 	_object.ObjectKey = field.NewString(tableName, "object_key")
 	_object.ObjectKeyHash = field.NewString(tableName, "object_key_hash")
 	_object.VersionID = field.NewString(tableName, "version_id")
@@ -42,6 +43,7 @@ func newObject(db *gorm.DB, opts ...gen.DOOption) object {
 	_object.StoragePath = field.NewString(tableName, "storage_path")
 	_object.Acl = field.NewInt32(tableName, "acl")
 	_object.Metadata = field.NewString(tableName, "metadata")
+	_object.IsDir = field.NewInt32(tableName, "is_dir")
 	_object.IsLatest = field.NewInt32(tableName, "is_latest")
 	_object.Status = field.NewInt32(tableName, "status")
 	_object.AccessCount = field.NewInt64(tableName, "access_count")
@@ -63,6 +65,7 @@ type object struct {
 	ID            field.Int64  // 主键
 	BucketID      field.Int64  // 所属 Bucket ID
 	BucketName    field.String // Bucket 名冗余
+	ParentID      field.Int64  // 父目录对象 ID，根层级为空
 	ObjectKey     field.String // 对象路径
 	ObjectKeyHash field.String // MD5(object_key)，用于索引和唯一约束
 	VersionID     field.String // 版本 ID，建议每次写入都生成
@@ -75,6 +78,7 @@ type object struct {
 	StoragePath   field.String // 物理存储路径，delete marker 为空
 	Acl           field.Int32  // 0=继承Bucket 1=私有 2=公共读
 	Metadata      field.String // 用户自定义元数据
+	IsDir         field.Int32  // 0=对象 1=目录
 	IsLatest      field.Int32  // 0=历史版本 1=当前最新版本
 	Status        field.Int32  // 1=正常 2=删除标记 3=永久删除
 	AccessCount   field.Int64  // 访问次数
@@ -101,6 +105,7 @@ func (o *object) updateTableName(table string) *object {
 	o.ID = field.NewInt64(table, "id")
 	o.BucketID = field.NewInt64(table, "bucket_id")
 	o.BucketName = field.NewString(table, "bucket_name")
+	o.ParentID = field.NewInt64(table, "parent_id")
 	o.ObjectKey = field.NewString(table, "object_key")
 	o.ObjectKeyHash = field.NewString(table, "object_key_hash")
 	o.VersionID = field.NewString(table, "version_id")
@@ -113,6 +118,7 @@ func (o *object) updateTableName(table string) *object {
 	o.StoragePath = field.NewString(table, "storage_path")
 	o.Acl = field.NewInt32(table, "acl")
 	o.Metadata = field.NewString(table, "metadata")
+	o.IsDir = field.NewInt32(table, "is_dir")
 	o.IsLatest = field.NewInt32(table, "is_latest")
 	o.Status = field.NewInt32(table, "status")
 	o.AccessCount = field.NewInt64(table, "access_count")
@@ -144,10 +150,11 @@ func (o *object) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (o *object) fillFieldMap() {
-	o.fieldMap = make(map[string]field.Expr, 22)
+	o.fieldMap = make(map[string]field.Expr, 24)
 	o.fieldMap["id"] = o.ID
 	o.fieldMap["bucket_id"] = o.BucketID
 	o.fieldMap["bucket_name"] = o.BucketName
+	o.fieldMap["parent_id"] = o.ParentID
 	o.fieldMap["object_key"] = o.ObjectKey
 	o.fieldMap["object_key_hash"] = o.ObjectKeyHash
 	o.fieldMap["version_id"] = o.VersionID
@@ -160,6 +167,7 @@ func (o *object) fillFieldMap() {
 	o.fieldMap["storage_path"] = o.StoragePath
 	o.fieldMap["acl"] = o.Acl
 	o.fieldMap["metadata"] = o.Metadata
+	o.fieldMap["is_dir"] = o.IsDir
 	o.fieldMap["is_latest"] = o.IsLatest
 	o.fieldMap["status"] = o.Status
 	o.fieldMap["access_count"] = o.AccessCount

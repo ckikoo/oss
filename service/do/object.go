@@ -10,6 +10,7 @@ type ObjectDo struct {
 	ID            int64          `gorm:"column:id"`
 	BucketID      int64          `gorm:"column:bucket_id"`
 	BucketName    string         `gorm:"column:bucket_name"`
+	ParentID      *int64         `gorm:"column:parent_id"`
 	ObjectKey     string         `gorm:"column:object_key"`
 	ObjectKeyHash string         `gorm:"column:object_key_hash"`
 	VersionID     string         `gorm:"column:version_id"`
@@ -22,6 +23,7 @@ type ObjectDo struct {
 	StoragePath   *string        `gorm:"column:storage_path"`
 	Acl           int32          `gorm:"column:acl"`
 	Metadata      *string        `gorm:"column:metadata"`
+	IsDir         int32          `gorm:"column:is_dir"`
 	IsLatest      int32          `gorm:"column:is_latest"`
 	Status        int32          `gorm:"column:status"`
 	AccessCount   int64          `gorm:"column:access_count"`
@@ -39,6 +41,7 @@ type GetObjectFromHashKey struct {
 type CreateObject struct {
 	BucketID      int64
 	BucketName    string
+	ParentID      *int64
 	ObjectKey     string
 	ObjectKeyHash string
 	VersionID     string
@@ -51,11 +54,13 @@ type CreateObject struct {
 	StoragePath   *string
 	Acl           int32
 	Metadata      *string
+	IsDir         int32
 }
 
 type CreateDeleteMarker struct {
 	BucketID      int64
 	BucketName    string
+	ParentID      *int64
 	ObjectKey     string
 	ObjectKeyHash string
 	VersionID     string
@@ -83,4 +88,24 @@ type ListObjectsByBucket struct {
 	Prefix     string
 	Cursor     int64
 	Limit      int
+}
+
+type ListObjectsFilter struct {
+	BucketID       int64
+	BucketName     string
+	Prefix         string
+	Delimiter      string
+	Marker         string
+	CursorKey      string
+	CursorID       int64
+	CursorIsDir    int32
+	Limit          int
+	ParentID       *int64
+	UseParentID    bool
+	DirectoryOrder bool
+	VersionID      string
+	StorageClass   string
+	ContentType    string
+	CreatedAtStart time.Time
+	CreatedAtEnd   time.Time
 }

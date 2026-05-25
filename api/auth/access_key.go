@@ -7,6 +7,8 @@ import (
 	"oss/common"
 	"oss/service/accesskey"
 	"oss/service/dto"
+	"strconv"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 )
@@ -33,19 +35,21 @@ func (ctrl *Ctrl) CreateAccessKey(ctx context.Context, c *app.RequestContext) {
 }
 
 func (ctrl *Ctrl) ListAccessKeys(ctx context.Context, c *app.RequestContext) {
-	req := &dto.ListAccessKeysReq{}
-	if err := c.BindAndValidate(req); err != nil {
-		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
-		return
-	}
-
 	ctx1, pass := common.GetUserInfoFromContext(ctx, c)
 	if !pass {
 		api.WriteResp(c, nil, common.AuthErr)
 		return
 	}
 
-	req.UserID = ctx1.UserID
+	req := &dto.ListAccessKeysReq{UserID: ctx1.UserID}
+	if rawStatus := strings.TrimSpace(c.Query("status")); rawStatus != "" {
+		status, err := strconv.ParseInt(rawStatus, 10, 32)
+		if err != nil {
+			api.WriteResp(c, nil, common.ParamErr.WithMsg("status must be an integer"))
+			return
+		}
+		req.Status = int32(status)
+	}
 
 	resp, errno := ctrl.auth.ListAccessKeys(ctx, req)
 	api.WriteResp(c, resp, errno)
@@ -69,12 +73,18 @@ func (ctrl *Ctrl) DeactivateAccessKey(ctx context.Context, c *app.RequestContext
 		return
 	}
 
+	userCtx, pass := common.GetUserInfoFromContext(ctx, c)
+	if !pass {
+		api.WriteResp(c, nil, common.AuthErr)
+		return
+	}
+
 	req := &dto.UpdateAccessKeyStatusReq{}
 	if err := c.BindAndValidate(req); err != nil {
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
 		return
 	}
 
-	resp, errno := ctrl.auth.UpdateAccessKeyStatus(ctx, accessKey, req)
+	resp, errno := ctrl.auth.UpdateAccessKeyStatus(userCtx, accessKey, req)
 	api.WriteResp(c, resp, errno)
 }

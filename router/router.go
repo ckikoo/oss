@@ -27,6 +27,7 @@ type RouterDeps struct {
 	TokenHandler     auth.ITokenHandler
 	EventHandler     auth.IEventHandler
 	VideoHandler     auth.IVideoHandler
+	AsyncHandler     auth.IAsyncHandler
 	S3Handler        s3.IS3Handler
 	HealthHandler    health.IHealthHandler
 }
@@ -45,6 +46,7 @@ func NewRouterDeps(adaptor adaptor.IAdaptor) RouterDeps {
 		TokenHandler:     auth.NewTokenCtrl(adaptor),
 		EventHandler:     auth.NewEventCtrl(adaptor),
 		VideoHandler:     auth.NewVideoCtrl(adaptor),
+		AsyncHandler:     auth.NewAsyncCtrl(adaptor),
 		S3Handler:        s3.NewS3Ctrl(adaptor),
 		HealthHandler:    health.NewHealthCtrl(adaptor),
 	}
@@ -170,4 +172,9 @@ func registerObjectRoutes(authGroup *route.RouterGroup, deps RouterDeps, adaptor
 func registerAdminRoutes(authGroup *route.RouterGroup, deps RouterDeps) {
 	authGroup.GET("metrics/daily", deps.MeteringHandler.GetDailyMetering)
 	authGroup.GET("logs", deps.AuditHandler.ListOperationLogs)
+
+	authGroup.GET("async/tasks", deps.AsyncHandler.ListTasks)
+	authGroup.GET("async/tasks/:task_id", deps.AsyncHandler.GetTask)
+	authGroup.POST("async/tasks/:task_id/retry", deps.AsyncHandler.RetryTask)
+	authGroup.POST("async/tasks/:task_id/cancel", deps.AsyncHandler.CancelTask)
 }

@@ -108,8 +108,15 @@ Authorization: OSS <ak>:<ts>:<sig>
 ?prefix=log/
 ?delimiter=/
 ?max_keys=100
-?marker=<last_key>
+?marker=<next_marker>
+?storage_class=STANDARD
+?content_type=application/json
+?created_at_start=1716508800000
+?created_at_end=1716595200000
 ```
+
+响应包含 `items`、`common_prefixes`、`next_marker`、`is_truncated`、`max_keys`。
+当 `is_truncated=true` 时，下一页继续传 `marker=<next_marker>`；`next_marker` 是分页游标，不保证等于对象 key。
 
 ### 删除对象
 ```bash

@@ -34,9 +34,22 @@ func (ctrl *ObjectCtrl) ListObjects(ctx context.Context, c *app.RequestContext) 
 		api.WriteResp(c, nil, common.ParamErr.WithErr(err))
 		return
 	}
+	if req.MaxKeys < 0 {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("max_keys must be greater than or equal to 0"))
+		return
+	}
+	if req.StorageClass != "" && !consts.ValidStorageClass(req.StorageClass) {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("invalid storage_class"))
+		return
+	}
+	if req.CreatedAtStart > 0 && req.CreatedAtEnd > 0 && req.CreatedAtStart > req.CreatedAtEnd {
+		api.WriteResp(c, nil, common.ParamErr.WithMsg("created_at_start must be less than or equal to created_at_end"))
+		return
+	}
 
 	bucketName := c.Param("bucket_name")
 	req.BucketName = bucketName
+	req.DirectoryOrder = true
 
 	resp, errno := ctrl.object.ListObjects(ctx1, req)
 	api.WriteResp(c, resp, errno)

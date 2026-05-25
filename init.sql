@@ -296,6 +296,7 @@ CREATE TABLE `objects`  (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
   `bucket_id` bigint NOT NULL COMMENT '所属 Bucket ID',
   `bucket_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Bucket 名冗余',
+  `parent_id` bigint NULL DEFAULT NULL COMMENT '父目录对象 ID，根层级为空',
   `object_key` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '对象路径',
   `object_key_hash` char(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'MD5(object_key)，用于索引和唯一约束',
   `version_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '版本 ID，建议每次写入都生成',
@@ -308,6 +309,7 @@ CREATE TABLE `objects`  (
   `storage_path` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '物理存储路径，delete marker 为空',
   `acl` tinyint NOT NULL DEFAULT 0 COMMENT '0=继承Bucket 1=私有 2=公共读',
   `metadata` json NULL COMMENT '用户自定义元数据',
+  `is_dir` tinyint NOT NULL DEFAULT 0 COMMENT '0=对象 1=目录',
   `is_latest` tinyint NOT NULL DEFAULT 0 COMMENT '0=历史版本 1=当前最新版本',
   `status` tinyint NOT NULL DEFAULT 1 COMMENT '1=正常 2=删除标记 3=永久删除',
   `access_count` bigint NOT NULL DEFAULT 0 COMMENT '访问次数',
@@ -318,12 +320,9 @@ CREATE TABLE `objects`  (
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_bucket_key_ver`(`bucket_id` ASC, `object_key_hash` ASC, `version_id` ASC) USING BTREE,
   UNIQUE INDEX `uk_object_latest`(`bucket_id` ASC, `latest_guard` ASC) USING BTREE,
-  INDEX `idx_bucket_id`(`bucket_id` ASC) USING BTREE,
-  INDEX `idx_upload_id`(`upload_id` ASC) USING BTREE,
-  INDEX `idx_etag`(`etag` ASC) USING BTREE,
-  INDEX `idx_bucket_key_id`(`bucket_id` ASC, `object_key_hash` ASC, `id` ASC) USING BTREE,
-  INDEX `idx_bucket_key_latest`(`bucket_id` ASC, `object_key_hash` ASC, `is_latest` ASC) USING BTREE,
-  INDEX `idx_bucket_name_key_prefix`(`bucket_name` ASC, `object_key`(255) ASC, `is_latest` ASC, `status` ASC) USING BTREE
+  INDEX `idx_objects_key_lookup`(`bucket_name` ASC, `object_key`(255) ASC, `version_id` ASC, `is_latest` ASC, `status` ASC) USING BTREE,
+  INDEX `idx_objects_parent_list`(`bucket_id` ASC, `parent_id` ASC, `is_latest` ASC, `status` ASC, `is_dir` DESC, `object_key`(255) ASC, `id` ASC) USING BTREE,
+  INDEX `idx_objects_bucket_scan`(`bucket_id` ASC, `status` ASC, `is_latest` ASC, `id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'Object 对象版本表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -335,7 +334,7 @@ CREATE TABLE `async_tasks`  (
   `task_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务类型，如 PHYSICAL_MERGE/ABORT_MULTIPART',
   `biz_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '业务对象类型，如 upload/object/event',
   `biz_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务幂等ID，如 upload_id/object_version_id/delivery_id',
-  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=pending 1=queued 2=running 3=completed 4=failed',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=pending 1=queued 2=running 3=completed 4=failed 5=canceled 6=dead_letter',
   `progress` tinyint UNSIGNED NOT NULL DEFAULT 0 COMMENT '进度 0~100',
   `retry_count` int NOT NULL DEFAULT 0 COMMENT '已重试次数',
   `max_retry` int NOT NULL DEFAULT 3 COMMENT '最大重试次数',
@@ -347,8 +346,7 @@ CREATE TABLE `async_tasks`  (
   UNIQUE INDEX `uk_async_tasks_biz`(`task_type` ASC, `biz_id` ASC) USING BTREE,
   INDEX `idx_async_tasks_status_id`(`status` ASC, `id` ASC) USING BTREE,
   INDEX `idx_async_tasks_user_status`(`user_id` ASC, `status` ASC) USING BTREE,
-  INDEX `idx_async_tasks_status_updated_at`(`status` ASC, `updated_at` ASC) USING BTREE,
-  INDEX `idx_status_id`(`status` ASC, `id` ASC) USING BTREE
+  INDEX `idx_async_tasks_status_updated_at`(`status` ASC, `updated_at` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 4 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '异步任务表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
