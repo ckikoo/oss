@@ -23,12 +23,33 @@ var (
 
 type Config struct {
 	Server   Server             `yaml:"server"`
+	Storage  Storage            `yaml:"storage"`
 	Mysql    Mysql              `yaml:"mysql"`
 	Redis    Redis              `yaml:"redis"`
 	Security Security           `yaml:"security"`
 	CORS     CORS               `yaml:"cors"`
 	Video    Video              `yaml:"video"`
 	AppConf  map[string]AppConf `yaml:"app_conf"`
+}
+
+type Storage struct {
+	Type  string       `yaml:"type"`
+	Local LocalStorage `yaml:"local"`
+	S3    S3Storage    `yaml:"s3"`
+}
+
+type LocalStorage struct {
+	BaseDir string `yaml:"base_dir"`
+}
+
+type S3Storage struct {
+	Endpoint        string `yaml:"endpoint"`
+	Region          string `yaml:"region"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	Bucket          string `yaml:"bucket"`
+	DisableSSL      bool   `yaml:"disable_ssl"`
+	ForcePathStyle  bool   `yaml:"force_path_style"`
 }
 
 type Server struct {
@@ -152,6 +173,15 @@ var envKeys = []string{
 	"video.transcode_max_concurrency",
 	"video.segment_duration_seconds",
 	"video.play_token_ttl_seconds",
+	"storage.type",
+	"storage.local.base_dir",
+	"storage.s3.endpoint",
+	"storage.s3.region",
+	"storage.s3.access_key_id",
+	"storage.s3.secret_access_key",
+	"storage.s3.bucket",
+	"storage.s3.disable_ssl",
+	"storage.s3.force_path_style",
 }
 
 func init() {
@@ -250,6 +280,23 @@ func ValidateConfig(conf *Config) error {
 		}
 	}
 
+	switch strings.ToLower(strings.TrimSpace(conf.Storage.Type)) {
+	case "", "local":
+		// local storage is always valid with save_dir or storage.local.base_dir
+	case "s3":
+		if strings.TrimSpace(conf.Storage.S3.Region) == "" {
+			return fmt.Errorf("storage.s3.region is required")
+		}
+		if strings.TrimSpace(conf.Storage.S3.AccessKeyID) == "" {
+			return fmt.Errorf("storage.s3.access_key_id is required")
+		}
+		if strings.TrimSpace(conf.Storage.S3.SecretAccessKey) == "" {
+			return fmt.Errorf("storage.s3.secret_access_key is required")
+		}
+	default:
+		return fmt.Errorf("unsupported storage.type: %s", conf.Storage.Type)
+	}
+
 	return nil
 }
 
@@ -258,19 +305,12 @@ func isAESKeyLength(length int) bool {
 }
 
 func isWeakSecret(value string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	if normalized == "" {
-		return true
-	}
-	return normalized == "password" ||
-		normalized == "changeme" ||
-		normalized == "change_me" ||
-		strings.Contains(normalized, "change_me") ||
-		strings.Contains(normalized, "example")
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized == "change_me" || strings.Contains(normalized, "change_me") || strings.Contains(normalized, "example")
 }
 
 func isWeakAESKey(key []byte) bool {
-	return string(key) == "0123456789abcdef" || string(key) == "0123456789abcdef0123456789abcdef"
+	return len(key) == 16 && string(key) == "0123456789abcdef" || len(key) == 32 && string(key) == "0123456789abcdef0123456789abcdef"
 }
 
 func hasWildcard(values []string) bool {

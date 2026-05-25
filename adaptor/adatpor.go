@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"oss/adaptor/storage"
 	"oss/adaptor/storage/local"
+	storage_s3 "oss/adaptor/storage/s3"
 	"oss/adaptor/tx"
 	"oss/config"
 	"oss/utils/cache"
@@ -61,11 +63,32 @@ func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, log1 *zap.
 		return nil
 	}
 
+	var storageBackend storage.IStorage
+	storageType := strings.ToLower(strings.TrimSpace(conf.Storage.Type))
+	switch storageType {
+	case "s3":
+		s3Storage, err := storage_s3.New(conf.Storage.S3)
+		if err != nil {
+			log1.Error("failed to initialize s3 storage", zap.Error(err))
+			return nil
+		}
+		storageBackend = s3Storage
+	case "", "local":
+		baseDir := conf.Storage.Local.BaseDir
+		if baseDir == "" {
+			baseDir = conf.Server.SaveDir
+		}
+		storageBackend = local.New(baseDir)
+	default:
+		log1.Error("unsupported storage type", zap.String("storage_type", conf.Storage.Type))
+		return nil
+	}
+
 	return &Adaptor{
 		conf:      conf,
 		db:        db,
 		redis:     redis,
-		storage:   local.New(conf.Server.SaveDir),
+		storage:   storageBackend,
 		gormDB:    gormDB,
 		txManager: tx.NewGormTxManager(gormDB),
 		cm:        cache.NewManager(redis, log1),

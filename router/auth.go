@@ -255,8 +255,8 @@ func (h *hmacSignatureHandler) Handle(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	// 防重放：时间戳偏差不超过 30s
-	if math.Abs(float64(time.Now().Unix()-timestamp)) > 30 {
+	// 防重放：时间戳偏差不超过配置窗口
+	if math.Abs(float64(time.Now().Unix()-timestamp)) > h.adaptor.GetConfig().Security.GetReplayWindow().Seconds() {
 		c.JSON(401, common.AuthErr.WithMsg("request expired"))
 		c.Abort()
 		return

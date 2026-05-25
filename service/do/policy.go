@@ -15,10 +15,12 @@ type PolicyConditionDo struct {
 
 type EvaluateReq struct {
 	BucketID   int64
-	Principals []string // ["user:42", "ak:AKXXXXXXXX"]
-	Action     string   // "GetObject"
-	Resource   string   // "arn:oss:::my-bucket/dir/file.jpg"
+	Principals []string          // ["user:42", "ak:AKXXXXXXXX"]
+	Action     string            // "GetObject"
+	Resource   string            // "arn:oss:::my-bucket/dir/file.jpg"
 	SourceIP   string
+	UserAgent  string            // request User-Agent header
+	ObjectTags map[string]string // parsed object tags from request headers or query params
 }
 
 type CreateBucketPolicy struct {

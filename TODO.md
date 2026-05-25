@@ -62,13 +62,13 @@
 
 ### Object 列表增强
 
-- [ ] 现有对象列表接口支持 `prefix` 过滤。
-- [ ] 支持 `delimiter` 模拟目录层级。
-- [ ] 支持分页游标，避免大 Bucket 列表查询压力过大。
-- [ ] 支持按 `storage_class` 过滤。
-- [ ] 支持按 `content_type` 过滤。
-- [ ] 支持按创建时间范围过滤。
-- [ ] 为列表查询补充索引设计和压测结果。
+- [x] 现有对象列表接口支持 `prefix` 过滤。
+- [x] 支持 `delimiter` 模拟目录层级。
+- [x] 支持分页游标，避免大 Bucket 列表查询压力过大。
+- [x] 支持按 `storage_class` 过滤。
+- [x] 支持按 `content_type` 过滤。
+- [x] 支持按创建时间范围过滤。
+- [x] 为列表查询补充索引设计和压测结果。
 
 ### 异步任务管理
 
@@ -84,7 +84,7 @@
 
 ### 存储后端扩展
 
-- [ ] 梳理 `adaptor/storage` 接口能力边界。
+- [x] 梳理 `adaptor/storage` 接口能力边界。
 - [ ] 增加本地多目录存储策略。
 - [ ] 增加 S3 / MinIO 存储后端。
 - [ ] 增加阿里 OSS / 腾讯 COS 适配器。
@@ -97,14 +97,14 @@
 - [ ] 支持 AccessKey 轮换。
 - [ ] 支持 AccessKey 过期前告警。
 - [ ] 支持 IP 白名单。
-- [ ] 支持请求防重放窗口配置。
+- [x] 支持请求防重放窗口配置。
 - [ ] 支持预签名 Token 绑定 Content-MD5。
 - [ ] 支持一次性 Token。
-- [ ] 增强 Bucket Policy 条件表达式：
-  - [ ] IP 条件。
-  - [ ] 时间条件。
-  - [ ] UserAgent 条件。
-  - [ ] Object 标签条件。
+- [x] 增强 Bucket Policy 条件表达式：
+  - [x] IP 条件。
+  - [x] 时间条件。
+  - [x] UserAgent 条件。
+  - [x] Object 标签条件。
 
 ### 管理控制台
 
@@ -125,12 +125,12 @@
 - [ ] 清理 README 中重复的快速开始和存储类型说明。
 - [ ] 补齐 API 示例请求和响应。
 - [ ] 为核心流程增加时序图：
-  - [ ] 普通上传。
-  - [ ] 分片上传。
-  - [ ] 下载 Token。
-  - [ ] 生命周期执行。
-  - [ ] 事件投递。
-  - [ ] 视频转码。
+  - [x] 普通上传。 ([doc/diagrams/upload.md](doc/diagrams/upload.md))
+  - [x] 分片上传。 ([doc/diagrams/multipart_upload.md](doc/diagrams/multipart_upload.md))
+  - [x] 下载 Token。 ([doc/diagrams/download_token.md](doc/diagrams/download_token.md))
+  - [x] 生命周期执行。 ([doc/diagrams/lifecycle.md](doc/diagrams/lifecycle.md))
+  - [x] 事件投递。 ([doc/diagrams/event_delivery.md](doc/diagrams/event_delivery.md))
+  - [x] 视频转码。 ([doc/diagrams/video_transcode.md](doc/diagrams/video_transcode.md))
 - [ ] 增加部署文档：
   - [ ] Docker Compose。
   - [ ] 单机部署。
@@ -156,10 +156,3 @@
 - [ ] 增加 Dockerfile。
 - [ ] 完善 `compose.yml`，包含 MySQL、Redis、服务本体。
 - [ ] 支持初始化数据库脚本自动执行。
-
-## 近期推荐路线
-
-1. 先做配置安全化和 `config.example.yaml`，降低项目泄露敏感信息的风险。
-2. 再补 `/healthz`、`/readyz`、`/metrics`，让服务更适合部署和排障。
-3. 接着增强对象列表能力，为 S3 `ListObjectsV2` 打基础。
-4. 最后启动 S3 兼容层，这是项目价值提升最大的长期方向。

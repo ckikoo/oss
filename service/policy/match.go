@@ -83,7 +83,46 @@ func matchConditions(conds []*do.PolicyConditionDo, req do.EvaluateReq) bool {
 					return false
 				}
 			}
+
+		case "UserAgent":
+			if !matchString(req.UserAgent, cond.Value) {
+				return false
+			}
+
+		case "NotUserAgent":
+			if matchString(req.UserAgent, cond.Value) {
+				return false
+			}
+
+		case "ObjectTag":
+			if cond.CondKey == "" {
+				return false
+			}
+			if !matchString(req.ObjectTags[cond.CondKey], cond.Value) {
+				return false
+			}
+
+		case "NotObjectTag":
+			if cond.CondKey == "" {
+				return false
+			}
+			if matchString(req.ObjectTags[cond.CondKey], cond.Value) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+func matchString(actual, expected string) bool {
+	if actual == expected {
+		return true
+	}
+	if expected == "" {
+		return actual == ""
+	}
+	if matched, _ := path.Match(expected, actual); matched {
+		return true
+	}
+	return false
 }

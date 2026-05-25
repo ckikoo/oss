@@ -6,6 +6,19 @@ server:
   save_dir: "./data"
   env: "dev"
 
+storage:
+  type: "local"
+  local:
+    base_dir: "./data"
+  s3:
+    endpoint: ""
+    region: ""
+    access_key_id: ""
+    secret_access_key: ""
+    bucket: ""
+    disable_ssl: false
+    force_path_style: false
+
 mysql:
   user: "oss_user"
   password: "CHANGE_ME_MYSQL_PASSWORD"
@@ -28,6 +41,8 @@ security:
   # Generate your own value, for example:
   # openssl rand -base64 32
   aes_key: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+  replay_window_seconds: 30
+  s3_replay_window_seconds: 900
 
 cors:
   allowed_origins:

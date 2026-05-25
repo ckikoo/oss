@@ -44,10 +44,21 @@ func (s *LocalStorage) Put(ctx context.Context, bucket, objectKey string, versio
 
 // Get 打开文件返回 ReadCloser，调用方负责 Close
 func (s *LocalStorage) Get(ctx context.Context, storagePath string) (io.ReadCloser, error) {
-	if _, err := os.Stat(storagePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("file not found: %s", storagePath)
-	}
 	return os.Open(storagePath)
+}
+
+func (s *LocalStorage) Stat(ctx context.Context, storagePath string) (*storage.StatResult, error) {
+	_, err := os.Stat(storagePath)
+	if os.IsNotExist(err) {
+		return &storage.StatResult{Exist: false}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("stat file %s: %w", storagePath, err)
+	}
+
+	return &storage.StatResult{
+		Exist: true,
+	}, nil
 }
 
 // Delete 删除单个文件，文件不存在时静默忽略
@@ -99,9 +110,6 @@ func (s *LocalStorage) GetAsset(ctx context.Context, bucket string, assetKey str
 	assetPath, err := s.buildAssetPath(bucket, assetKey)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := os.Stat(assetPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("asset not found: %s", assetKey)
 	}
 	return os.Open(assetPath)
 }
@@ -306,7 +314,10 @@ func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
 		return nil, fmt.Errorf("create file %s: %w", destPath, err)
 	}
 	defer dst.Close()
-
+	isRegular := func() bool {
+		fi, err := dst.Stat()
+		return err == nil && fi.Mode().IsRegular()
+	}()
 	md5Hasher := md5.New()
 	sha256Hasher := sha256.New()
 
@@ -315,8 +326,9 @@ func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
 	defer copyBufPool.Put(bufp)
 	size, err := io.CopyBuffer(mw, src, *bufp)
 	if err != nil {
-		// 写入失败清理残留文件，避免脏数据
-		_ = os.Remove(destPath)
+		if isRegular {
+			_ = os.Remove(destPath) // 只清理普通文件
+		}
 		return nil, fmt.Errorf("write file %s: %w", destPath, err)
 	}
 

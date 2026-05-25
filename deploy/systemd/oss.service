@@ -1,0 +1,17 @@
+[Unit]
+Description=OSS Service
+After=network.target
+
+[Service]
+Type=simple
+User=oss
+Group=oss
+WorkingDirectory=/opt/oss
+ExecStart=/opt/oss/oss -c /etc/oss/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+Environment=GO_ENV=production
+
+[Install]
+WantedBy=multi-user.target

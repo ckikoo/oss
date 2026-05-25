@@ -295,62 +295,19 @@ main()
 - 创建所有表结构
 - 插入初始数据
 
----
 
-## 🔄 数据流示例
 
-### 创建Bucket的完整流程
-```
-POST /api/v1/buckets
-  ↓ [认证中间件验证AK/SK]
-  ↓ BucketCtrl.CreateBucket()
-  ↓ bucket.Service.CreateBucket()
-    ├─ bucket.Repo.CreateBucket()
-    │  └─ INSERT INTO buckets (...)  [返回bucket_id]
-    ├─ 【新增】创建3条默认lifecycle规则
-    │  ├─ lifecycle.Repo.CreateLifecycleRule() × 3
-    │  │  └─ INSERT INTO lifecycle_rules (...)
-    │  └─ 日志记录任何创建失败
-    └─ 返回CreateBucketResp
-```
+## 核心流程
 
-### 上传对象的完整流程
-```
-PUT /api/v1/buckets/{bucket}/objects/{object_key}
-  ↓ [认证中间件]
-  ↓ ObjectCtrl.PutObject()
-  ↓ object.Service.PutObject()
-    ├─ bucket.Repo.GetByName()        // 获取bucket_id
-    ├─ Tools.Md5Hash(object_key)      // 生成object_key_hash
-    ├─ saveFileAndComputeHashes()     // 流式存储文件 + 计算etag
-    ├─ object.Repo.CreateObject()     // 创建object记录
-    └─ 返回PutObjectResp
-```
+下面是项目核心业务流程的时序图链接，详细 Mermaid 源文件位于 `doc/diagrams/`：
 
-### 分片上传的完整流程
-```
-1️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads
-   └─ mutipart.Service.CreateMultipartUpload()
-      ├─ 生成upload_id (UUID)
-      ├─ redis.SetTimeoutMultipartCancel() // 设置超时
-      └─ 返回upload_id + expires_at
+- 普通上传： [doc/diagrams/upload.md](diagrams/upload.md) — 请求经由认证、存储写入与数据库记录的流程。
+- 分片上传： [doc/diagrams/multipart_upload.md](diagrams/multipart_upload.md) — 分片会话建立、分片上传与完成合并的流程。
+- 下载 Token： [doc/diagrams/download_token.md](doc/diagrams/download_token.md) — 临时下载令牌的生成、校验与使用流程。
+- 生命周期执行： [doc/diagrams/lifecycle.md](doc/diagrams/lifecycle.md) — 定时器、分布式锁与生命周期规则执行流程。
+- 事件投递： [doc/diagrams/event_delivery.md](doc/diagrams/event_delivery.md) — 事件入队、Worker投递与重试策略流程。
+- 视频转码： [doc/diagrams/video_transcode.md](doc/diagrams/video_transcode.md) — 上传、排队、转码与输出上传的端到端流程。
 
-2️⃣ PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}
-   └─ mutipart.Service.UploadMultipartPart()
-      ├─ 验证权限 + 上传状态
-      ├─ 流式存储分片到 /storage/{bucket}/multipart/{upload_id}/part_{n}
-      ├─ multipart.Repo.CreateOrUpdateMultipartPart()
-      └─ 返回etag
-
-3️⃣ POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete
-   └─ mutipart.Service.CompleteMultipartUpload()
-      ├─ 验证所有分片
-      ├─ 计算最终etag
-      ├─ object.Repo.CreateObject() // 虚拟合并
-      └─ 返回object_id (物理文件仍为分片)
-```
-
----
 
 ## 🔐 认证流程
 
@@ -403,77 +360,6 @@ users (用户账户)
   └─ event_rules / event_deliveries (事件通知)
 ```
 
----
-
-## 🚀 启动和开发
-
-### 快速启动
-```bash
-# 1. 下载依赖
-go mod tidy
-
-# 2. 生成代码
-go run ./tools/gen.go
-
-# 3. 初始化数据库
-mysql -uroot -p < init.sql
-
-# 4. 启动服务
-go run ./main.go
-
-# 或指定配置文件
-go run ./main.go -c /path/to/config.yaml
-```
-
-### 编译和测试
-```bash
-# 编译所有模块
-go build ./...
-
-# 运行所有测试
-go test ./...
-
-# 编译二进制
-go build -o oss ./main.go
-```
-
----
-
-## ⚠️ 已知问题和待办事项
-
-### 🔴 高优先级 - 缺失核心功能
-当前无高优先级核心功能缺失。
-
-### 🟡 中优先级 - 功能增强
-当前无中优先级功能缺失。
-
-### 🟢 低优先级 - 优化
-| 问题 | 建议 |
-|------|------|
-| 查询优化 | 对象列表支持更多过滤条件 |
-| 监控告警 | 集成prometheus指标 |
-
----
-
-## 📝 编译状态 (2026-05-22)
-- ✅ `go build ./...` - **通过**
-- ✅ `go test ./...` - **通过** (所有包无编译错误)
-- ✅ Lifecycle 规则服务 - **已实现**
-- ✅ 默认生命周期规则 - **已实现** (CreateBucket时自动创建)
-- ✅ 分布式文件锁 - **已实现** (Redis原子操作 + Lua脚本)
-- ✅ 生命周期规则扫描器 - **已实现** (`timer/scan_lifecycle.go` 按批扫描并生成事件)
-- ✅ 生命周期事件执行器 - **已实现** (`timer/lifecycle.go` 处理转移和删除事件)
-- ✅ 分片超时清理 - **已实现** (`timer/upload_timeout.go` 后台定期清理)
-- ✅ 日统计指标收集 - **已实现** (支持 PUT/GET/DELETE 请求计数、上下行流量)
-- ✅ 版本控制 - **已实现** (Bucket versioning 支持，PutObject 自动生成 version_id)
-- ✅ 事件规则 - **已实现** (PUT/DELETE/POST 事件类型，异步分发)
-- ✅ CORS 规则 - **已实现** (灵活的源、方法、头部配置)
-- ✅ 审计日志 - **已实现** (操作记录和查询)
-- ✅ 视频处理 - **已实现** (HLS切片、AES-128加密、播放令牌)
-- ✅ 预签名 Token - **已实现** (上传/下载令牌生成和验证)
-
----
-
 ## 专题文档
 
 | 文档 | 内容 |
@@ -515,7 +401,4 @@ go build -o oss ./main.go
 - 📊 **可观测性**: 完整的操作审计、请求统计、生命周期事件追踪
 
 **后续扩展方向**:
-- 云存储适配 (S3 兼容层)
-- 更多视频编码格式支持
-- 增强的权限策略（Resource 标签、条件表达式）
 - 性能优化 (缓存策略、预热、CDN 集成)

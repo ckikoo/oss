@@ -48,89 +48,6 @@
 
 > **快速链接**：[项目索引](doc/PROJECT_INDEX.md) | [对象版本设计](doc/OBJECT_VERSIONING_DESIGN.md) | [多部分上传](doc/MULTIPART_GUIDE.md) | [权限 API](doc/POLICY_API.md) | [视频处理](doc/video.md)
 
-## API 认证方式
-
-所有 Bucket、Object 和 Multipart 相关的 API 都需要 AK/SK 认证或临时令牌访问。
-
-### Authorization 签名方式
-```
-Authorization: OSS <access_key>:<timestamp>:<signature>
-```
-- `timestamp`: 当前时间戳，与服务器时间允许误差不超过 30 秒
-- `signature`: 使用 Secret Key 签名生成
-
-### 临时 Token 方式
-```
-GET /api/v1/buckets/{bucket_name}/objects/{object_key}?token={token}
-```
-- Token 通过 `POST /api/v1/upload/tokens` 或 `POST /api/v1/download/tokens` 生成
-- Token 支持预签名 URL，避免 AK/SK 泄露
-- 可设置过期时间和访问权限
-
-## Bucket Policy API
-
-权限策略相关接口支持 Bucket 级别策略管理。详细文档请参见 [POLICY_API.md](doc/POLICY_API.md)。
-
-**API 端点**:
-- `POST /api/v1/buckets/:bucket_name/policies` - 创建 Bucket Policy
-- `GET /api/v1/buckets/:bucket_name/policies` - 列表 Bucket Policy
-- `PUT /api/v1/buckets/:bucket_name/policies/:policy_id` - 更新 Policy
-- `DELETE /api/v1/buckets/:bucket_name/policies/:policy_id` - 删除 Policy
-
-**性能优化**:
-- Policy 头表 + 子表（principals、actions、resources、conditions）关联加载
-- 使用 `utils/pool` 控制并发数，避免大量策略时数据库连接压力
-
-## Multipart Upload
-
-支持大文件分片上传，使用虚拟合并策略实现高性能。详细实现请参考 [MULTIPART_GUIDE.md](doc/MULTIPART_GUIDE.md)。
-
-**API 流程**:
-1. `POST /api/v1/buckets/{bucket}/multipart/uploads` - 初始化上传，获得 upload_id
-2. `PUT /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/parts/{part_number}` - 上传分片
-3. `POST /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}/complete` - 完成上传，创建对象
-4. `DELETE /api/v1/buckets/{bucket}/multipart/uploads/{upload_id}` - 中止上传，清理分片
-
-**特性**:
-- ✅ **虚拟合并**: 分片存储独立，完成时仅创建对象记录（无物理文件组装）
-- ✅ **流式上传**: 避免内存溢出，支持大文件
-- ✅ **并发安全**: 基于 Redis 分布式锁确保原子性
-- ✅ **自动清理**: 支持超时清理和手动中止
-
-## 统计与监控
-
-### 流量统计（Metering）
-
-项目实现日级流量与请求统计，数据写入 `metering_daily` 表，支持 Bucket 级和用户级粒度。
-
-**统计指标**:
-- `storage_size`: 对象存储量变化（上传增加、删除减少）
-- `object_count`: 对象数量变化
-- `upload_flow`: 上传流量（PUT 请求字节数）
-- `download_flow`: 下载流量（GET 响应字节数，流式计数）
-- `get_request_count`: GET 请求次数
-- `put_request_count`: PUT 请求次数
-- `del_request_count`: DELETE 请求次数
-
-**查询接口**: `GET /api/v1/metrics/daily`
-
-**查询参数**: `user_id`, `bucket_id`, `date_from`, `date_to` (格式: YYYY-MM-DD)
-
-### 生命周期管理
-
-支持对象存储类转换、过期删除、分片清理规则。Bucket 创建时自动生成默认规则。
-
-**API 端点**:
-- `POST /api/v1/buckets/:bucket_name/lifecycle` - 创建规则
-- `GET /api/v1/buckets/:bucket_name/lifecycle` - 列表规则
-- `GET /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 获取规则
-- `PUT /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 更新规则
-- `DELETE /api/v1/buckets/:bucket_name/lifecycle/:rule_id` - 删除规则
-
-**默认规则**:
-- "Default-IA-Transition": 30 天后转为 IA 存储类
-- "Default-Archive-Transition": 90 天后转为 Archive 存储类
-- "Default-Expiration": 180 天后自动删除对象
 
 ## 分布式文件锁
 
@@ -209,56 +126,14 @@ go run ./main.go
 ```
 
 服务默认启动在 `http://localhost:8080`。
-
-## 存储类型常量
-
-项目中对 `storage_class` 的默认值均已统一使用常量定义，避免字符串硬编码：
-
-- `consts.StorageClassStandard`
-- `consts.StorageClassIA`
 ## 存储类型常量
 
 项目中对象和 Bucket 的 `storage_class` 均使用常量定义：
 - `consts.StorageClassStandard` - 标准存储
-- `consts.StorageClassIA` - 低频访问存储  
+- `consts.StorageClassIA` - 低频访问存储
 - `consts.StorageClassArchive` - 归档存储
 
 默认值均为 `STANDARD`。
-
-## 快速开始
-
-### 1. 环境要求
-- Go 1.25+
-- MySQL 8.0+
-- Redis 6.0+
-
-### 2. 下载依赖
-```bash
-go mod tidy
-```
-
-### 3. 数据库初始化
-```bash
-mysql -uroot -p < init.sql
-```
-
-### 4. 配置服务
-编辑 `config.yaml`，设置 MySQL 和 Redis 连接信息
-
-### 5. 代码生成
-```bash
-# 生成 GORM Model 和 Query
-go run ./tools/gen.go
-
-# 生成对象转换器（可选）
-goverter gen ./service
-```
-
-### 6. 启动服务
-```bash
-go run ./cmd/server/main.go
-```
-服务默认启动在 `http://localhost:8080`
 
 ## 项目架构
 
