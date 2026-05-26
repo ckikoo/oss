@@ -3,24 +3,26 @@ package local
 import (
 	"context"
 	"crypto/md5"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"oss/adaptor/storage"
 	"oss/consts"
+	storage_tool "oss/utils/storage"
+	"oss/utils/tools"
 )
 
 // LocalStorage 本地磁盘存储实现
 // 目录结构：
 //
-//	{baseDir}/{bucket}/{objectKey}_{version}                               ← 普通对象
-//	{baseDir}/{bucket}/multipart/{uploadID}/part_{partNumber}   ← 分片
+//	{baseDir}/{bucket}/{objectKey}_{version}                     ← 普通对象
+//	{baseDir}/{bucket}/multipart/{uploadID}/part_{partNumber}   ← 分片临时文件
 //	{baseDir}/{bucket}/_video/{transcodeID}/{profile}/...       ← 视频派生资产
 type LocalStorage struct {
 	baseDir string
@@ -28,7 +30,6 @@ type LocalStorage struct {
 
 var _ storage.IStorage = (*LocalStorage)(nil)
 
-// New 创建本地存储实例，baseDir 对应 config.Server.SaveDir
 func New(baseDir string) storage.IStorage {
 	if baseDir == "" {
 		baseDir = "./storage"
@@ -36,13 +37,13 @@ func New(baseDir string) storage.IStorage {
 	return &LocalStorage{baseDir: baseDir}
 }
 
-// Put 保存普通对象到磁盘，一次 IO 同时计算 MD5 和 SHA256
+// ===================== 普通对象操作 =====================
+
 func (s *LocalStorage) Put(ctx context.Context, bucket, objectKey string, version string, src io.Reader) (*storage.PutResult, error) {
-	destPath := s.BuildObjectPath(ctx, bucket, objectKey, version)
+	destPath := s.buildObjectPath(bucket, objectKey, version)
 	return saveAndHash(src, destPath)
 }
 
-// Get 打开文件返回 ReadCloser，调用方负责 Close
 func (s *LocalStorage) Get(ctx context.Context, storagePath string) (io.ReadCloser, error) {
 	return os.Open(storagePath)
 }
@@ -55,13 +56,9 @@ func (s *LocalStorage) Stat(ctx context.Context, storagePath string) (*storage.S
 	if err != nil {
 		return nil, fmt.Errorf("stat file %s: %w", storagePath, err)
 	}
-
-	return &storage.StatResult{
-		Exist: true,
-	}, nil
+	return &storage.StatResult{Exist: true}, nil
 }
 
-// Delete 删除单个文件，文件不存在时静默忽略
 func (s *LocalStorage) Delete(ctx context.Context, storagePath string) error {
 	err := os.Remove(storagePath)
 	if os.IsNotExist(err) {
@@ -70,25 +67,112 @@ func (s *LocalStorage) Delete(ctx context.Context, storagePath string) error {
 	return err
 }
 
-// PutPart 保存分片到专属目录
-func (s *LocalStorage) PutPart(ctx context.Context, bucket, uploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
-	destPath := s.buildPartPath(bucket, uploadID, partNumber)
-	return saveAndHash(src, destPath)
-}
+func (s *LocalStorage) Copy(ctx context.Context, srcStoragePath string, dstBucket, dstKey, dstVersion string) (*storage.PutResult, error) {
+	target := s.buildObjectPath(dstBucket, dstKey, dstVersion)
 
-// DeletePart 删除某次分片上传的单个分片目录
-func (s *LocalStorage) DeletePart(ctx context.Context, bucket, uploadID string, partNum int32) error {
-	partPath := s.buildPartPath(bucket, uploadID, partNum)
-	err := os.Remove(partPath)
-	if os.IsNotExist(err) {
-		return nil
+	srcFile, err := os.Open(srcStoragePath)
+	if err != nil {
+		return nil, fmt.Errorf("open source file %s: %w", srcStoragePath, err)
 	}
-	return err
+	defer srcFile.Close()
+
+	return saveAndHash(srcFile, target)
 }
 
-// DeleteParts 删除整个分片上传目录（AbortMultipartUpload / CompleteMultipartUpload 后清理）
-func (s *LocalStorage) DeleteParts(ctx context.Context, bucket, uploadID string) error {
-	dirPath := path.Join(s.baseDir, bucket, "multipart", uploadID)
+// ===================== 分片上传 =====================
+
+// CreateMultipartUpload 初始化本地分片上传会话，创建临时目录并返回 storageUploadID。
+// storageUploadID 格式：bucket{bucket}/{objectKey}_{version}/{id}
+func (s *LocalStorage) CreateMultipartUpload(_ context.Context, bucket, objectKey string, version string) (string, error) {
+	if err := validateBucket(bucket); err != nil {
+		return "", err
+	}
+	uploadID := tools.UUIDHex()
+	dirPath := s.buildMultipartDir(bucket, uploadID)
+	if err := os.MkdirAll(dirPath, consts.FilePermDir); err != nil {
+		return "", fmt.Errorf("create multipart dir %s: %w", dirPath, err)
+	}
+	return storage_tool.FormatUploadID(bucket, objectKey, version, uploadID), nil
+}
+
+// PutPart 将单个分片写入临时目录。
+// 返回的 PutResult.Etag 须原样保存，CompleteMultipartUpload 时需传回（本地实现不校验 ETag，但保持接口一致）。
+func (s *LocalStorage) PutPart(_ context.Context, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
+	info, err := storage_tool.ParseUploadID(storageUploadID)
+	if err != nil {
+		return nil, err
+	}
+	partPath := s.buildPartPath(info.Bucket, info.UploadID, partNumber)
+	return saveAndHash(src, partPath)
+}
+
+// CompleteMultipartUpload 按 PartNumber 顺序合并分片到最终目标文件，并清理临时目录。
+// parts 无需预先排序，内部自动按 PartNumber 升序处理。
+func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("complete multipart upload: no parts provided")
+	}
+
+	info, err := storage_tool.ParseUploadID(storageUploadID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 按 PartNumber 升序排列
+	sorted := make([]storage.PartInfo, len(parts))
+	copy(sorted, parts)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].PartNumber < sorted[j].PartNumber
+	})
+
+	for i, part := range sorted {
+		expected := int32(i + 1)
+		if part.PartNumber != expected {
+			err := fmt.Errorf("part number not continuous: got=%d want=%d", part.PartNumber, expected)
+			return nil, err
+		}
+	}
+
+	// 打开所有分片文件
+	readers := make([]io.Reader, 0, len(sorted))
+	closers := make([]io.Closer, 0, len(sorted))
+	defer func() {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+	}()
+
+	for _, p := range sorted {
+		partPath := s.buildPartPath(info.Bucket, info.UploadID, p.PartNumber)
+		f, err := os.Open(partPath)
+		if err != nil {
+			return nil, fmt.Errorf("open part %d: %w", p.PartNumber, err)
+		}
+		readers = append(readers, f)
+		closers = append(closers, f)
+	}
+
+	destPath := s.buildObjectPath(info.Bucket, info.UploadID, info.Version)
+	result, err := saveAndHash(io.MultiReader(readers...), destPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// AbortUpload 取消分片上传，删除临时目录及所有已上传的分片。
+// 幂等：目录不存在时不报错。
+func (s *LocalStorage) AbortUpload(_ context.Context, storageUploadID string) error {
+	info, err := storage_tool.ParseUploadID(storageUploadID)
+	if err != nil {
+		return err
+	}
+	return s.removeMultipartDir(info.Bucket, info.UploadID)
+}
+
+func (s *LocalStorage) removeMultipartDir(bucket, uploadID string) error {
+	dirPath := s.buildMultipartDir(bucket, uploadID)
 	err := os.RemoveAll(dirPath)
 	if os.IsNotExist(err) {
 		return nil
@@ -96,8 +180,9 @@ func (s *LocalStorage) DeleteParts(ctx context.Context, bucket, uploadID string)
 	return err
 }
 
-// PutAsset 保存视频派生资产到专属前缀。
-func (s *LocalStorage) PutAsset(ctx context.Context, bucket string, assetKey string, src io.Reader) (*storage.PutResult, error) {
+// ===================== 视频派生资产 =====================
+
+func (s *LocalStorage) PutAsset(_ context.Context, bucket string, assetKey string, src io.Reader) (*storage.PutResult, error) {
 	destPath, err := s.buildAssetPath(bucket, assetKey)
 	if err != nil {
 		return nil, err
@@ -105,8 +190,7 @@ func (s *LocalStorage) PutAsset(ctx context.Context, bucket string, assetKey str
 	return saveAndHash(src, destPath)
 }
 
-// GetAsset 打开视频派生资产，调用方负责 Close。
-func (s *LocalStorage) GetAsset(ctx context.Context, bucket string, assetKey string) (io.ReadCloser, error) {
+func (s *LocalStorage) GetAsset(_ context.Context, bucket string, assetKey string) (io.ReadCloser, error) {
 	assetPath, err := s.buildAssetPath(bucket, assetKey)
 	if err != nil {
 		return nil, err
@@ -114,8 +198,7 @@ func (s *LocalStorage) GetAsset(ctx context.Context, bucket string, assetKey str
 	return os.Open(assetPath)
 }
 
-// DeleteAsset 删除单个视频派生资产，文件不存在时静默忽略。
-func (s *LocalStorage) DeleteAsset(ctx context.Context, bucket string, assetKey string) error {
+func (s *LocalStorage) DeleteAsset(_ context.Context, bucket string, assetKey string) error {
 	assetPath, err := s.buildAssetPath(bucket, assetKey)
 	if err != nil {
 		return err
@@ -127,8 +210,7 @@ func (s *LocalStorage) DeleteAsset(ctx context.Context, bucket string, assetKey 
 	return err
 }
 
-// DeleteAssetPrefix 删除视频派生资产前缀。
-func (s *LocalStorage) DeleteAssetPrefix(ctx context.Context, bucket string, prefix string) error {
+func (s *LocalStorage) DeleteAssetPrefix(_ context.Context, bucket string, prefix string) error {
 	prefixPath, err := s.buildAssetPath(bucket, prefix)
 	if err != nil {
 		return err
@@ -140,8 +222,7 @@ func (s *LocalStorage) DeleteAssetPrefix(ctx context.Context, bucket string, pre
 	return err
 }
 
-// MoveAssetPrefix 将视频派生资产前缀整体移动到新前缀。
-func (s *LocalStorage) MoveAssetPrefix(ctx context.Context, bucket string, srcPrefix string, dstPrefix string) error {
+func (s *LocalStorage) MoveAssetPrefix(_ context.Context, bucket string, srcPrefix string, dstPrefix string) error {
 	srcPath, err := s.buildAssetPath(bucket, srcPrefix)
 	if err != nil {
 		return err
@@ -156,14 +237,12 @@ func (s *LocalStorage) MoveAssetPrefix(ctx context.Context, bucket string, srcPr
 	if pathNested(srcPath, dstPath) {
 		return fmt.Errorf("destination prefix cannot be inside source prefix")
 	}
-
 	if _, err := os.Stat(srcPath); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("asset prefix not found: %s", srcPrefix)
 		}
 		return err
 	}
-
 	if err := os.MkdirAll(path.Dir(dstPath), consts.FilePermDir); err != nil {
 		return fmt.Errorf("mkdir %s: %w", path.Dir(dstPath), err)
 	}
@@ -182,80 +261,54 @@ func (s *LocalStorage) MoveAssetPrefix(ctx context.Context, bucket string, srcPr
 func (s *LocalStorage) moveNestedAssetPrefix(srcPath string, dstPath string) error {
 	tempPath, err := os.MkdirTemp(path.Dir(dstPath), ".asset-move-*")
 	if err != nil {
-		return fmt.Errorf("create temporary asset move path: %w", err)
+		return fmt.Errorf("create temp dir for asset move: %w", err)
 	}
 	if err := os.Remove(tempPath); err != nil {
-		return fmt.Errorf("remove temporary asset move path: %w", err)
+		return fmt.Errorf("remove temp placeholder: %w", err)
 	}
-
 	if err := os.Rename(srcPath, tempPath); err != nil {
-		return fmt.Errorf("move nested asset prefix to temporary path: %w", err)
+		return fmt.Errorf("move to temp path: %w", err)
 	}
 	if err := os.RemoveAll(dstPath); err != nil {
-		return fmt.Errorf("remove existing nested asset prefix: %w", err)
+		return fmt.Errorf("remove existing nested prefix: %w", err)
 	}
 	if err := os.Rename(tempPath, dstPath); err != nil {
-		return fmt.Errorf("move nested asset prefix to destination: %w", err)
+		return fmt.Errorf("move temp to destination: %w", err)
 	}
 	return nil
 }
 
-// MergeParts：用 MultiReader 把分片串成单流，复用 saveAndHash
-func (s *LocalStorage) MergeParts(ctx context.Context, bucket, objectKey string, version string, partPaths []string) (*storage.PutResult, error) {
-	if len(partPaths) == 0 {
-		return nil, fmt.Errorf("no part paths provided")
-	}
+// ===================== 路径构建 =====================
 
-	files := make([]io.Reader, 0, len(partPaths))
-	closers := make([]io.Closer, 0, len(partPaths))
-	defer func() {
-		for _, c := range closers {
-			_ = c.Close()
-		}
-	}()
-
-	for _, p := range partPaths {
-		f, err := os.Open(p)
-		if err != nil {
-			return nil, fmt.Errorf("open part %s: %w", p, err)
-		}
-		files = append(files, f)
-		closers = append(closers, f)
-	}
-
-	// 多个文件 → 一个流，saveAndHash 完全不用改
-	return saveAndHash(io.MultiReader(files...), s.BuildObjectPath(ctx, bucket, objectKey, version))
-}
-
-// BuildObjectPath 返回普通对象的完整磁盘路径（供外部记录到 DB）
-func (s *LocalStorage) BuildObjectPath(ctx context.Context, bucket, objectKey string, version string) string {
+func (s *LocalStorage) buildObjectPath(bucket, objectKey string, version string) string {
 	if version == "" {
 		return path.Join(s.baseDir, bucket, objectKey)
 	}
-
 	return path.Join(s.baseDir, bucket, objectKey+"_"+version)
 }
 
-// ---- 内部辅助 ----
+func (s *LocalStorage) buildMultipartDir(bucket, uploadID string) string {
+	return path.Join(s.baseDir, bucket, "multipart", uploadID)
+}
 
 func (s *LocalStorage) buildPartPath(bucket, uploadID string, partNumber int32) string {
-	return path.Join(s.baseDir, bucket, "multipart", uploadID, fmt.Sprintf("part_%d", partNumber))
+	return path.Join(s.buildMultipartDir(bucket, uploadID), fmt.Sprintf("part_%d", partNumber))
 }
 
 func (s *LocalStorage) buildAssetPath(bucket string, assetKey string) (string, error) {
-	if err := validateAssetBucket(bucket); err != nil {
+	if err := validateBucket(bucket); err != nil {
 		return "", err
 	}
-
 	cleanKey, err := cleanAssetKey(assetKey)
 	if err != nil {
 		return "", err
 	}
-
 	return path.Join(s.baseDir, bucket, cleanKey), nil
 }
 
-func validateAssetBucket(bucket string) error {
+// ===================== 校验工具 =====================
+
+func validateBucket(bucket string) error {
 	if bucket == "" {
 		return fmt.Errorf("bucket is required")
 	}
@@ -272,15 +325,12 @@ func cleanAssetKey(assetKey string) (string, error) {
 	if strings.HasPrefix(assetKey, "/") || strings.HasPrefix(assetKey, `\`) || path.IsAbs(assetKey) {
 		return "", fmt.Errorf("invalid asset key: %s", assetKey)
 	}
-
 	normalized := strings.ReplaceAll(assetKey, `\`, "/")
-	segments := strings.Split(normalized, "/")
-	for _, segment := range segments {
+	for _, segment := range strings.Split(normalized, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return "", fmt.Errorf("invalid asset key: %s", assetKey)
 		}
 	}
-
 	cleanKey := path.Clean(filepath.FromSlash(normalized))
 	if cleanKey == "." || strings.HasPrefix(cleanKey, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid asset key: %s", assetKey)
@@ -296,14 +346,16 @@ func pathNested(parent string, child string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// ===================== IO 工具 =====================
+
 var copyBufPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, 32*1024)
-		return &buf // 存指针，避免 interface 装箱时复制 slice header
+		return &buf
 	},
 }
 
-// saveAndHash 创建目录、写文件，同时流式计算 MD5 和 SHA256，避免大文件 OOM
+// saveAndHash 创建目录、写文件，同时流式计算 MD5 和 SHA256。
 func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
 	if err := os.MkdirAll(path.Dir(destPath), consts.FilePermDir); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", path.Dir(destPath), err)
@@ -314,20 +366,20 @@ func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
 		return nil, fmt.Errorf("create file %s: %w", destPath, err)
 	}
 	defer dst.Close()
-	isRegular := func() bool {
-		fi, err := dst.Stat()
-		return err == nil && fi.Mode().IsRegular()
-	}()
-	md5Hasher := md5.New()
-	sha256Hasher := sha256.New()
 
-	mw := io.MultiWriter(dst, md5Hasher, sha256Hasher)
+	fi, statErr := dst.Stat()
+	isRegular := statErr == nil && fi.Mode().IsRegular()
+
+	md5Hasher := md5.New()
+	mw := io.MultiWriter(dst, md5Hasher)
+
 	bufp := copyBufPool.Get().(*[]byte)
 	defer copyBufPool.Put(bufp)
+
 	size, err := io.CopyBuffer(mw, src, *bufp)
 	if err != nil {
 		if isRegular {
-			_ = os.Remove(destPath) // 只清理普通文件
+			_ = os.Remove(destPath)
 		}
 		return nil, fmt.Errorf("write file %s: %w", destPath, err)
 	}
@@ -335,7 +387,6 @@ func saveAndHash(src io.Reader, destPath string) (*storage.PutResult, error) {
 	return &storage.PutResult{
 		StoragePath: destPath,
 		Etag:        fmt.Sprintf("%x", md5Hasher.Sum(nil)),
-		Sha256:      fmt.Sprintf("%x", sha256Hasher.Sum(nil)),
 		Size:        size,
 	}, nil
 }

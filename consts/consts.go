@@ -129,6 +129,7 @@ const (
 
 const (
 	TaskTypePhysicalMerge       = "PHYSICAL_MERGE"
+	TaskTypePhysicalCopy        = "PHYSICAL_COPY"
 	TaskTypeTranscode           = "TRANSCODE"
 	TaskTypeImageProcess        = "IMG_PROCESS"
 	TaskTypeAbortMultipart      = "ABORT_MULTIPART"

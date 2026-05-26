@@ -7,10 +7,26 @@ server:
   env: "dev"
 
 storage:
-  type: "local"
+  type: "local" # local | s3 | oss | cos
   local:
     base_dir: "./data"
   s3:
+    endpoint: ""
+    region: ""
+    access_key_id: ""
+    secret_access_key: ""
+    bucket: ""
+    disable_ssl: false
+    force_path_style: false
+  oss:
+    endpoint: ""
+    region: ""
+    access_key_id: ""
+    secret_access_key: ""
+    bucket: ""
+    disable_ssl: false
+    force_path_style: false
+  cos:
     endpoint: ""
     region: ""
     access_key_id: ""

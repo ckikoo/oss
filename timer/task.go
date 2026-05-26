@@ -12,13 +12,14 @@ import (
 	gormMultipart "oss/adaptor/repo/multipart/gorm"
 	gormObject "oss/adaptor/repo/object/gorm"
 	"oss/adaptor/repo/repoerr"
+	"oss/adaptor/storage"
 	"oss/adaptor/tx"
 	"oss/consts"
 	"oss/service/do"
 	videoSvc "oss/service/video"
 	"oss/utils/pool"
-	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gogf/gf/util/gconv"
@@ -31,12 +32,13 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	// 从 Redis 队列中取出任务 ID
 	redisTask := redis.NewTask(adaptor)
 	taskRepo := gormAsync.NewAsyncTaskRepo(adaptor.GetGORM())
-	storage := adaptor.GetStorage()
+	storageImp := adaptor.GetStorage()
 	multipart := gormMultipart.NewObjectRepo(adaptor.GetGORM())
 	fileRepo := gormObject.NewObjectRepo(adaptor)
 	taskLocker := redis.NewLock(adaptor)
 	uinfoRepo := gormAdmin.NewUserRepo(adaptor)
 	bucketRepo := gormBucket.NewBucketRepo(adaptor)
+	objRepo := gormObject.NewObjectRepo(adaptor)
 	txManager := adaptor.GetTxManager()
 	videoProcessor := videoSvc.NewProcessor(adaptor)
 	taskIDs, err := redisTask.DequeueTask(ctx, 50, time.Second*5)
@@ -180,40 +182,26 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				if multipartPartsCountMismatch(len(parts), info.TotalChunk) {
+				if info.TotalChunk > 0 && len(parts) != int(info.TotalChunk) {
 					err := fmt.Errorf("parts count not match total_chunk: got=%d want=%d", len(parts), info.TotalChunk)
 					log.Error("timer.handlerTask physical merge parts count mismatch",
 						zap.Error(err),
 						zap.Int64("taskID", taskID),
 					)
-
 					writeCtx, cancel := context.WithTimeout(taskCtx, 5*time.Second)
 					_ = updateTaskStatus(writeCtx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
 					cancel()
 					return
 				}
 
-				sort.Slice(parts, func(i, j int) bool {
-					return parts[i].PartNumber < parts[j].PartNumber
+				partPaths := lo.Map(parts, func(part *do.MultipartPartDo, _ int) storage.PartInfo {
+					return storage.PartInfo{
+						PartNumber: part.PartNumber,
+						ETag:       part.Etag,
+					}
 				})
 
-				partPaths := make([]string, len(parts))
-
-				for i, part := range parts {
-					expected := int32(i + 1)
-					if part.PartNumber != expected {
-						err := fmt.Errorf("part number not continuous: got=%d want=%d", part.PartNumber, expected)
-						log.Error("timer.handlerTask physical merge part number invalid",
-							zap.Error(err),
-							zap.Int64("taskID", taskID),
-						)
-						_ = updateTaskStatus(ctx, taskRepo, task.ID, consts.TaskStatusFailed, err.Error())
-						return
-					}
-					partPaths[i] = part.StoragePath
-				}
-
-				saveInfo, err := storage.MergeParts(taskCtx, info.BucketName, info.ObjectKey, info.VersionID, partPaths)
+				saveInfo, err := storageImp.CompleteMultipartUpload(taskCtx, uploadID, partPaths)
 				if err != nil {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -257,7 +245,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					log.Error("timer.handlerTask runInTx failed", zap.Error(err), zap.Int64("taskId", gconv.Int64(task.ID)))
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					if saveInfo.StoragePath != "" {
-						if delErr := storage.Delete(context.Background(), saveInfo.StoragePath); delErr != nil {
+						if delErr := storageImp.Delete(context.Background(), saveInfo.StoragePath); delErr != nil {
 							log.Error("timer.handlerTask cleanup merged file failed",
 								zap.Error(delErr),
 								zap.String("storagePath", saveInfo.StoragePath),
@@ -271,9 +259,12 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				err = storage.DeleteParts(ctx, info.BucketName, info.UploadID)
-				if err != nil {
-					log.Error("timer.handlerTask DeleteParts error", zap.Error(err), zap.Int64("taskID", taskID))
+				// 本地删除
+				if adaptor.GetConfig().Storage.Type == "local" {
+					err = storageImp.AbortUpload(ctx, info.UploadID)
+					if err != nil {
+						log.Error("timer.handlerTask AbortUpload error", zap.Error(err), zap.Int64("taskID", taskID))
+					}
 				}
 
 				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -320,6 +311,73 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 						zap.String("versionID", info.VersionID),
 						zap.Int64("taskID", taskID))
 				}
+
+			case consts.TaskTypePhysicalCopy:
+				str := task.BizID
+				// BizID:    fmt.Sprintf("%v:%v:%v:%v", bucket, objectKey, source.VersionID, newVersionID),
+
+				ids := strings.SplitN(str, "::", 4)
+				if len(ids) != 4 {
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, "content error")
+					return
+				}
+				bucket := ids[0]     // bucket
+				objectKey := ids[1]  // objectKey
+				sVersionID := ids[2] // oldversion
+				tVersionID := ids[3] // newversion
+
+				sObj, err := objRepo.GetByKey(ctx, bucket, objectKey, sVersionID)
+				if err != nil {
+					if err == repoerr.ErrNotFound {
+						updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, "source obj not found")
+						return
+					}
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, err.Error())
+					return
+				}
+
+				// 等待合并
+				if sObj.IsMultipart == consts.ObjectIsMultipartMerged {
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusPending, "")
+					return
+				}
+
+				_, err = objRepo.GetByKey(ctx, bucket, objectKey, tVersionID)
+				if err != nil {
+					if err == repoerr.ErrNotFound {
+						updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, "target obj not found")
+						return
+					}
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, err.Error())
+					return
+				}
+
+				reader, err := storageImp.Copy(ctx, *sObj.StoragePath, bucket, objectKey, tVersionID)
+				if err != nil {
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, err.Error())
+					return
+				}
+
+				_, err = objRepo.UpdateObject(ctx, bucket, objectKey, tVersionID, &do.UpdateObject{
+					StoragePath: &reader.StoragePath,
+					Etag:        &reader.Etag,
+					Size:        &reader.Size,
+				})
+
+				if err != nil {
+					updateTaskStatus(ctx, taskRepo, taskID, consts.TaskStatusFailed, err.Error())
+					return
+				}
+
+				writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				if _, err := taskRepo.CompleteAsyncTask(writeCtx, task.ID, ""); err != nil {
+					log.Error("timer.handlerTask update transcode task completed failed",
+						zap.Error(err),
+						zap.Int64("taskID", taskID))
+				}
+
 			case consts.TaskTypeTranscode:
 				//转码
 				result, err := videoProcessor.HandleTask(taskCtx, task)
@@ -417,8 +475,8 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				if err := storage.DeleteParts(taskCtx, info.BucketName, uploadID); err != nil {
-					log.Error("timer.handlerTask DeleteParts error",
+				if err := storageImp.AbortUpload(taskCtx, info.UploadID); err != nil {
+					log.Error("timer.handlerTask AbortUpload error",
 						zap.Error(err),
 						zap.Int64("taskID", taskID),
 					)
@@ -447,8 +505,4 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 	}
 
 	p.Wait()
-}
-
-func multipartPartsCountMismatch(partsCount int, totalChunk int32) bool {
-	return totalChunk > 0 && int32(partsCount) != totalChunk
 }

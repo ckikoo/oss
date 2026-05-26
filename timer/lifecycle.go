@@ -65,10 +65,6 @@ func handlerLifecycleEvents(ctx context.Context, adaptor adaptor.IAdaptor) {
 					log.Error("failed to get bucket for lifecycle rule", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
 					return
 				}
-				if err != nil {
-					log.Error("failed to get bucket for lifecycle rule", zap.Int64("bucketID", rule.BucketID), zap.Int64("ruleID", rule.ID), zap.Error(err))
-					return
-				}
 
 				if bucket == nil {
 					return
@@ -243,20 +239,18 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 		var expiredObj *do.ObjectDo
 		var videoCleanupPlan *videoSvc.ObjectVersionCleanup
 		var shouldDeleteStorage bool
-
+		obj, err := objectRepo.GetByKey(ctx, bucket.Name, objectKey, "")
+		if err != nil || obj == nil {
+			log.Warn("timer.handleExpirationEvents object not found in transaction, removing lifecycle event",
+				zap.String("bucket", bucket.Name),
+				zap.String("objectKey", objectKey),
+				zap.Int64("bucketID", rule.BucketID),
+				zap.Int64("ruleID", rule.ID))
+			lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
+			eventDeleted = true
+		}
 		err = txManager.RunInTx(cancelCtx, func(ctx context.Context, tx tx.Tx) error {
 			objRepo := objectRepo.WithTx(tx)
-			obj, err := objRepo.GetByKey(ctx, bucket.Name, objectKey, "")
-			if err != nil || obj == nil {
-				log.Warn("timer.handleExpirationEvents object not found in transaction, removing lifecycle event",
-					zap.String("bucket", bucket.Name),
-					zap.String("objectKey", objectKey),
-					zap.Int64("bucketID", rule.BucketID),
-					zap.Int64("ruleID", rule.ID))
-				lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
-				eventDeleted = true
-				return nil
-			}
 
 			if obj.Status != consts.ObjectStatusNormal {
 				lifecycleRedis.DelLifecycleEvent(ctx, rule.BucketID, rule.ID, prefix, "expiration", objectKey)
@@ -316,6 +310,27 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			}
 
 			shouldDeleteStorage = true
+
+			list, err := objRepo.WithTx(tx).ListByFilter(ctx, &do.ListObjectsFilter{
+				BucketID: obj.BucketID,
+				UploadId: *obj.UploadID,
+				Limit:    2,
+			})
+
+			if err != nil {
+				log.Error("timer.handleExpirationEvents failed to ListByFilter",
+					zap.String("bucket", bucket.Name),
+					zap.String("objectKey", objectKey),
+					zap.String("versionID", obj.VersionID),
+					zap.Error(err))
+				return err
+			}
+
+			// 地址指向一样， 说明公用一份文件，不删除
+			if len(list) > 1 && *(list[0].StoragePath) == *(list[1].StoragePath) {
+				shouldDeleteStorage = false
+			}
+
 			deltaSize := -obj.Size
 			if videoCleanupPlan != nil && videoCleanupPlan.DerivedSize > 0 {
 				deltaSize -= videoCleanupPlan.DerivedSize
@@ -356,7 +371,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			switch expiredObj.IsMultipart {
 			case consts.ObjectIsMultipartMerged:
 				if expiredObj.UploadID != nil {
-					if deleteErr := storage.DeleteParts(ctx, expiredObj.BucketName, *expiredObj.UploadID); deleteErr != nil {
+					if deleteErr := storage.AbortUpload(ctx, *expiredObj.UploadID); deleteErr != nil {
 						log.Error("timer.handleExpirationEvents failed to delete multipart storage",
 							zap.String("bucket", expiredObj.BucketName),
 							zap.String("uploadID", *expiredObj.UploadID),

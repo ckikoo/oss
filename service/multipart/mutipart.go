@@ -311,7 +311,6 @@ func (srv *Service) UploadMultipartPart(
 
 	res, err := srv.storage.PutPart(
 		ctx,
-		upload.BucketName,
 		uploadID,
 		partNumber,
 		reader,
@@ -323,7 +322,7 @@ func (srv *Service) UploadMultipartPart(
 	// 客户端传了 Content-MD5 / ETag 才校验。
 	// 不传就跳过，否则 upload_etag 为空会导致所有分片上传失败。
 	if upload_etag != "" && res.Etag != upload_etag {
-		_ = srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
+		// _ = srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
 		return nil, common.FileCheckErr
 	}
 
@@ -389,13 +388,6 @@ func (srv *Service) UploadMultipartPart(
 	})
 
 	if err != nil {
-		// 第一次上传时，事务失败可以删掉刚写入的 part。
-		// 但是重复上传旧 part 时，不能无脑 DeletePart，
-		// 否则可能把旧 part 的物理文件也删掉，导致 DB 还指向旧 part，但存储没了。
-		if oldPart == nil {
-			_ = srv.storage.DeletePart(ctx, upload.BucketName, uploadID, partNumber)
-		}
-
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
@@ -623,7 +615,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		switch oldObjectToCleanup.IsMultipart {
 		case consts.ObjectIsMultipartMerged:
 			if oldObjectToCleanup.UploadID != nil {
-				if err := srv.storage.DeleteParts(ctx, oldObjectToCleanup.BucketName, *oldObjectToCleanup.UploadID); err != nil {
+				if err := srv.storage.AbortUpload(ctx, *oldObjectToCleanup.UploadID); err != nil {
 					srv.logger.Warn("failed to delete old multipart parts storage",
 						zap.String("bucket_name", oldObjectToCleanup.BucketName),
 						zap.String("upload_id", *oldObjectToCleanup.UploadID),

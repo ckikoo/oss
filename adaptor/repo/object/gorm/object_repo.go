@@ -474,6 +474,11 @@ func (r *objectRepo) ListByFilter(ctx context.Context, filter *do.ListObjectsFil
 	} else {
 		qs = qs.Where(q.Object.IsLatest.Eq(1))
 	}
+
+	if filter.UploadId != "" {
+		qs = qs.Where(q.Object.UploadID.Eq(filter.UploadId))
+	}
+
 	if filter.StorageClass != "" {
 		qs = qs.Where(q.Object.StorageClass.Eq(filter.StorageClass))
 	}

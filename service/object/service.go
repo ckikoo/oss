@@ -823,19 +823,39 @@ func (srv *Service) RestoreObjectVersion(ctx *common.UserInfoCtx, bucketName, ob
 	var objectID int64
 	err = srv.txManger.RunInTx(ctx, func(ctx1 context.Context, tx tx.Tx) error {
 		objRepo := srv.objRepo.WithTx(tx)
+
 		if err := objRepo.MarkAllNotLatest(ctx1, bucketName, objectKey); err != nil {
 			return err
 		}
+
 		objectID, err = objRepo.CreateObject(ctx1, createObj)
 		if err != nil {
 			return err
 		}
+
 		if err := srv.bucketRepo.WithTx(tx).UpdateBucketStats(ctx1, ctx.UserID, bucketName, deltaCount, putResult.Size); err != nil {
 			return err
 		}
+
 		if err := srv.userRepo.WithTx(tx).UpdateStorageUsed(ctx1, ctx.UserID, putResult.Size); err != nil {
 			return err
 		}
+
+		// 任务存入
+		if isMultipart == consts.ObjectIsMultipartMerged {
+			if _, err := srv.asyncRepo.WithTx(tx).CreateAsyncTask(ctx1, &do.CreateAsyncTask{
+				UserId:   ctx.UserID,
+				TaskType: consts.TaskTypePhysicalCopy,
+				BizType:  consts.TaskBizTypeUpload,
+				BizID:    fmt.Sprintf("%v::%v::%v::%v", bucket, objectKey, source.VersionID, newVersionID),
+				Status:   consts.TaskStatusPending,
+			}); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
 		return srv.meteringRepo.WithTx(tx).UpdateDailyMetrics(ctx1, bucket.UserID, &bucket.ID, time.Now(), putResult.Size, deltaCount, 0, 0, 0, 1, 0)
 	})
 	if err != nil {
@@ -1019,7 +1039,7 @@ func (srv *Service) deleteObjectStorage(ctx context.Context, obj *do.ObjectDo) {
 		if obj.UploadID == nil {
 			return
 		}
-		if err := srv.storage.DeleteParts(ctx, obj.BucketName, *obj.UploadID); err != nil {
+		if err := srv.storage.AbortUpload(ctx, *obj.UploadID); err != nil {
 			srv.logger.Error("failed to delete multipart storage", zap.String("upload_id", *obj.UploadID), zap.Error(err))
 		}
 	default:
@@ -1032,27 +1052,15 @@ func (srv *Service) deleteObjectStorage(ctx context.Context, obj *do.ObjectDo) {
 	}
 }
 
+// 数据也是维护合并
 func (srv *Service) copyObjectVersion(ctx *common.UserInfoCtx, source *do.ObjectDo, newVersionID string) (*storage.PutResult, int32, error) {
+
 	if source.IsMultipart == consts.ObjectIsMultipartMerged {
-		if source.UploadID == nil {
-			return nil, 0, fmt.Errorf("multipart object missing upload_id")
-		}
-		parts, err := srv.multipartRepo.ListMultipartParts(ctx, ctx.UserID, *source.UploadID)
-		if err != nil {
-			return nil, 0, err
-		}
-		if len(parts) == 0 {
-			return nil, 0, fmt.Errorf("multipart object has no parts")
-		}
-		sort.Slice(parts, func(i, j int) bool {
-			return parts[i].PartNumber < parts[j].PartNumber
-		})
-		partPaths := make([]string, 0, len(parts))
-		for _, part := range parts {
-			partPaths = append(partPaths, part.StoragePath)
-		}
-		result, err := srv.storage.MergeParts(ctx, source.BucketName, source.ObjectKey, newVersionID, partPaths)
-		return result, consts.ObjectIsMultipartNormal, err
+		return &storage.PutResult{
+			Size:        source.Size,
+			Etag:        source.Etag,
+			StoragePath: "",
+		}, consts.ObjectIsMultipartMerged, nil
 	}
 
 	if source.StoragePath == nil {

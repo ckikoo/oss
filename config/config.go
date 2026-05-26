@@ -36,6 +36,8 @@ type Storage struct {
 	Type  string       `yaml:"type"`
 	Local LocalStorage `yaml:"local"`
 	S3    S3Storage    `yaml:"s3"`
+	OSS   S3Storage    `yaml:"oss"`
+	COS   S3Storage    `yaml:"cos"`
 }
 
 type LocalStorage struct {
@@ -59,6 +61,17 @@ type Server struct {
 	LogLevel    string `yaml:"log_level"`
 	SaveDir     string `yaml:"save_dir"`
 	Env         string `yaml:"env"`
+}
+
+func (s Storage) GetProviderConfig(storageType string) S3Storage {
+	switch strings.ToLower(strings.TrimSpace(storageType)) {
+	case "oss":
+		return s.OSS
+	case "cos":
+		return s.COS
+	default:
+		return s.S3
+	}
 }
 
 type Security struct {
@@ -198,6 +211,20 @@ var envKeys = []string{
 	"storage.s3.bucket",
 	"storage.s3.disable_ssl",
 	"storage.s3.force_path_style",
+	"storage.oss.endpoint",
+	"storage.oss.region",
+	"storage.oss.access_key_id",
+	"storage.oss.secret_access_key",
+	"storage.oss.bucket",
+	"storage.oss.disable_ssl",
+	"storage.oss.force_path_style",
+	"storage.cos.endpoint",
+	"storage.cos.region",
+	"storage.cos.access_key_id",
+	"storage.cos.secret_access_key",
+	"storage.cos.bucket",
+	"storage.cos.disable_ssl",
+	"storage.cos.force_path_style",
 	"security.replay_window_seconds",
 	"security.s3_replay_window_seconds",
 }
@@ -304,18 +331,20 @@ func ValidateConfig(conf *Config) error {
 		return fmt.Errorf("security.s3_replay_window_seconds cannot be negative")
 	}
 
-	switch strings.ToLower(strings.TrimSpace(conf.Storage.Type)) {
+	storageType := strings.ToLower(strings.TrimSpace(conf.Storage.Type))
+	switch storageType {
 	case "", "local":
 		// local storage is always valid with save_dir or storage.local.base_dir
-	case "s3":
-		if strings.TrimSpace(conf.Storage.S3.Region) == "" {
-			return fmt.Errorf("storage.s3.region is required")
+	case "s3", "oss", "cos":
+		providerCfg := conf.Storage.GetProviderConfig(storageType)
+		if strings.TrimSpace(providerCfg.Region) == "" {
+			return fmt.Errorf("storage.%s.region is required", storageType)
 		}
-		if strings.TrimSpace(conf.Storage.S3.AccessKeyID) == "" {
-			return fmt.Errorf("storage.s3.access_key_id is required")
+		if strings.TrimSpace(providerCfg.AccessKeyID) == "" {
+			return fmt.Errorf("storage.%s.access_key_id is required", storageType)
 		}
-		if strings.TrimSpace(conf.Storage.S3.SecretAccessKey) == "" {
-			return fmt.Errorf("storage.s3.secret_access_key is required")
+		if strings.TrimSpace(providerCfg.SecretAccessKey) == "" {
+			return fmt.Errorf("storage.%s.secret_access_key is required", storageType)
 		}
 	default:
 		return fmt.Errorf("unsupported storage.type: %s", conf.Storage.Type)

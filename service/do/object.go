@@ -103,6 +103,7 @@ type ListObjectsFilter struct {
 	ParentID       *int64
 	UseParentID    bool
 	DirectoryOrder bool
+	UploadId       string
 	VersionID      string
 	StorageClass   string
 	ContentType    string

@@ -2,15 +2,12 @@ package s3
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,7 +21,10 @@ import (
 	"oss/config"
 )
 
-const s3StorageScheme = "s3://"
+const (
+	s3StorageScheme   = "s3://"
+	s3MultipartScheme = "s3mp://"
+)
 
 type S3Storage struct {
 	client     *s3.Client
@@ -57,16 +57,6 @@ func New(cfg config.S3Storage) (storage.IStorage, error) {
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, "")),
 	}
-	if endpoint != "" {
-		loadOptions = append(loadOptions, awsconfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:               endpoint,
-					SigningRegion:     cfg.Region,
-					HostnameImmutable: true,
-				}, nil
-			})))
-	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), loadOptions...)
 	if err != nil {
@@ -75,6 +65,9 @@ func New(cfg config.S3Storage) (storage.IStorage, error) {
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = cfg.ForcePathStyle
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+		}
 	})
 
 	return &S3Storage{
@@ -82,6 +75,8 @@ func New(cfg config.S3Storage) (storage.IStorage, error) {
 		rootBucket: strings.TrimSpace(cfg.Bucket),
 	}, nil
 }
+
+// ===================== 普通对象操作 =====================
 
 func (s *S3Storage) Put(ctx context.Context, bucket, objectKey string, version string, src io.Reader) (*storage.PutResult, error) {
 	physicalBucket, physicalKey, err := s.buildObjectLocator(bucket, objectKey, version)
@@ -102,8 +97,7 @@ func (s *S3Storage) Put(ctx context.Context, bucket, objectKey string, version s
 	return &storage.PutResult{
 		StoragePath: formatStoragePath(physicalBucket, physicalKey),
 		Etag:        trimETag(output.ETag),
-		Sha256:      fmt.Sprintf("%x", h.sha256.Sum(nil)),
-		Size:        h.bytesRead,
+		Size:        *output.Size,
 	}, nil
 }
 
@@ -155,77 +149,288 @@ func (s *S3Storage) Delete(ctx context.Context, storagePath string) error {
 	return nil
 }
 
-func (s *S3Storage) PutPart(ctx context.Context, bucket, uploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
-	physicalBucket, partKey, err := s.buildPartLocator(bucket, uploadID, partNumber)
+const (
+	copyPartSize  = 64 * 1024 * 1024       // 64MB 每片
+	maxSingleCopy = 5 * 1024 * 1024 * 1024 // 5GB，超过走分片
+)
+
+func (s *S3Storage) Copy(ctx context.Context, srcStoragePath string, dstBucket, dstKey, dstVersion string) (*storage.PutResult, error) {
+	srcBucket, srcKey, err := parseStoragePath(srcStoragePath)
+	if err != nil {
+		return nil, fmt.Errorf("copy: invalid src path: %w", err)
+	}
+
+	// 获取源对象大小
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(srcBucket),
+		Key:    aws.String(srcKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("copy: head src object: %w", err)
+	}
+	size := int64(0)
+	if head.ContentLength != nil {
+		size = *head.ContentLength
+	}
+
+	if size <= maxSingleCopy {
+		return s.copyObjectSingle(ctx, srcBucket, srcKey, dstBucket, dstKey, dstVersion)
+	}
+	return s.copyObjectMultipart(ctx, srcBucket, srcKey, size, dstBucket, dstKey, dstVersion)
+}
+
+// copyObjectSingle 直接 CopyObject，适用于 <= 5GB
+func (s *S3Storage) copyObjectSingle(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey, dstVersion string) (*storage.PutResult, error) {
+	physicalDstBucket, physicalDstKey, err := s.buildObjectLocator(dstBucket, dstKey, dstVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	copySource := fmt.Sprintf("%s/%s", srcBucket, url.PathEscape(srcKey))
+	output, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(physicalDstBucket),
+		Key:        aws.String(physicalDstKey),
+		CopySource: aws.String(copySource),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("copy object %s/%s: %w", srcBucket, srcKey, err)
+	}
+
+	var size int64
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(physicalDstBucket),
+		Key:    aws.String(physicalDstKey),
+	})
+	if err == nil && head.ContentLength != nil {
+		size = *head.ContentLength
+	}
+
+	return &storage.PutResult{
+		StoragePath: formatStoragePath(physicalDstBucket, physicalDstKey),
+		Etag:        trimETag(output.CopyObjectResult.ETag),
+		Size:        size,
+	}, nil
+}
+
+// copyObjectMultipart 分片 CopyPart，适用于 > 5GB
+func (s *S3Storage) copyObjectMultipart(ctx context.Context, srcBucket, srcKey string, srcSize int64, dstBucket, dstKey, dstVersion string) (*storage.PutResult, error) {
+	physicalDstBucket, physicalDstKey, err := s.buildObjectLocator(dstBucket, dstKey, dstVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	uploadOutput, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(physicalDstBucket),
+		Key:    aws.String(physicalDstKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("copy multipart create: %w", err)
+	}
+	uploadID := *uploadOutput.UploadId
+
+	abort := func() {
+		_, _ = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(physicalDstBucket),
+			Key:      aws.String(physicalDstKey),
+			UploadId: aws.String(uploadID),
+		})
+	}
+
+	copySource := fmt.Sprintf("%s/%s", srcBucket, url.PathEscape(srcKey))
+	var completedParts []types.CompletedPart
+	var offset int64
+	partNumber := int32(1)
+
+	for offset < srcSize {
+		end := offset + copyPartSize - 1
+		if end >= srcSize {
+			end = srcSize - 1
+		}
+
+		output, err := s.client.UploadPartCopy(ctx, &s3.UploadPartCopyInput{
+			Bucket:          aws.String(physicalDstBucket),
+			Key:             aws.String(physicalDstKey),
+			UploadId:        aws.String(uploadID),
+			PartNumber:      aws.Int32(partNumber),
+			CopySource:      aws.String(copySource),
+			CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", offset, end)),
+		})
+		if err != nil {
+			abort()
+			return nil, fmt.Errorf("copy part %d: %w", partNumber, err)
+		}
+
+		completedParts = append(completedParts, types.CompletedPart{
+			PartNumber: aws.Int32(partNumber),
+			ETag:       output.CopyPartResult.ETag,
+		})
+
+		offset += copyPartSize
+		partNumber++
+	}
+
+	completeOutput, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(physicalDstBucket),
+		Key:      aws.String(physicalDstKey),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+
+	if err != nil {
+		abort()
+		return nil, fmt.Errorf("copy multipart complete: %w", err)
+	}
+
+	return &storage.PutResult{
+		StoragePath: formatStoragePath(physicalDstBucket, physicalDstKey),
+		Etag:        trimETag(completeOutput.ETag),
+		Size:        srcSize,
+	}, nil
+}
+
+// ===================== 原生分片上传 =====================
+
+// CreateMultipartUpload 初始化 S3 原生分片上传，返回 storageUploadID。
+// storageUploadID 格式：s3mp://bucket/physicalKey?id=<s3UploadId>
+// 调用方须持久化此 ID，用于后续 PutPart / CompleteMultipartUpload / AbortUpload。
+func (s *S3Storage) CreateMultipartUpload(ctx context.Context, bucket, objectKey string, version string) (string, error) {
+	physicalBucket, physicalKey, err := s.buildObjectLocator(bucket, objectKey, version)
+	if err != nil {
+		return "", err
+	}
+
+	output, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(physicalBucket),
+		Key:    aws.String(physicalKey),
+	})
+	if err != nil {
+		return "", fmt.Errorf("create multipart upload %s/%s: %w", physicalBucket, physicalKey, err)
+	}
+	if output.UploadId == nil {
+		return "", fmt.Errorf("create multipart upload %s/%s: empty upload id", physicalBucket, physicalKey)
+	}
+
+	return formatMultipartUploadID(physicalBucket, physicalKey, *output.UploadId), nil
+}
+
+// PutPart 上传单个分片，对应 S3 UploadPart。
+// 返回的 PutResult.Etag 须原样保存，CompleteMultipartUpload 时需传回。
+// 注意：S3 要求每个分片（除最后一片）不小于 5 MB。
+func (s *S3Storage) PutPart(ctx context.Context, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
+	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
 	if err != nil {
 		return nil, err
 	}
 
 	h := newHashingReader(src)
-	output, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(physicalBucket),
-		Key:    aws.String(partKey),
-		Body:   h,
+	output, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     aws.String(bucket),
+		Key:        aws.String(key),
+		UploadId:   aws.String(s3UploadID),
+		PartNumber: aws.Int32(partNumber),
+		Body:       h,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("put part %s/%s: %w", physicalBucket, partKey, err)
+		return nil, fmt.Errorf("upload part %d for %s/%s: %w", partNumber, bucket, key, err)
 	}
 
 	return &storage.PutResult{
-		StoragePath: formatStoragePath(physicalBucket, partKey),
-		Etag:        trimETag(output.ETag),
-		Sha256:      fmt.Sprintf("%x", h.sha256.Sum(nil)),
-		Size:        h.bytesRead,
+		Etag: trimETag(output.ETag), // 必须原样回传给 CompleteMultipartUpload
+		Size: h.bytesRead,
+		// StoragePath 分片本身没有独立路径，不填
 	}, nil
 }
 
-func (s *S3Storage) DeletePart(ctx context.Context, bucket, uploadID string, partNum int32) error {
-	physicalBucket, partKey, err := s.buildPartLocator(bucket, uploadID, partNum)
+// CompleteMultipartUpload 通知 S3 服务端合并所有分片，完成上传。
+// parts 内的 ETag 必须来自对应 PutPart 的返回值，PartNumber 须升序。
+// 说明：
+//   - 返回的 Etag 为 S3 复合 ETag（格式 md5hash-N），非内容 MD5。
+//   - 返回的 Sha256 为空，调用方应在上传各分片时自行累积计算。
+//   - Size 通过 HeadObject 获取，产生一次额外请求。
+func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("complete multipart upload: no parts provided")
+	}
+
+	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 按 PartNumber 升序排列（S3 要求）
+	sorted := make([]storage.PartInfo, len(parts))
+	copy(sorted, parts)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].PartNumber < sorted[j].PartNumber
+	})
+
+	completedParts := make([]types.CompletedPart, len(sorted))
+	for i, p := range sorted {
+		etag := p.ETag
+		completedParts[i] = types.CompletedPart{
+			PartNumber: aws.Int32(p.PartNumber),
+			ETag:       aws.String(etag),
+		}
+	}
+
+	output, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(s3UploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("complete multipart upload %s/%s: %w", bucket, key, err)
+	}
+
+	storagePath := formatStoragePath(bucket, key)
+
+	// CompleteMultipartUpload 不返回 ContentLength，HeadObject 补齐
+	var size int64
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil && head.ContentLength != nil {
+		size = *head.ContentLength
+	}
+
+	return &storage.PutResult{
+		StoragePath: storagePath,
+		Etag:        trimETag(output.ETag), // 复合 ETag，格式 hash-N
+		Size:        size,
+	}, nil
+}
+
+// AbortUpload 取消分片上传并清理已上传的所有分片。
+// 幂等：uploadID 已完成或不存在时不报错。
+func (s *S3Storage) AbortUpload(ctx context.Context, storageUploadID string) error {
+	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
 	if err != nil {
 		return err
 	}
-	_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(physicalBucket),
-		Key:    aws.String(partKey),
+
+	_, err = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(s3UploadID),
 	})
 	if err != nil {
-		return fmt.Errorf("delete part %s/%s: %w", physicalBucket, partKey, err)
+		// NoSuchUpload 表示已完成或不存在，视为成功
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchUpload" {
+			return nil
+		}
+		return fmt.Errorf("abort multipart upload %s/%s: %w", bucket, key, err)
 	}
 	return nil
 }
 
-func (s *S3Storage) DeleteParts(ctx context.Context, bucket, uploadID string) error {
-	physicalBucket, prefix, err := s.buildMultipartPrefix(bucket, uploadID)
-	if err != nil {
-		return err
-	}
-	return s.deleteObjectsWithPrefix(ctx, physicalBucket, prefix)
-}
-
-func (s *S3Storage) MergeParts(ctx context.Context, bucket, objectKey string, version string, partPaths []string) (*storage.PutResult, error) {
-	if len(partPaths) == 0 {
-		return nil, fmt.Errorf("no part paths provided")
-	}
-
-	readers := make([]io.Reader, 0, len(partPaths))
-	closers := make([]io.Closer, 0, len(partPaths))
-	defer func() {
-		for _, c := range closers {
-			_ = c.Close()
-		}
-	}()
-
-	for _, storagePath := range partPaths {
-		rc, err := s.Get(ctx, storagePath)
-		if err != nil {
-			return nil, err
-		}
-		readers = append(readers, rc)
-		closers = append(closers, rc)
-	}
-
-	return s.Put(ctx, bucket, objectKey, version, io.MultiReader(readers...))
-}
+// ===================== 视频派生资产 =====================
 
 func (s *S3Storage) PutAsset(ctx context.Context, bucket string, assetKey string, src io.Reader) (*storage.PutResult, error) {
 	physicalBucket, physicalKey, err := s.buildAssetLocator(bucket, assetKey)
@@ -246,7 +451,6 @@ func (s *S3Storage) PutAsset(ctx context.Context, bucket string, assetKey string
 	return &storage.PutResult{
 		StoragePath: formatStoragePath(physicalBucket, physicalKey),
 		Etag:        trimETag(output.ETag),
-		Sha256:      fmt.Sprintf("%x", h.sha256.Sum(nil)),
 		Size:        h.bytesRead,
 	}, nil
 }
@@ -318,9 +522,7 @@ func (s *S3Storage) MoveAssetPrefix(ctx context.Context, bucket string, srcPrefi
 
 	for _, key := range objects {
 		relativeKey := strings.TrimPrefix(key, physicalSrcPrefix)
-		if strings.HasPrefix(relativeKey, "/") {
-			relativeKey = strings.TrimPrefix(relativeKey, "/")
-		}
+		relativeKey = strings.TrimPrefix(relativeKey, "/")
 		dstKey := path.Join(physicalDstPrefix, relativeKey)
 		_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
 			Bucket:     aws.String(physicalBucket),
@@ -335,6 +537,8 @@ func (s *S3Storage) MoveAssetPrefix(ctx context.Context, bucket string, srcPrefi
 	return s.deleteObjects(ctx, physicalBucket, objects)
 }
 
+// ===================== 路径构建 =====================
+
 func (s *S3Storage) buildObjectLocator(bucket, objectKey string, version string) (string, string, error) {
 	if err := validateBucket(bucket); err != nil {
 		return "", "", err
@@ -347,34 +551,6 @@ func (s *S3Storage) buildObjectLocator(bucket, objectKey string, version string)
 		objectKey = objectKey + "_" + version
 	}
 	return s.effectiveBucket(bucket), objectKey, nil
-}
-
-func (s *S3Storage) buildPartLocator(bucket, uploadID string, partNumber int32) (string, string, error) {
-	if err := validateBucket(bucket); err != nil {
-		return "", "", err
-	}
-	if strings.TrimSpace(uploadID) == "" {
-		return "", "", fmt.Errorf("upload id is required")
-	}
-	partKey := fmt.Sprintf("multipart/%s/part_%d", uploadID, partNumber)
-	if s.rootBucket != "" {
-		partKey = path.Join(bucket, partKey)
-	}
-	return s.effectiveBucket(bucket), partKey, nil
-}
-
-func (s *S3Storage) buildMultipartPrefix(bucket, uploadID string) (string, string, error) {
-	if err := validateBucket(bucket); err != nil {
-		return "", "", err
-	}
-	if strings.TrimSpace(uploadID) == "" {
-		return "", "", fmt.Errorf("upload id is required")
-	}
-	prefix := fmt.Sprintf("multipart/%s/", uploadID)
-	if s.rootBucket != "" {
-		prefix = path.Join(bucket, prefix)
-	}
-	return s.effectiveBucket(bucket), prefix, nil
 }
 
 func (s *S3Storage) buildAssetLocator(bucket string, assetKey string) (string, string, error) {
@@ -415,6 +591,40 @@ func (s *S3Storage) effectiveBucket(bucket string) string {
 	return bucket
 }
 
+// ===================== storageUploadID 编解码 =====================
+
+// formatMultipartUploadID 将 bucket、physicalKey、S3 uploadId 编码为 storageUploadID。
+// 格式：s3mp://bucket/physicalKey?id=<s3UploadId>
+func formatMultipartUploadID(bucket, key, s3UploadID string) string {
+	u := &url.URL{
+		Scheme:   "s3mp",
+		Host:     bucket,
+		Path:     "/" + key,
+		RawQuery: url.Values{"id": {s3UploadID}}.Encode(),
+	}
+	return u.String()
+}
+
+// parseMultipartUploadID 解析 storageUploadID，返回 bucket、physicalKey、S3 uploadId。
+func parseMultipartUploadID(storageUploadID string) (bucket, key, s3UploadID string, err error) {
+	if !strings.HasPrefix(storageUploadID, s3MultipartScheme) {
+		return "", "", "", fmt.Errorf("invalid multipart upload id: %s", storageUploadID)
+	}
+	u, err := url.Parse(storageUploadID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid multipart upload id: %w", err)
+	}
+	bucket = u.Host
+	key = strings.TrimPrefix(u.Path, "/")
+	s3UploadID = u.Query().Get("id")
+	if bucket == "" || key == "" || s3UploadID == "" {
+		return "", "", "", fmt.Errorf("invalid multipart upload id: %s", storageUploadID)
+	}
+	return bucket, key, s3UploadID, nil
+}
+
+// ===================== 存储路径 =====================
+
 func formatStoragePath(bucket, key string) string {
 	return fmt.Sprintf("%s%s/%s", s3StorageScheme, bucket, key)
 }
@@ -431,6 +641,8 @@ func parseStoragePath(storagePath string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
+// ===================== Key 校验与清理 =====================
+
 func cleanObjectKey(objectKey string) (string, error) {
 	if objectKey == "" {
 		return "", fmt.Errorf("object key is required")
@@ -439,8 +651,7 @@ func cleanObjectKey(objectKey string) (string, error) {
 	if strings.HasPrefix(normalized, "/") || strings.HasPrefix(normalized, "\\") {
 		return "", fmt.Errorf("invalid object key: %s", objectKey)
 	}
-	segments := strings.Split(normalized, "/")
-	for _, segment := range segments {
+	for _, segment := range strings.Split(normalized, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return "", fmt.Errorf("invalid object key: %s", objectKey)
 		}
@@ -460,8 +671,7 @@ func cleanAssetKey(assetKey string) (string, error) {
 		return "", fmt.Errorf("invalid asset key: %s", assetKey)
 	}
 	normalized := strings.ReplaceAll(assetKey, "\\", "/")
-	segments := strings.Split(normalized, "/")
-	for _, segment := range segments {
+	for _, segment := range strings.Split(normalized, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return "", fmt.Errorf("invalid asset key: %s", assetKey)
 		}
@@ -483,14 +693,7 @@ func validateBucket(bucket string) error {
 	return nil
 }
 
-func isNotFound(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		code := apiErr.ErrorCode()
-		return code == "NotFound" || code == "NoSuchKey" || code == "NotFoundException" || code == "NoSuchBucket"
-	}
-	return false
-}
+// ===================== 批量删除工具 =====================
 
 func (s *S3Storage) deleteObjectsWithPrefix(ctx context.Context, bucket, prefix string) error {
 	keys, err := s.listObjectsWithPrefix(ctx, bucket, prefix)
@@ -512,7 +715,7 @@ func (s *S3Storage) listObjectsWithPrefix(ctx context.Context, bucket, prefix st
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list objects prefix %s/%s: %w", bucket, prefix, err)
+			return nil, fmt.Errorf("list objects %s/%s: %w", bucket, prefix, err)
 		}
 		for _, obj := range page.Contents {
 			if obj.Key != nil {
@@ -542,45 +745,49 @@ func (s *S3Storage) deleteObjects(ctx context.Context, bucket string, keys []str
 			Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)},
 		})
 		if err != nil {
-			return fmt.Errorf("delete objects %s prefix: %w", bucket, err)
+			return fmt.Errorf("delete objects in %s: %w", bucket, err)
 		}
 	}
 	return nil
 }
 
+// ===================== 错误判断 =====================
+
+func isNotFound(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		return code == "NotFound" || code == "NoSuchKey" || code == "NotFoundException" || code == "NoSuchBucket"
+	}
+	return false
+}
+
+// ===================== ETag 工具 =====================
+
 func trimETag(etag *string) string {
 	if etag == nil {
 		return ""
 	}
-	s := strings.Trim(*etag, `"`)
-	return s
+	return strings.Trim(*etag, `"`)
 }
+
+// ===================== hashingReader =====================
 
 type hashingReader struct {
 	src       io.Reader
-	md5       hash.Hash
-	sha256    hash.Hash
 	bytesRead int64
 }
 
 func newHashingReader(src io.Reader) *hashingReader {
 	return &hashingReader{
-		src:    src,
-		md5:    md5.New(),
-		sha256: sha256.New(),
+		src: src,
 	}
 }
 
 func (r *hashingReader) Read(p []byte) (int, error) {
 	n, err := r.src.Read(p)
 	if n > 0 {
-		_, _ = r.md5.Write(p[:n])
-		_, _ = r.sha256.Write(p[:n])
 		r.bytesRead += int64(n)
 	}
 	return n, err
-}
-
-func (r *hashingReader) Etag() string {
-	return hex.EncodeToString(r.md5.Sum(nil))
 }

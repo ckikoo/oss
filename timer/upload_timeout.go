@@ -125,7 +125,7 @@ func handlerUploadMergeTimeout(ctx context.Context, adaptor adaptor.IAdaptor) {
 				log.Error("timer.handlerUploadMergeTimeout fail to delete parts", zap.Error(err), zap.String("uploadID", uploadInfo.UploadID))
 				return
 			}
-			if err := storage.DeleteParts(refreshLockCtx, uploadInfo.BucketName, uploadInfo.UploadID); err != nil {
+			if err := storage.AbortUpload(refreshLockCtx, uploadInfo.UploadID); err != nil {
 				log.Error("timer.handlerUploadMergeTimeout fail to delete parts",
 					zap.Error(err),
 					zap.String("uploadID", uploadInfo.UploadID),

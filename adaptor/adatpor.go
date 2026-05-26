@@ -66,10 +66,11 @@ func NewAdaptor(conf *config.Config, db *sql.DB, redis *redis.Client, log1 *zap.
 	var storageBackend storage.IStorage
 	storageType := strings.ToLower(strings.TrimSpace(conf.Storage.Type))
 	switch storageType {
-	case "s3":
-		s3Storage, err := storage_s3.New(conf.Storage.S3)
+	case "s3", "oss", "cos":
+		providerCfg := conf.Storage.GetProviderConfig(storageType)
+		s3Storage, err := storage_s3.New(providerCfg)
 		if err != nil {
-			log1.Error("failed to initialize s3 storage", zap.Error(err))
+			log1.Error("failed to initialize object storage", zap.Error(err))
 			return nil
 		}
 		storageBackend = s3Storage
