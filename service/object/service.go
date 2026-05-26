@@ -1039,13 +1039,30 @@ func (srv *Service) deleteObjectStorage(ctx context.Context, obj *do.ObjectDo) {
 		if obj.UploadID == nil {
 			return
 		}
-		if err := srv.storage.AbortUpload(ctx, *obj.UploadID); err != nil {
+
+		list, err := srv.objRepo.ListByFilter(ctx, &do.ListObjectsFilter{
+			BucketID: obj.BucketID,
+			UploadId: *obj.UploadID,
+			Limit:    2,
+		})
+
+		if err != nil {
+			srv.logger.Error("deleteObjectStorage failed to ListByFilter by upload_id for multipart cleanup", zap.String("upload_id", *obj.UploadID), zap.Error(err))
+			return
+		}
+
+		if len(list) > 1 {
+			return
+		}
+
+		if err := srv.storage.AbortUpload(ctx, obj.BucketName, obj.ObjectKey, obj.VersionID, *obj.UploadID); err != nil {
 			srv.logger.Error("failed to delete multipart storage", zap.String("upload_id", *obj.UploadID), zap.Error(err))
 		}
 	default:
 		if obj.StoragePath == nil {
 			return
 		}
+
 		if err := srv.storage.Delete(ctx, *obj.StoragePath); err != nil {
 			srv.logger.Error("failed to delete object storage", zap.String("storage_path", *obj.StoragePath), zap.Error(err))
 		}

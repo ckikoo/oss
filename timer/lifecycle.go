@@ -371,7 +371,7 @@ func handleExpirationEvents(ctx context.Context, adaptor adaptor.IAdaptor, rule 
 			switch expiredObj.IsMultipart {
 			case consts.ObjectIsMultipartMerged:
 				if expiredObj.UploadID != nil {
-					if deleteErr := storage.AbortUpload(ctx, *expiredObj.UploadID); deleteErr != nil {
+					if deleteErr := storage.AbortUpload(ctx, expiredObj.BucketName, expiredObj.ObjectKey, expiredObj.VersionID, *expiredObj.UploadID); deleteErr != nil {
 						log.Error("timer.handleExpirationEvents failed to delete multipart storage",
 							zap.String("bucket", expiredObj.BucketName),
 							zap.String("uploadID", *expiredObj.UploadID),

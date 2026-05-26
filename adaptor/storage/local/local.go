@@ -14,7 +14,6 @@ import (
 
 	"oss/adaptor/storage"
 	"oss/consts"
-	storage_tool "oss/utils/storage"
 	"oss/utils/tools"
 )
 
@@ -92,30 +91,22 @@ func (s *LocalStorage) CreateMultipartUpload(_ context.Context, bucket, objectKe
 	if err := os.MkdirAll(dirPath, consts.FilePermDir); err != nil {
 		return "", fmt.Errorf("create multipart dir %s: %w", dirPath, err)
 	}
-	return storage_tool.FormatUploadID(bucket, objectKey, version, uploadID), nil
+	return uploadID, nil
 }
 
 // PutPart 将单个分片写入临时目录。
 // 返回的 PutResult.Etag 须原样保存，CompleteMultipartUpload 时需传回（本地实现不校验 ETag，但保持接口一致）。
-func (s *LocalStorage) PutPart(_ context.Context, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
-	info, err := storage_tool.ParseUploadID(storageUploadID)
-	if err != nil {
-		return nil, err
-	}
-	partPath := s.buildPartPath(info.Bucket, info.UploadID, partNumber)
+func (s *LocalStorage) PutPart(_ context.Context, bucket, objectKey, version string, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
+
+	partPath := s.buildPartPath(bucket, storageUploadID, partNumber)
 	return saveAndHash(src, partPath)
 }
 
 // CompleteMultipartUpload 按 PartNumber 顺序合并分片到最终目标文件，并清理临时目录。
 // parts 无需预先排序，内部自动按 PartNumber 升序处理。
-func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
+func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, bucket, objectKey, version string, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("complete multipart upload: no parts provided")
-	}
-
-	info, err := storage_tool.ParseUploadID(storageUploadID)
-	if err != nil {
-		return nil, err
 	}
 
 	// 按 PartNumber 升序排列
@@ -143,7 +134,7 @@ func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, storageUploa
 	}()
 
 	for _, p := range sorted {
-		partPath := s.buildPartPath(info.Bucket, info.UploadID, p.PartNumber)
+		partPath := s.buildPartPath(bucket, storageUploadID, p.PartNumber)
 		f, err := os.Open(partPath)
 		if err != nil {
 			return nil, fmt.Errorf("open part %d: %w", p.PartNumber, err)
@@ -152,7 +143,7 @@ func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, storageUploa
 		closers = append(closers, f)
 	}
 
-	destPath := s.buildObjectPath(info.Bucket, info.UploadID, info.Version)
+	destPath := s.buildObjectPath(bucket, storageUploadID, version)
 	result, err := saveAndHash(io.MultiReader(readers...), destPath)
 	if err != nil {
 		return nil, err
@@ -163,16 +154,8 @@ func (s *LocalStorage) CompleteMultipartUpload(ctx context.Context, storageUploa
 
 // AbortUpload 取消分片上传，删除临时目录及所有已上传的分片。
 // 幂等：目录不存在时不报错。
-func (s *LocalStorage) AbortUpload(_ context.Context, storageUploadID string) error {
-	info, err := storage_tool.ParseUploadID(storageUploadID)
-	if err != nil {
-		return err
-	}
-	return s.removeMultipartDir(info.Bucket, info.UploadID)
-}
-
-func (s *LocalStorage) removeMultipartDir(bucket, uploadID string) error {
-	dirPath := s.buildMultipartDir(bucket, uploadID)
+func (s *LocalStorage) AbortUpload(_ context.Context, bucket, objectKey, version, storageUploadID string) error {
+	dirPath := s.buildMultipartDir(bucket, storageUploadID)
 	err := os.RemoveAll(dirPath)
 	if os.IsNotExist(err) {
 		return nil

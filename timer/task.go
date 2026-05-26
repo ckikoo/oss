@@ -201,7 +201,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					}
 				})
 
-				saveInfo, err := storageImp.CompleteMultipartUpload(taskCtx, uploadID, partPaths)
+				saveInfo, err := storageImp.CompleteMultipartUpload(taskCtx, info.BucketName, info.ObjectKey, info.VersionID, info.UploadID, partPaths)
 				if err != nil {
 					writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -261,7 +261,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 
 				// 本地删除
 				if adaptor.GetConfig().Storage.Type == "local" {
-					err = storageImp.AbortUpload(ctx, info.UploadID)
+					err = storageImp.AbortUpload(ctx, info.BucketName, info.ObjectKey, info.VersionID, info.UploadID)
 					if err != nil {
 						log.Error("timer.handlerTask AbortUpload error", zap.Error(err), zap.Int64("taskID", taskID))
 					}
@@ -475,7 +475,7 @@ func handlerTask(ctx context.Context, adaptor adaptor.IAdaptor) {
 					return
 				}
 
-				if err := storageImp.AbortUpload(taskCtx, info.UploadID); err != nil {
+				if err := storageImp.AbortUpload(taskCtx, info.BucketName, info.ObjectKey, info.VersionID, info.UploadID); err != nil {
 					log.Error("timer.handlerTask AbortUpload error",
 						zap.Error(err),
 						zap.Int64("taskID", taskID),

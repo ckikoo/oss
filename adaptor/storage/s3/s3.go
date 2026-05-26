@@ -10,15 +10,15 @@ import (
 	"sort"
 	"strings"
 
+	"oss/adaptor/storage"
+	"oss/config"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
-
-	"oss/adaptor/storage"
-	"oss/config"
 )
 
 const (
@@ -312,34 +312,29 @@ func (s *S3Storage) CreateMultipartUpload(ctx context.Context, bucket, objectKey
 		return "", fmt.Errorf("create multipart upload %s/%s: empty upload id", physicalBucket, physicalKey)
 	}
 
-	return formatMultipartUploadID(physicalBucket, physicalKey, *output.UploadId), nil
+	return *output.UploadId, nil
 }
 
 // PutPart 上传单个分片，对应 S3 UploadPart。
 // 返回的 PutResult.Etag 须原样保存，CompleteMultipartUpload 时需传回。
 // 注意：S3 要求每个分片（除最后一片）不小于 5 MB。
-func (s *S3Storage) PutPart(ctx context.Context, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
-	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
-	if err != nil {
-		return nil, err
-	}
+func (s *S3Storage) PutPart(ctx context.Context, bucket, objectKey, version string, storageUploadID string, partNumber int32, src io.Reader) (*storage.PutResult, error) {
 
 	h := newHashingReader(src)
 	output, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
 		Bucket:     aws.String(bucket),
-		Key:        aws.String(key),
-		UploadId:   aws.String(s3UploadID),
+		Key:        aws.String(objectKey),
+		UploadId:   aws.String(storageUploadID),
 		PartNumber: aws.Int32(partNumber),
 		Body:       h,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("upload part %d for %s/%s: %w", partNumber, bucket, key, err)
+		return nil, fmt.Errorf("upload part %d for %s/%s: %w", partNumber, bucket, objectKey, err)
 	}
 
 	return &storage.PutResult{
-		Etag: trimETag(output.ETag), // 必须原样回传给 CompleteMultipartUpload
+		Etag: trimETag(output.ETag),
 		Size: h.bytesRead,
-		// StoragePath 分片本身没有独立路径，不填
 	}, nil
 }
 
@@ -349,14 +344,9 @@ func (s *S3Storage) PutPart(ctx context.Context, storageUploadID string, partNum
 //   - 返回的 Etag 为 S3 复合 ETag（格式 md5hash-N），非内容 MD5。
 //   - 返回的 Sha256 为空，调用方应在上传各分片时自行累积计算。
 //   - Size 通过 HeadObject 获取，产生一次额外请求。
-func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
+func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, bucket, objectKey, version string, storageUploadID string, parts []storage.PartInfo) (*storage.PutResult, error) {
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("complete multipart upload: no parts provided")
-	}
-
-	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
-	if err != nil {
-		return nil, err
 	}
 
 	// 按 PartNumber 升序排列（S3 要求）
@@ -377,23 +367,23 @@ func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, storageUploadID
 
 	output, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 		Bucket:   aws.String(bucket),
-		Key:      aws.String(key),
-		UploadId: aws.String(s3UploadID),
+		Key:      aws.String(objectKey),
+		UploadId: aws.String(storageUploadID),
 		MultipartUpload: &types.CompletedMultipartUpload{
 			Parts: completedParts,
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("complete multipart upload %s/%s: %w", bucket, key, err)
+		return nil, fmt.Errorf("complete multipart upload %s/%s: %w", bucket, objectKey, err)
 	}
 
-	storagePath := formatStoragePath(bucket, key)
+	storagePath := formatStoragePath(bucket, objectKey)
 
 	// CompleteMultipartUpload 不返回 ContentLength，HeadObject 补齐
 	var size int64
 	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(objectKey),
 	})
 	if err == nil && head.ContentLength != nil {
 		size = *head.ContentLength
@@ -408,16 +398,11 @@ func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, storageUploadID
 
 // AbortUpload 取消分片上传并清理已上传的所有分片。
 // 幂等：uploadID 已完成或不存在时不报错。
-func (s *S3Storage) AbortUpload(ctx context.Context, storageUploadID string) error {
-	bucket, key, s3UploadID, err := parseMultipartUploadID(storageUploadID)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+func (s *S3Storage) AbortUpload(ctx context.Context, bucket, objectKey, version string, storageUploadID string) error {
+	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 		Bucket:   aws.String(bucket),
-		Key:      aws.String(key),
-		UploadId: aws.String(s3UploadID),
+		Key:      aws.String(objectKey),
+		UploadId: aws.String(storageUploadID),
 	})
 	if err != nil {
 		// NoSuchUpload 表示已完成或不存在，视为成功
@@ -425,7 +410,7 @@ func (s *S3Storage) AbortUpload(ctx context.Context, storageUploadID string) err
 		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchUpload" {
 			return nil
 		}
-		return fmt.Errorf("abort multipart upload %s/%s: %w", bucket, key, err)
+		return fmt.Errorf("abort multipart upload %s/%s: %w", bucket, objectKey, err)
 	}
 	return nil
 }
@@ -589,38 +574,6 @@ func (s *S3Storage) effectiveBucket(bucket string) string {
 		return s.rootBucket
 	}
 	return bucket
-}
-
-// ===================== storageUploadID 编解码 =====================
-
-// formatMultipartUploadID 将 bucket、physicalKey、S3 uploadId 编码为 storageUploadID。
-// 格式：s3mp://bucket/physicalKey?id=<s3UploadId>
-func formatMultipartUploadID(bucket, key, s3UploadID string) string {
-	u := &url.URL{
-		Scheme:   "s3mp",
-		Host:     bucket,
-		Path:     "/" + key,
-		RawQuery: url.Values{"id": {s3UploadID}}.Encode(),
-	}
-	return u.String()
-}
-
-// parseMultipartUploadID 解析 storageUploadID，返回 bucket、physicalKey、S3 uploadId。
-func parseMultipartUploadID(storageUploadID string) (bucket, key, s3UploadID string, err error) {
-	if !strings.HasPrefix(storageUploadID, s3MultipartScheme) {
-		return "", "", "", fmt.Errorf("invalid multipart upload id: %s", storageUploadID)
-	}
-	u, err := url.Parse(storageUploadID)
-	if err != nil {
-		return "", "", "", fmt.Errorf("invalid multipart upload id: %w", err)
-	}
-	bucket = u.Host
-	key = strings.TrimPrefix(u.Path, "/")
-	s3UploadID = u.Query().Get("id")
-	if bucket == "" || key == "" || s3UploadID == "" {
-		return "", "", "", fmt.Errorf("invalid multipart upload id: %s", storageUploadID)
-	}
-	return bucket, key, s3UploadID, nil
 }
 
 // ===================== 存储路径 =====================

@@ -128,7 +128,10 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		return nil, common.StorageQuotaOver
 	}
 
-	uploadID := tools.UUIDHex()
+	versionId := tools.UUIDHex()
+
+	storageUploadID, err := srv.storage.CreateMultipartUpload(ctx, bucketName, req.ObjectKey, versionId)
+
 	objectKeyHash := tools.Md5Hash(req.ObjectKey)
 	storageClass := req.StorageClass
 	if storageClass == "" {
@@ -136,14 +139,14 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 	}
 
 	createUpload := &do.CreateMultipartUpload{
-		UploadID:      uploadID,
+		UploadID:      storageUploadID,
 		BucketID:      bucket.ID,
 		BucketName:    bucketName,
 		ObjectKey:     req.ObjectKey,
 		ObjectKeyHash: objectKeyHash,
 		UserID:        bucket.UserID,
 		TotalChunk:    req.TotalChunk,
-		VersionID:     tools.UUIDHex(),
+		VersionID:     versionId,
 		UploadedChunk: 0,
 		Status:        consts.MultipartUploadStatusUploading,
 		StorageClass:  &storageClass,
@@ -160,7 +163,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 	}
 	defer func() {
 		if err != nil {
-			srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, uploadID)
+			srv.rdsmultipart.DelTimeoutMultipartCancel(ctx, storageUploadID)
 		}
 	}()
 
@@ -168,7 +171,7 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
-	srv.tokenRedis.CreateUploadToken(ctx, uploadID, &dto.CreateUploadTokenReq{
+	srv.tokenRedis.CreateUploadToken(ctx, storageUploadID, &dto.CreateUploadTokenReq{
 		UserId:      ctx.UserID,
 		BucketName:  bucketName,
 		ObjectKey:   req.ObjectKey,
@@ -178,13 +181,13 @@ func (srv *Service) CreateMultipartUpload(ctx *common.UserInfoCtx, bucketName st
 		CallbackUrl: req.CallbackUrl,
 	}, time.Hour*24)
 
-	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, uploadID, createUpload.ExpiresAt)
+	err = srv.rdsmultipart.SetTimeoutMultipartCancel(ctx, storageUploadID, createUpload.ExpiresAt)
 	if err != nil {
 		return nil, common.ErrnoFromRepoError(err, common.DatabaseErr)
 	}
 
 	return &dto.CreateMultipartUploadResp{
-		UploadID:   uploadID,
+		UploadID:   storageUploadID,
 		BucketID:   bucket.ID,
 		ObjectKey:  req.ObjectKey,
 		TotalChunk: req.TotalChunk,
@@ -311,7 +314,7 @@ func (srv *Service) UploadMultipartPart(
 
 	res, err := srv.storage.PutPart(
 		ctx,
-		uploadID,
+		upload.BucketName, upload.ObjectKey, upload.VersionID, upload.UploadID,
 		partNumber,
 		reader,
 	)
@@ -615,7 +618,7 @@ func (srv *Service) CompleteMultipartUpload(ctx *common.UserInfoCtx, uploadID st
 		switch oldObjectToCleanup.IsMultipart {
 		case consts.ObjectIsMultipartMerged:
 			if oldObjectToCleanup.UploadID != nil {
-				if err := srv.storage.AbortUpload(ctx, *oldObjectToCleanup.UploadID); err != nil {
+				if err := srv.storage.AbortUpload(ctx, oldObjectToCleanup.BucketName, oldObjectToCleanup.ObjectKey, oldObjectToCleanup.VersionID, *oldObjectToCleanup.UploadID); err != nil {
 					srv.logger.Warn("failed to delete old multipart parts storage",
 						zap.String("bucket_name", oldObjectToCleanup.BucketName),
 						zap.String("upload_id", *oldObjectToCleanup.UploadID),

@@ -45,21 +45,21 @@ type IStorage interface {
 	// CreateMultipartUpload 初始化分片上传会话。
 	// 返回 storageUploadID，编码了后端所需的全部定位信息（bucket/key/s3UploadId 等）。
 	// 调用方应持久化 storageUploadID，用于后续 PutPart / Complete / Abort。
-	CreateMultipartUpload(ctx context.Context, bucket, objectKey string, version string) (storageUploadID string, err error)
+	CreateMultipartUpload(ctx context.Context, bucket, objectKey, version string) (storageUploadID string, err error)
 
 	// PutPart 上传单个分片。
 	// storageUploadID 来自 CreateMultipartUpload。
 	// 返回的 PutResult.Etag 必须原样保存，CompleteMultipartUpload 时需要传回。
-	PutPart(ctx context.Context, storageUploadID string, partNumber int32, src io.Reader) (*PutResult, error)
+	PutPart(ctx context.Context, bucket, objectKey, version string, storageUploadID string, partNumber int32, src io.Reader) (*PutResult, error)
 
 	// CompleteMultipartUpload 通知后端合并所有分片，完成上传。
 	// parts 须按 PartNumber 升序排列，ETag 来自 PutPart 返回值。
 	// 注意：返回的 PutResult.Sha256 为空，调用方应自行维护整体 SHA256。
-	CompleteMultipartUpload(ctx context.Context, storageUploadID string, parts []PartInfo) (*PutResult, error)
+	CompleteMultipartUpload(ctx context.Context, bucket, objectKey, version string, storageUploadID string, parts []PartInfo) (*PutResult, error)
 
 	// AbortUpload 取消分片上传并清理已上传的所有分片。
 	// 幂等：uploadID 不存在或已完成时不报错。
-	AbortUpload(ctx context.Context, storageUploadID string) error
+	AbortUpload(ctx context.Context, bucket, objectKey, version, storageID string) error
 }
 
 // IVideoAssetStorage 视频派生资产存储接口。

@@ -280,7 +280,6 @@ CREATE TABLE `multipart_parts`  (
   `part_number` int NOT NULL COMMENT '分片序号 1~10000',
   `size` bigint NOT NULL COMMENT '分片大小(字节)',
   `etag` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '分片MD5',
-  `storage_path` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '分片物理存储路径',
   `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=上传中 1=已确认(虚拟合并) 2=物理合并完可删',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
